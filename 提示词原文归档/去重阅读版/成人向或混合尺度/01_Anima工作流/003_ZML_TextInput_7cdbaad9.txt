@@ -1,0 +1,9 @@
+在下方输入提示词,如果不打开提示词优化转化，则按照“safe, sensitive, nsfw, explicit”安全标签四选一放在首位+提示词主要内容（通用标签或自然语言）的格式填写。例如safe,a girl,long hair
+
+如果打开提示词优化转化，则可随意输入想要的内容，中英文和各种形式皆可（提示词优化会转化为不同的可用形式，但需要自行配置api），加权重测试效果一般不推荐选（或者自行优化加权重的规则）。
+
+下附官方推荐完整提示词格式，可自行更改——
+[质量/元数据/年份/安全标签]+[1个女孩/1个男孩/1个其他角色等]+[角色] [角色来自于哪个ip系列] [艺术家] [通用标签]
+
+例：
+year 2025, newest, normal quality, score_5, highres, safe, 1girl, oomuro sakurako, yuru yuri, @nnn yryr, smile, brown hair, hat, solo, fur-trimmed gloves, open mouth, long hair, gift box, fang, skirt, red gloves, blunt bangs, gloves, one eye closed, shirt, brown eyes, santa costume, red hat, skin fang, twitter username, white background, holding bag, fur trim, simple background, brown skirt, bag, gift bag, looking at viewer, santa hat, ;d, red shirt, box, gift, fur-trimmed headwear, holding, red capelet, holding box, capelet

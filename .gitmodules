@@ -1,0 +1,6 @@
+[submodule "AnimaDex"]
+	path = AnimaDex
+	url = https://github.com/zetaneko/AnimaDex.git
+[submodule "Anima-Style-Explorer"]
+	path = Anima-Style-Explorer
+	url = https://github.com/ThetaCursed/Anima-Style-Explorer.git

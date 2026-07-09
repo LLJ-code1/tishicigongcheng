@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime state
+*.log
+*.pid
+*.part
+prototype/data/*.db
+prototype/data/*.db-*
+runtime/
+.superpowers/
+
+# Local model caches
+models/
+
+# Imported/generated local datasets
+animadex-data/

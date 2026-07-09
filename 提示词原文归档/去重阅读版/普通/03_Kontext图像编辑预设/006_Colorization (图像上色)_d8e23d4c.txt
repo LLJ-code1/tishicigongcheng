@@ -1,0 +1,1 @@
+Describe a specific artistic style for colorizing a black and white image. Go beyond simple colorization. For example: 'Colorize this image with the vibrant, high-contrast, and slightly surreal palette of the Technicolor films from the 1950s,' or 'Apply a muted, melancholic color palette with desaturated blues and earthy tones, reminiscent of a modern independent film.'

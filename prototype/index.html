@@ -1,0 +1,833 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Anima Prompt Studio 本地提示词工作台交互原型"
+    />
+    <title>Anima Prompt Studio Prototype</title>
+    <link rel="stylesheet" href="styles.css?v=20260622-model-random-v3" />
+  </head>
+  <body>
+    <div id="app" data-target-viewport="1920x1080">
+      <header class="topbar">
+        <button class="brand" type="button" data-nav="home" aria-label="返回新建作品">
+          <span class="brand-mark">A</span>
+          <span>
+            <strong>Anima Prompt Studio</strong>
+            <small>本地提示词工作台</small>
+          </span>
+        </button>
+
+        <nav class="top-nav" aria-label="主要导航">
+          <button type="button" data-nav="home">新建作品</button>
+          <button type="button" data-nav="text">文生图</button>
+          <button type="button" data-nav="image">图片解析</button>
+        </nav>
+
+        <div class="top-actions">
+          <button
+            class="service-pill"
+            id="serviceStatus"
+            type="button"
+            data-action="open-models"
+          >
+            <span class="status-dot"></span>
+            本地服务可用
+          </button>
+          <button
+            class="icon-button"
+            type="button"
+            data-action="open-models"
+            title="模型与接口设置"
+            aria-label="模型与接口设置"
+          >
+            ⚙
+          </button>
+        </div>
+      </header>
+
+      <main>
+        <section class="home-view" id="homeView">
+          <div class="home-heading">
+            <p class="eyebrow">NEW WORK</p>
+            <h1>新建作品</h1>
+            <p>从一句想法开始，或上传图片拆解画面。第一阶段只处理提示词，不进行出图。</p>
+          </div>
+
+          <div class="creation-choices">
+            <button class="creation-choice text-choice" type="button" data-nav="text">
+              <span class="choice-index">01</span>
+              <span class="choice-copy">
+                <strong>文生图</strong>
+                <span>全随机、拓展提示词、参考提示词库</span>
+              </span>
+              <span class="choice-arrow">→</span>
+            </button>
+            <button class="creation-choice image-choice" type="button" data-nav="image">
+              <span class="choice-index">02</span>
+              <span class="choice-copy">
+                <strong>图片解析</strong>
+                <span>本地多模型识图、合并、双语重写</span>
+              </span>
+              <span class="choice-arrow">→</span>
+            </button>
+          </div>
+
+          <div class="home-resources">
+            <div class="section-heading">
+              <div>
+                <h2>创作资源</h2>
+                <p>选择资源后会进入当前新作品，不会修改原始资料。</p>
+              </div>
+            </div>
+            <div class="resource-strip">
+              <button type="button" data-action="open-reference">
+                <strong>参考提示词库</strong>
+                <span>图片 + 中英文提示词案例</span>
+                <b>3 个示例</b>
+              </button>
+              <button type="button" data-action="quick-resource" data-resource="character">
+                <strong>角色库</strong>
+                <span>角色设定与常用外观</span>
+                <b>快速选择</b>
+              </button>
+              <button type="button" data-action="quick-resource" data-resource="artist">
+                <strong>画师库</strong>
+                <span>Anima 画师标签与预览</span>
+                <b>本地资源源</b>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section class="workbench hidden" id="workbenchArea">
+          <aside class="source-pane">
+            <section id="textView">
+              <div class="pane-title">
+                <div>
+                  <p class="eyebrow">TEXT TO PROMPT</p>
+                  <h2>文生图</h2>
+                </div>
+                <div class="pane-actions">
+                  <button
+                    class="secondary-button"
+                    type="button"
+                    data-action="edit-prompt-template"
+                    data-template="text_core_visual"
+                  >
+                    编辑文生图规则
+                  </button>
+                  <span class="live-label">模型调用</span>
+                </div>
+              </div>
+
+              <div class="segmented tabs" role="tablist" aria-label="文生图模式">
+                <button type="button" data-text-mode="random">全随机</button>
+                <button type="button" data-text-mode="expand">拓展</button>
+                <button type="button" data-text-mode="reference">参考库</button>
+              </div>
+
+              <div class="inference-source">
+                <div>
+                  <span>本次任务使用</span>
+                  <strong id="textProviderLabel">本地 LLM · llama-server</strong>
+                </div>
+                <div class="segmented compact-segmented" aria-label="文本推理来源">
+                  <button type="button" data-text-provider="local">本地 LLM</button>
+                  <button type="button" data-text-provider="api">外部 API</button>
+                </div>
+              </div>
+
+              <div class="text-mode-panel" data-mode-panel="expand">
+                <label class="field-label" for="draftInput">输入中文、英文或混合提示词</label>
+                <textarea
+                  id="draftInput"
+                  rows="8"
+                  placeholder="例如：1girl, raining，站在霓虹街道"
+                ></textarea>
+                <div class="inline-meta">
+                  <span>自动识别输入语言</span>
+                  <span>输出中英文对应版本</span>
+                </div>
+                <div
+                  class="segmented compact-segmented expansion-level"
+                  aria-label="扩写强度"
+                >
+                  <button type="button" data-expansion-level="strict">严格</button>
+                  <button type="button" data-expansion-level="balanced">均衡</button>
+                  <button type="button" data-expansion-level="creative">创意</button>
+                </div>
+                <div class="prompt-action-row">
+                  <button class="secondary-button" id="decomposeBtn" type="button">
+                    仅拆解
+                  </button>
+                  <button class="primary-button" id="expandBtn" type="button">
+                    拓展并结构化
+                  </button>
+                </div>
+                <div
+                  class="generation-progress"
+                  id="generationProgress"
+                  data-status="idle"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span class="generation-progress-dot" aria-hidden="true"></span>
+                  <div class="generation-progress-copy">
+                    <div class="generation-progress-heading">
+                      <strong id="generationProgressTitle">等待任务</strong>
+                      <b id="generationProgressElapsed">--</b>
+                    </div>
+                    <p id="generationProgressDetail">
+                      点击“仅拆解”或“拓展并结构化”后，这里会显示当前进度。
+                    </p>
+                    <span id="generationProgressProvider">尚未调用模型</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="text-mode-panel hidden" data-mode-panel="random">
+                <div class="random-summary">
+                  <span>本次组合维度</span>
+                  <strong>人物 · 服装 · 动作 · 场景 · 构图 · 光影 · 风格</strong>
+                </div>
+                <div class="lock-grid">
+                  <label><input type="checkbox" checked /> 锁定成年角色</label>
+                  <label><input type="checkbox" /> 锁定画师</label>
+                  <label><input type="checkbox" /> 锁定场景</label>
+                  <label><input type="checkbox" /> 锁定镜头</label>
+                </div>
+                <button class="primary-button full" id="randomBtn" type="button">
+                  生成随机提示词
+                </button>
+              </div>
+
+              <div
+                class="text-mode-panel reference-library hidden"
+                id="referenceLibrary"
+                data-mode-panel="reference"
+              >
+                <label class="search-field">
+                  <span>搜索</span>
+                  <input
+                    id="referenceSearch"
+                    type="search"
+                    placeholder="雨景、室内、科幻..."
+                  />
+                </label>
+                <div class="filter-row">
+                  <button class="chip active" type="button">全部</button>
+                  <button class="chip" type="button">Anima</button>
+                  <button class="chip" type="button">WAI-ANIMA</button>
+                </div>
+                <div class="reference-cards" id="referenceCards"></div>
+              </div>
+
+              <div class="quick-library">
+                <div class="mini-heading">
+                  <strong>快速资源</strong>
+                  <button type="button" data-action="new-resource">＋ 新建</button>
+                </div>
+                <div class="quick-tabs">
+                  <button class="active" type="button" data-quick-tab="characters">
+                    角色
+                  </button>
+                  <button type="button" data-quick-tab="artists">画师</button>
+                  <button
+                    type="button"
+                    data-quick-tab="favorite-characters"
+                    id="favoriteCharactersTab"
+                  >
+                    角色收藏
+                  </button>
+                  <button
+                    type="button"
+                    data-quick-tab="favorite-artists"
+                    id="favoriteArtistsTab"
+                  >
+                    画师收藏
+                  </button>
+                  <button type="button" data-quick-tab="snippets">我的素材</button>
+                </div>
+                <div class="resource-source" id="resourceSource">
+                  <span class="resource-source-state">
+                    <i></i>
+                    <b id="resourceSourceLabel">正在检查 AnimaDex</b>
+                  </span>
+                  <button
+                    type="button"
+                    data-action="refresh-resources"
+                    title="刷新资源库"
+                    aria-label="刷新资源库"
+                  >↻</button>
+                </div>
+                <label class="resource-search" id="resourceSearchField">
+                  <span>搜索</span>
+                  <input
+                    id="resourceSearch"
+                    type="search"
+                    placeholder="角色名、作品或画师..."
+                    autocomplete="off"
+                  />
+                </label>
+                <div class="resource-tools" id="resourceTools">
+                  <div class="resource-sort" aria-label="资源排序">
+                    <button class="active" type="button" data-resource-sort="count">
+                      热度
+                    </button>
+                    <button type="button" data-resource-sort="az">A-Z</button>
+                    <button class="hidden" type="button" data-resource-sort="score">评分</button>
+                    <button type="button" data-resource-sort="random">随机</button>
+                  </div>
+                </div>
+                <div class="resource-pager hidden" id="resourcePager">
+                  <button type="button" data-resource-page="prev">上一页</button>
+                  <span id="resourcePageLabel">第 1 / 1 页</span>
+                  <button type="button" data-resource-page="next">下一页</button>
+                </div>
+                <div id="quickPicks"></div>
+              </div>
+            </section>
+
+            <section class="hidden" id="imageView">
+              <div class="pane-title">
+                <div>
+                  <p class="eyebrow">IMAGE TO PROMPT</p>
+                  <h2>图片解析</h2>
+                </div>
+                <div class="pane-actions">
+                  <button
+                    class="secondary-button"
+                    type="button"
+                    data-action="edit-prompt-template"
+                    data-template="image_analyze"
+                  >
+                    编辑图生图模板
+                  </button>
+                  <span class="live-label">真实本地识图</span>
+                </div>
+              </div>
+
+              <button class="drop-zone" id="dropZone" type="button">
+                <img
+                  class="image-preview hidden"
+                  id="imagePreview"
+                  alt="已选择的参考图片预览"
+                />
+                <span class="upload-placeholder" id="uploadPlaceholder">
+                  <span class="upload-symbol">＋</span>
+                  <strong id="uploadTitle">上传一张参考图片</strong>
+                  <span id="uploadDetail">PNG、JPG、WEBP · 原图仅在本机处理</span>
+                </span>
+              </button>
+              <input
+                id="imageInput"
+                type="file"
+                accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+                hidden
+              />
+
+              <div class="analysis-toolbar">
+                <div>
+                  <strong>识图模型</strong>
+                  <span>大型模型默认串行运行</span>
+                </div>
+                <label class="toggle-label">
+                  <input id="autoCombineToggle" type="checkbox" checked />
+                  <span>自动组合</span>
+                </label>
+              </div>
+
+              <div class="analyzer-list" id="analyzerList"></div>
+
+              <button class="primary-button full" id="analyzeBtn" type="button">
+                开始多模型分析
+              </button>
+
+              <div class="queue-panel">
+                <div class="mini-heading">
+                  <strong>运行队列</strong>
+                  <button type="button" data-action="release-models">立即释放</button>
+                </div>
+                <p id="analysisNotice">尚未开始分析</p>
+                <div class="queue-line" id="queueLine"></div>
+              </div>
+
+              <div class="raw-results">
+                <div class="mini-heading">
+                  <strong>原始识别结果</strong>
+                  <span>可追踪每个来源</span>
+                </div>
+                <div class="raw-tabs" id="rawTabs"></div>
+                <pre id="rawOutput">完成分析后显示模型原始输出。</pre>
+              </div>
+            </section>
+          </aside>
+
+          <section class="editor-pane" id="structuredEditor">
+            <div class="editor-header">
+              <div>
+                <p class="eyebrow">STRUCTURED SCENE</p>
+                <div class="title-with-version">
+                  <h2>结构化编辑</h2>
+                  <span class="version-badge" id="versionBadge">尚未生成</span>
+                </div>
+              </div>
+              <div class="editor-actions">
+                <button class="secondary-button" type="button" data-action="collapse-blocks">
+                  收起全部
+                </button>
+                <button class="secondary-button" type="button" data-action="refresh-output">
+                  刷新双语
+                </button>
+              </div>
+            </div>
+            <div class="batch-variant-bar hidden" id="batchVariantBar">
+              <div>
+                <strong id="batchVariantCount">已选 0 项</strong>
+                <span>勾选两个或更多结构块，模型会统一生成并校验。</span>
+              </div>
+              <div>
+                <button
+                  class="secondary-button"
+                  id="clearVariantSelectionBtn"
+                  type="button"
+                  data-action="clear-variant-selection"
+                >
+                  清空
+                </button>
+                <button
+                  class="primary-button"
+                  id="batchVariantBtn"
+                  type="button"
+                  data-action="regenerate-selected-blocks"
+                >
+                  联合随机
+                </button>
+              </div>
+            </div>
+            <div class="pending-bar hidden" id="pendingBar">
+              <span id="pendingSummary">有未应用的修改，右侧输出仍保持上一版本。</span>
+              <div>
+                <button class="secondary-button" type="button" data-action="discard-changes">
+                  撤销未应用
+                </button>
+                <button class="primary-button" type="button" data-action="apply-changes">
+                  应用修改并生成新版本
+                </button>
+              </div>
+            </div>
+            <div class="empty-editor" id="editorEmpty">
+              <span>SceneSpec</span>
+              <h3>生成结果后在这里逐块调整</h3>
+              <p>可以修改内容、权重和锁定状态，并查看每个字段的来源与置信度。</p>
+            </div>
+            <div class="block-list" id="blockList"></div>
+          </section>
+
+          <aside class="output-pane" id="bilingualOutput">
+            <div class="output-header">
+              <div>
+                <p class="eyebrow">PROMPT OUTPUT</p>
+                <h2>中英文输出</h2>
+              </div>
+              <div class="output-header-actions">
+                <button
+                  class="secondary-button"
+                  id="translatePendingBtn"
+                  type="button"
+                  data-action="translate-pending"
+                >
+                  本地 LLM 翻译
+                </button>
+                <select id="targetModel" aria-label="目标模型">
+                  <option>Anima 2B</option>
+                  <option>WAI-ANIMA</option>
+                  <option>通用 Danbooru</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="output-language-tabs">
+              <button class="active" type="button" data-output-lang="both">双语</button>
+              <button type="button" data-output-lang="en">EN</button>
+              <button type="button" data-output-lang="zh">中文</button>
+            </div>
+
+            <section class="output-group" data-language="en">
+              <div class="output-label">
+                <strong>Positive · English</strong>
+                <button type="button" data-copy="positiveEn">复制</button>
+              </div>
+              <textarea
+                id="positiveEn"
+                readonly
+                placeholder="英文正向提示词将在这里生成"
+              ></textarea>
+            </section>
+
+            <section class="output-group" data-language="zh">
+              <div class="output-label">
+                <strong>正向提示词 · 中文</strong>
+                <button type="button" data-copy="positiveZh">复制</button>
+              </div>
+              <textarea
+                id="positiveZh"
+                class="zh-output"
+                readonly
+                placeholder="中文正向提示词将在这里生成"
+              ></textarea>
+            </section>
+
+            <section class="output-group compact" data-language="en">
+              <div class="output-label">
+                <strong>Negative · English</strong>
+                <button type="button" data-copy="negativeEn">复制</button>
+              </div>
+              <textarea
+                id="negativeEn"
+                readonly
+                placeholder="英文负面提示词"
+              ></textarea>
+            </section>
+
+            <section class="output-group compact" data-language="zh">
+              <div class="output-label">
+                <strong>负面提示词 · 中文</strong>
+                <button type="button" data-copy="negativeZh">复制</button>
+              </div>
+              <textarea
+                id="negativeZh"
+                class="zh-output"
+                readonly
+                placeholder="中文负面提示词"
+              ></textarea>
+            </section>
+
+            <div class="output-footer">
+              <button class="secondary-button" type="button" data-action="copy-all">
+                复制双语
+              </button>
+              <button class="primary-button" type="button" data-action="save-draft">
+                保存为作品草稿
+              </button>
+            </div>
+          </aside>
+        </section>
+      </main>
+
+      <aside class="model-drawer" id="modelDrawer" aria-hidden="true">
+        <div class="drawer-scrim" data-action="close-models"></div>
+        <div class="drawer-panel">
+          <div class="drawer-heading">
+            <div>
+              <p class="eyebrow">LOCAL RUNTIME</p>
+              <h2>模型与接口</h2>
+            </div>
+            <button
+              class="icon-button"
+              type="button"
+              data-action="close-models"
+              aria-label="关闭"
+            >
+              ×
+            </button>
+          </div>
+
+          <section class="settings-section">
+            <h3>文本推理来源</h3>
+            <div class="segmented" data-setting-group="textProvider">
+              <button type="button" data-setting="textProvider" data-value="local">
+                本地 LLM
+              </button>
+              <button type="button" data-setting="textProvider" data-value="api">
+                外部 API
+              </button>
+            </div>
+            <div class="provider-settings" data-provider-settings="local">
+              <div class="provider-runtime-row">
+                <span id="localLlmStatus" class="provider-status">尚未检测</span>
+                <div class="provider-actions">
+                  <button type="button" data-action="start-local-llm">启动</button>
+                  <button type="button" data-action="stop-local-llm">停止</button>
+                  <button type="button" data-action="test-local-llm">测试</button>
+                </div>
+              </div>
+              <label>
+                <span>本地接口地址</span>
+                <input
+                  id="localTextUrl"
+                  data-text-setting="localTextUrl"
+                  type="url"
+                  value="http://127.0.0.1:8080/v1"
+                  spellcheck="false"
+                />
+              </label>
+              <label>
+                <span>本地模型名称</span>
+                <input
+                  id="localTextModel"
+                  data-text-setting="localTextModel"
+                  type="text"
+                  value="Huihui-Qwen3-14B-abliterated-v2.Q4_K_M.gguf"
+                  spellcheck="false"
+                />
+              </label>
+            </div>
+            <div class="provider-settings" data-provider-settings="api">
+              <div class="provider-runtime-row">
+                <span id="externalApiStatus" class="provider-status">等待配置</span>
+                <button type="button" data-action="test-external-api">测试连接</button>
+              </div>
+              <label>
+                <span>外部 API 地址</span>
+                <input
+                  id="apiTextUrl"
+                  data-text-setting="apiTextUrl"
+                  type="url"
+                  placeholder="https://example.com/v1"
+                  spellcheck="false"
+                />
+              </label>
+              <label>
+                <span>外部模型名称</span>
+                <input
+                  id="apiTextModel"
+                  data-text-setting="apiTextModel"
+                  type="text"
+                  placeholder="model-name"
+                  spellcheck="false"
+                />
+              </label>
+              <label>
+                <span>API Key</span>
+                <input
+                  id="apiTextKey"
+                  data-text-setting="apiTextKey"
+                  type="password"
+                  autocomplete="off"
+                  placeholder="仅保存在本机数据库"
+                />
+              </label>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <h3>图片推理来源</h3>
+            <div class="segmented" data-setting-group="visionProvider">
+              <button type="button" data-setting="visionProvider" data-value="local">
+                本地识图
+              </button>
+              <button type="button" data-setting="visionProvider" data-value="api">
+                外部 API
+              </button>
+              <button type="button" data-setting="visionProvider" data-value="mixed">
+                混合
+              </button>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <h3>模型驻留策略</h3>
+            <div class="residency-options">
+              <label>
+                <input type="radio" name="residency" value="smart" checked />
+                <span><strong>智能驻留</strong><small>空闲 5 分钟后自动释放</small></span>
+              </label>
+              <label>
+                <input type="radio" name="residency" value="release" />
+                <span><strong>用完即释放</strong><small>显存占用最低</small></span>
+              </label>
+              <label>
+                <input type="radio" name="residency" value="keep" />
+                <span><strong>保持加载</strong><small>连续分析速度最快</small></span>
+              </label>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <div class="mini-heading">
+              <h3>模型状态</h3>
+              <span id="memoryEstimate">预计显存 0 GB</span>
+            </div>
+            <div class="drawer-model-list" id="drawerModelList"></div>
+          </section>
+
+          <div class="drawer-footer">
+            <button class="danger-button" type="button" data-action="release-models">
+              立即释放所有模型
+            </button>
+            <button class="primary-button" type="button" data-action="close-models">
+              完成
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      <aside
+        class="prompt-template-dialog"
+        id="promptTemplateDialog"
+        aria-hidden="true"
+      >
+        <div class="dialog-scrim" data-action="close-prompt-template"></div>
+        <section class="prompt-template-panel" aria-label="提示词模板编辑">
+          <div class="dialog-heading">
+            <div>
+              <p class="eyebrow" id="promptTemplateKind">PROMPT TEMPLATE</p>
+              <h2 id="promptTemplateTitle">提示词模板</h2>
+            </div>
+            <button
+              class="icon-button"
+              type="button"
+              data-action="close-prompt-template"
+              aria-label="关闭提示词模板编辑"
+            >
+              ×
+            </button>
+          </div>
+          <div class="prompt-template-meta">
+            <label class="prompt-template-picker">
+              <span>规则模块</span>
+              <select id="promptTemplateSelect">
+                <option value="text_core_visual">核心视觉扩写</option>
+                <option value="text_mode_expand">拓展已有提示词</option>
+                <option value="text_format_hybrid">Tags 与自然语言混合编译</option>
+                <option value="text_model_anima">Anima 模型配置</option>
+                <option value="text_schema_bilingual">双语输出结构</option>
+              </select>
+            </label>
+            <code id="promptTemplateFile">prototype/prompts/template.md</code>
+            <button
+              class="secondary-button"
+              type="button"
+              data-action="revert-prompt-template"
+            >
+              撤回未保存
+            </button>
+          </div>
+          <label class="prompt-template-editor">
+            <span>模板内容</span>
+            <textarea id="promptTemplateContent" spellcheck="false"></textarea>
+          </label>
+          <div class="dialog-actions">
+            <button
+              class="secondary-button"
+              type="button"
+              data-action="close-prompt-template"
+            >
+              取消
+            </button>
+            <button
+              class="primary-button"
+              type="button"
+              data-action="save-prompt-template"
+            >
+              保存模板
+            </button>
+          </div>
+        </section>
+      </aside>
+
+      <div class="resource-dialog" id="resourceDialog" aria-hidden="true">
+        <div class="dialog-scrim" data-action="close-resource"></div>
+        <form class="dialog-panel" id="resourceForm">
+          <div class="dialog-heading">
+            <div>
+              <p class="eyebrow">REUSABLE RESOURCE</p>
+              <h2>新建长期资源</h2>
+            </div>
+            <button
+              class="icon-button"
+              type="button"
+              data-action="close-resource"
+              aria-label="关闭"
+            >
+              ×
+            </button>
+          </div>
+          <label>
+            <span>名称</span>
+            <input id="resourceName" name="name" required placeholder="例如：常用黑色风衣" />
+          </label>
+          <label>
+            <span>应用到结构块</span>
+            <select id="resourceTarget" name="targetBlock">
+              <option value="subject">人物主体</option>
+              <option value="appearance">外观与服装</option>
+              <option value="pose">动作与姿态</option>
+              <option value="scene">场景与环境</option>
+              <option value="composition">构图与镜头</option>
+              <option value="lighting">光影与色彩</option>
+              <option value="style">风格与画师</option>
+              <option value="negative">负面提示词</option>
+            </select>
+          </label>
+          <label>
+            <span>English prompt</span>
+            <textarea id="resourceEn" name="en" rows="3" required></textarea>
+          </label>
+          <label>
+            <span>中文释义</span>
+            <textarea id="resourceZh" name="zh" rows="3" required></textarea>
+          </label>
+          <div class="dialog-actions">
+            <button class="secondary-button" type="button" data-action="close-resource">
+              取消
+            </button>
+            <button class="primary-button" type="submit">保存到我的素材</button>
+          </div>
+        </form>
+      </div>
+
+      <aside class="resource-preview-dialog" id="resourcePreviewDialog" aria-hidden="true">
+        <div class="dialog-scrim" data-action="close-resource-preview"></div>
+        <section class="resource-preview-panel" aria-label="资源预览">
+          <div class="dialog-heading">
+            <div>
+              <p class="eyebrow" id="resourcePreviewSource">ANIMADEX RESOURCE</p>
+              <h2 id="resourcePreviewTitle">资源预览</h2>
+            </div>
+            <button
+              class="icon-button"
+              type="button"
+              data-action="close-resource-preview"
+              aria-label="关闭资源预览"
+            >×</button>
+          </div>
+          <div class="resource-preview-body">
+            <div class="resource-preview-image">
+              <img id="resourcePreviewImage" src="" alt="" />
+            </div>
+            <div class="resource-preview-copy">
+              <strong id="resourcePreviewMeta"></strong>
+              <label>
+                <span>English prompt</span>
+                <textarea id="resourcePreviewEn" rows="8" readonly></textarea>
+              </label>
+              <label>
+                <span>中文释义</span>
+                <textarea id="resourcePreviewZh" rows="5" readonly></textarea>
+              </label>
+            </div>
+          </div>
+          <div class="dialog-actions">
+            <button class="secondary-button" type="button" data-action="close-resource-preview">
+              返回资源库
+            </button>
+            <button class="primary-button" type="button" data-action="apply-preview-resource">
+              带入结构化编辑
+            </button>
+          </div>
+        </section>
+      </aside>
+
+      <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    </div>
+
+    <script src="data.js?v=20260622-model-random-v3"></script>
+    <script src="app.js?v=20260622-model-random-v3"></script>
+  </body>
+</html>
