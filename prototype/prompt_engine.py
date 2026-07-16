@@ -5,11 +5,14 @@ from __future__ import annotations
 import json
 import re
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+from unicode15_data import is_unicode15_assigned, lowercase_unicode15
 
 
 ROOT = Path(__file__).resolve().parent
@@ -43,6 +46,16 @@ RANDOM_VARIANT_BLOCK_IDS = {
     "lighting",
     "effects",
 }
+PROMPT_WHITESPACE_PATTERN = re.compile(
+    "[\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680"
+    "\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]+"
+)
+PROMPT_EDGE_WHITESPACE_PATTERN = re.compile(
+    "^[\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680"
+    "\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]+|"
+    "[\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680"
+    "\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]+$"
+)
 BLOCK_LABELS = {
     "quality": "质量与基础修饰",
     "artist": "画师与风格",
@@ -364,15 +377,40 @@ def clean_string_list(value: Any) -> list[str]:
 
 
 def split_prompt_items(value: str) -> list[str]:
-    return [
-        item.strip()
+    items = [
+        PROMPT_EDGE_WHITESPACE_PATTERN.sub("", item)
         for item in re.split(r"[,，;；\n]+", value)
-        if item.strip()
     ]
+    return [item for item in items if item]
+
+
+def prompt_item_key(value: str) -> str:
+    """Match the browser's frozen Unicode-15 prompt deduplication."""
+
+    output: list[str] = []
+    assigned_run: list[str] = []
+
+    def flush_assigned_run() -> None:
+        if not assigned_run:
+            return
+        normalized_run = unicodedata.normalize("NFKC", "".join(assigned_run))
+        output.append(lowercase_unicode15(normalized_run).replace("ß", "ss"))
+        assigned_run.clear()
+
+    for character in str(value or ""):
+        if is_unicode15_assigned(ord(character)):
+            assigned_run.append(character)
+        else:
+            flush_assigned_run()
+            output.append(character)
+    flush_assigned_run()
+    normalized = "".join(output)
+    collapsed = PROMPT_WHITESPACE_PATTERN.sub(" ", normalized).strip(" ")
+    return collapsed
 
 
 def source_item_key(value: str) -> str:
-    return re.sub(r"\s+", " ", value).strip().casefold()
+    return prompt_item_key(value)
 
 
 def contains_cjk(value: str) -> bool:
@@ -381,10 +419,10 @@ def contains_cjk(value: str) -> bool:
 
 def merge_fixed_prompt(fixed: str, model_value: str, separator: str) -> str:
     fixed_items = split_prompt_items(fixed)
-    seen = {item.casefold() for item in fixed_items}
+    seen = {prompt_item_key(item) for item in fixed_items}
     extras = []
     for item in split_prompt_items(model_value):
-        normalized = item.casefold()
+        normalized = prompt_item_key(item)
         if normalized not in seen:
             extras.append(item)
             seen.add(normalized)
@@ -401,7 +439,7 @@ def compile_normalized_blocks(
         values = []
         for block in positive_blocks:
             for item in split_prompt_items(block[language]):
-                normalized = item.casefold()
+                normalized = prompt_item_key(item)
                 if normalized in seen:
                     continue
                 seen.add(normalized)
@@ -734,7 +772,7 @@ def validate_expansion_quality(
         issues.append("balanced/creative 缺少关系描述")
 
     all_items = [
-        item.casefold()
+        prompt_item_key(item)
         for items in block_items.values()
         for item in items
     ]

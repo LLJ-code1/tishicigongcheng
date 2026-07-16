@@ -11,6 +11,7 @@ from prompt_engine import (  # noqa: E402
     build_text_decompose_system_prompt,
     build_user_message,
     build_text_expand_system_prompt,
+    compile_normalized_blocks,
     decompose_text_prompt,
     expand_text_prompt,
     generate_random_text_prompt,
@@ -19,11 +20,17 @@ from prompt_engine import (  # noqa: E402
     probe_text_provider,
     response_content,
     parse_model_json,
+    prompt_item_key,
     resolve_text_provider,
     regenerate_prompt_block,
     regenerate_prompt_blocks,
     translate_pending_items,
     validate_expansion_quality,
+)
+from unicode15_data import (  # noqa: E402
+    UNICODE15_VERSION,
+    is_unicode15_assigned,
+    lowercase_unicode15,
 )
 
 
@@ -108,6 +115,48 @@ def rich_random_model_result():
 
 
 class PromptAssemblyTests(unittest.TestCase):
+    def test_prompt_item_key_matches_frontend_nfkc_deduplication(self):
+        self.assertEqual(prompt_item_key("Straße"), "strasse")
+        self.assertEqual(prompt_item_key("Éclair"), prompt_item_key("e\u0301clair"))
+        self.assertEqual(prompt_item_key("ＣＡＴ"), "cat")
+        self.assertEqual(prompt_item_key("  red\t dress "), "red dress")
+        self.assertEqual(prompt_item_key("red\ufeffdress"), "red dress")
+        self.assertEqual(prompt_item_key("red\u0085dress"), "red dress")
+        self.assertEqual(prompt_item_key("red\u200bdress"), "red\u200bdress")
+        self.assertEqual(prompt_item_key("\u001cred\u001c"), "\u001cred\u001c")
+        self.assertEqual(UNICODE15_VERSION, "15.0.0")
+        self.assertTrue(is_unicode15_assigned(0x41))
+        self.assertFalse(is_unicode15_assigned(0x1C89))
+        self.assertEqual(lowercase_unicode15("AΣẞ"), "aσß")
+        self.assertEqual(prompt_item_key("\u1c89"), "\u1c89")
+        self.assertEqual(prompt_item_key("\ua7f1"), "\ua7f1")
+        self.assertEqual(prompt_item_key("A\u0295Σ"), "a\u0295σ")
+        self.assertEqual(prompt_item_key("AΣ\u0295"), "aσ\u0295")
+
+        compiled = compile_normalized_blocks(
+            [
+                {
+                    "id": "scene",
+                    "en": "Straße, Éclair, red  dress, \ufeffblue sky\ufeff",
+                    "zh": "ＣＡＴ",
+                },
+                {
+                    "id": "effects",
+                    "en": "STRASSE, e\u0301clair, red dress, blue sky",
+                    "zh": "CAT",
+                },
+                {"id": "negative", "en": "bad", "zh": "差"},
+            ],
+            "",
+            "",
+        )
+
+        self.assertEqual(
+            compiled["positiveEn"],
+            "Straße, Éclair, red  dress, blue sky",
+        )
+        self.assertEqual(compiled["positiveZh"], "ＣＡＴ")
+
     def test_random_generation_uses_two_model_calls_and_creative_density(self):
         calls = []
 

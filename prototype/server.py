@@ -5,12 +5,20 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import math
 import os
+import socket
+import sqlite3
+import threading
+import time
+from io import BytesIO
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 from urllib.request import Request, urlopen
+
+from PIL import Image, UnidentifiedImageError
 
 from db import (
     create_project,
@@ -55,8 +63,50 @@ UPSTREAM_TIMEOUT = float(os.environ.get("ANIMADEX_TIMEOUT", "3"))
 RESOURCE_PAGE_SIZE = 72
 ALLOWED_MODES = {"characters", "artists"}
 PROMPT_TEMPLATE_DIR = ROOT / "prompts"
-MAX_JSON_BODY_BYTES = 30 * 1024 * 1024
-PUBLIC_STATIC_FILES = {"/", "/index.html", "/app.js", "/data.js", "/styles.css"}
+MAX_JSON_BODY_BYTES = 1024 * 1024
+MAX_VISION_JSON_BODY_BYTES = 30 * 1024 * 1024
+MAX_IMAGE_BYTES = 20 * 1024 * 1024
+MAX_IMAGE_PIXELS = 50_000_000
+REQUEST_BODY_TIMEOUT_SECONDS = 2.0
+VISION_REQUEST_BODY_TIMEOUT_SECONDS = 30.0
+CONNECTION_TIMEOUT_SECONDS = 5.0
+PUBLIC_STATIC_FILES = {
+    "/",
+    "/index.html",
+    "/app.js",
+    "/data.js",
+    "/styles.css",
+    "/unicode15-data.js",
+}
+SENSITIVE_SETTING_KEYS = {"apiTextKey", "localTextKey"}
+STRING_SETTING_LIMITS = {
+    "localTextUrl": 4_096,
+    "localTextModel": 512,
+    "localTextKey": 8_192,
+    "apiTextUrl": 4_096,
+    "apiTextModel": 512,
+    "apiTextKey": 8_192,
+}
+ENUM_SETTING_VALUES = {
+    "textProvider": {"local", "api"},
+    "expansionLevel": {"strict", "balanced", "creative"},
+    "visionProvider": {"local", "api", "mixed"},
+    "residency": {"smart", "release", "keep"},
+}
+BOOLEAN_SETTING_KEYS = {"autoCombine"}
+ALLOWED_SETTING_KEYS = (
+    set(STRING_SETTING_LIMITS)
+    | set(ENUM_SETTING_VALUES)
+    | BOOLEAN_SETTING_KEYS
+)
+BASE_ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1"}
+EXPLICIT_ALLOWED_HOSTS = {
+    item.strip().lower().strip("[]")
+    for item in os.environ.get("PROMPT_STUDIO_ALLOWED_HOSTS", "").split(",")
+    if item.strip()
+}
+ALLOWED_HOSTS = BASE_ALLOWED_HOSTS | EXPLICIT_ALLOWED_HOSTS
+ALLOW_NETWORK_BIND = os.environ.get("PROMPT_STUDIO_ALLOW_NETWORK", "").strip() == "1"
 DEFAULT_TEXT_SETTINGS = {
     "textProvider": "local",
     "localTextUrl": "http://127.0.0.1:8080/v1",
@@ -111,6 +161,151 @@ PROMPT_TEMPLATES = {
         "filename": "image_analyze.md",
     },
 }
+
+
+class RequestValidationError(Exception):
+    """An HTTP request failed boundary validation before business routing."""
+
+    def __init__(self, message: str, status: int = 400):
+        super().__init__(message)
+        self.status = status
+
+
+def parse_host_header(value: str) -> tuple[str, int | None] | None:
+    """Parse an HTTP authority without accepting userinfo or ambiguous ports."""
+
+    authority = str(value or "").strip().lower()
+    if (
+        not authority
+        or any(character.isspace() for character in authority)
+        or any(character in authority for character in "/\\@?#")
+    ):
+        return None
+
+    port: int | None = None
+    if authority.startswith("["):
+        closing = authority.find("]")
+        if closing < 0:
+            return None
+        hostname = authority[1:closing]
+        remainder = authority[closing + 1 :]
+        if remainder:
+            if not remainder.startswith(":") or not remainder[1:].isdigit():
+                return None
+            port = int(remainder[1:])
+    else:
+        if authority.count(":") > 1:
+            return None
+        hostname, separator, raw_port = authority.partition(":")
+        if separator:
+            if not raw_port.isdigit():
+                return None
+            port = int(raw_port)
+
+    if not hostname or (port is not None and not 1 <= port <= 65535):
+        return None
+    return hostname, port
+
+
+def is_allowed_host(value: str) -> bool:
+    parsed = parse_host_header(value)
+    return bool(parsed and parsed[0] in ALLOWED_HOSTS)
+
+
+def is_same_origin(origin: str, host_header: str) -> bool:
+    request_authority = parse_host_header(host_header)
+    if not request_authority:
+        return False
+    try:
+        parsed_origin = urlparse(origin)
+        origin_port = parsed_origin.port
+    except ValueError:
+        return False
+    if (
+        parsed_origin.scheme.lower() != "http"
+        or not parsed_origin.hostname
+        or parsed_origin.username is not None
+        or parsed_origin.password is not None
+        or parsed_origin.path not in {"", "/"}
+        or parsed_origin.params
+        or parsed_origin.query
+        or parsed_origin.fragment
+    ):
+        return False
+    request_host, request_port = request_authority
+    return (
+        parsed_origin.hostname.lower() == request_host
+        and (origin_port or 80) == (request_port or 80)
+    )
+
+
+def redact_settings(settings: dict) -> dict:
+    """Return settings without ever exposing saved provider credentials."""
+
+    redacted = {
+        key: value
+        for key, value in settings.items()
+        if key in ALLOWED_SETTING_KEYS and key not in SENSITIVE_SETTING_KEYS
+    }
+    for key in SENSITIVE_SETTING_KEYS:
+        redacted[f"{key}Configured"] = bool(settings.get(key))
+        redacted[key] = ""
+    return redacted
+
+
+def preserve_saved_setting_keys(payload: dict) -> dict:
+    """Treat omitted or blank credential fields as 'leave the saved key alone'."""
+
+    sanitized = dict(payload)
+    for key in SENSITIVE_SETTING_KEYS:
+        if key not in sanitized:
+            continue
+        value = sanitized[key]
+        if value is None or (isinstance(value, str) and not value.strip()):
+            sanitized.pop(key, None)
+        elif not isinstance(value, str):
+            raise ValueError(f"{key} 必须是字符串")
+    return sanitized
+
+
+def validate_settings_update(payload: dict) -> dict:
+    unknown = set(payload) - ALLOWED_SETTING_KEYS
+    if unknown:
+        raise ValueError("设置包含不支持的字段")
+    validated = dict(payload)
+    for key, max_length in STRING_SETTING_LIMITS.items():
+        if key in validated and (
+            not isinstance(validated[key], str)
+            or len(validated[key]) > max_length
+        ):
+            raise ValueError(f"{key} 必须是长度不超过 {max_length} 的字符串")
+    for key, values in ENUM_SETTING_VALUES.items():
+        if key in validated and validated[key] not in values:
+            raise ValueError(f"{key} 的值无效")
+    for key in BOOLEAN_SETTING_KEYS:
+        if key in validated and not isinstance(validated[key], bool):
+            raise ValueError(f"{key} 必须是布尔值")
+    return validated
+
+
+def strict_json_object_pairs(pairs: list[tuple[str, object]]) -> dict:
+    result: dict = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"请求 JSON 包含重复字段：{key}")
+        result[key] = value
+    return result
+
+
+def strict_json_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError("请求 JSON 不允许 NaN 或 Infinity")
+    return parsed
+
+
+def reject_json_constant(value: str) -> None:
+    raise ValueError(f"请求 JSON 不允许 {value}")
 
 
 def fetch_upstream(path: str) -> tuple[bytes, str]:
@@ -179,6 +374,46 @@ def detect_image_mime_type(image_bytes: bytes) -> str:
     ):
         return "image/webp"
     return ""
+
+
+def validate_image_bytes(image_bytes: bytes, declared_mime_type: str) -> None:
+    """Fully decode a bounded image and confirm its real format and dimensions."""
+
+    format_mime_types = {
+        "PNG": "image/png",
+        "JPEG": "image/jpeg",
+        "WEBP": "image/webp",
+    }
+    try:
+        with Image.open(BytesIO(image_bytes)) as image:
+            detected_mime_type = format_mime_types.get(
+                str(image.format or "").upper(),
+                "",
+            )
+            width, height = image.size
+            if (
+                not detected_mime_type
+                or detected_mime_type != declared_mime_type
+                or width <= 0
+                or height <= 0
+                or width * height > MAX_IMAGE_PIXELS
+            ):
+                raise ValueError("图片格式、尺寸或像素数量无效")
+            image.verify()
+
+        # ``verify`` checks the container. Reopening and loading forces pixel data
+        # through the decoder so a valid signature with a truncated body is rejected.
+        with Image.open(BytesIO(image_bytes)) as image:
+            image.load()
+    except ValueError:
+        raise
+    except (
+        Image.DecompressionBombError,
+        UnidentifiedImageError,
+        OSError,
+        SyntaxError,
+    ) as error:
+        raise ValueError("图片文件损坏或无法完整解码") from error
 
 
 def map_character(item: dict) -> dict:
@@ -465,13 +700,14 @@ def process_vision_analyze_request(
         image_bytes = base64.b64decode(encoded, validate=True)
     except (ValueError, binascii.Error) as error:
         raise ValueError("图片数据不是有效的 Base64") from error
-    if not image_bytes or len(image_bytes) > 20 * 1024 * 1024:
+    if not image_bytes or len(image_bytes) > MAX_IMAGE_BYTES:
         raise ValueError("图片为空或超过 20 MB")
     detected_mime_type = detect_image_mime_type(image_bytes)
     if not detected_mime_type:
         raise ValueError("图片内容不是受支持的 PNG、JPG 或 WEBP 文件")
     if detected_mime_type != mime_type:
         raise ValueError("图片内容与声明的格式不一致，请重新选择文件")
+    validate_image_bytes(image_bytes, mime_type)
     saved_settings = (
         settings_payload if settings_payload is not None else get_settings()
     )
@@ -481,13 +717,83 @@ def process_vision_analyze_request(
 
 class PromptStudioHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
+        self._response_started = False
+        self._validated_content_length: int | None = None
         super().__init__(*args, directory=str(ROOT), **kwargs)
+
+    def setup(self) -> None:
+        self._headers_complete = threading.Event()
+        self._header_deadline_exceeded = False
+        super().setup()
+        self.connection.settimeout(CONNECTION_TIMEOUT_SECONDS)
+        self._header_timer = threading.Timer(
+            CONNECTION_TIMEOUT_SECONDS,
+            self._expire_header_deadline,
+        )
+        self._header_timer.daemon = True
+        self._header_timer.start()
+
+    def _expire_header_deadline(self) -> None:
+        if self._headers_complete.is_set():
+            return
+        self._header_deadline_exceeded = True
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def parse_request(self) -> bool:
+        try:
+            parsed = super().parse_request()
+        except OSError:
+            if not self._header_deadline_exceeded:
+                raise
+            parsed = False
+        finally:
+            self._headers_complete.set()
+            self._header_timer.cancel()
+        if not self._header_deadline_exceeded:
+            return parsed
+        self.close_connection = True
+        return False
+
+    def finish(self) -> None:
+        if hasattr(self, "_headers_complete"):
+            self._headers_complete.set()
+        if hasattr(self, "_header_timer"):
+            self._header_timer.cancel()
+        super().finish()
 
     def log_message(self, format: str, *args) -> None:
         print(f"[{self.log_date_time_string()}] {format % args}")
 
+    def send_response(self, code: int, message: str | None = None) -> None:
+        self._response_started = True
+        super().send_response(code, message)
+
+    def end_headers(self) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header(
+            "Content-Security-Policy",
+            "frame-ancestors 'none'; object-src 'none'; base-uri 'none'",
+        )
+        super().end_headers()
+
     def send_json(self, payload: dict, status: int = 200) -> None:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        try:
+            body = json.dumps(
+                payload,
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError):
+            status = 500
+            body = json.dumps(
+                {"error": "服务器返回了无法序列化的数据"},
+                ensure_ascii=False,
+            ).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -495,21 +801,157 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def read_json(self) -> dict:
-        raw_length = self.headers.get("Content-Length") or "0"
+    def _validate_host_and_target(self) -> None:
+        host_headers = self.headers.get_all("Host", [])
+        if len(host_headers) != 1 or not is_allowed_host(host_headers[0]):
+            raise RequestValidationError("请求 Host 不在本地允许列表中", status=421)
+        if not self.path.startswith("/") or self.path.startswith("//"):
+            raise RequestValidationError("请求目标格式无效")
+
+    def _validate_content_length(self, *, required: bool, max_bytes: int) -> int:
+        transfer_encoding = self.headers.get_all("Transfer-Encoding", [])
+        if transfer_encoding:
+            raise RequestValidationError("不支持 Transfer-Encoding 请求体")
+        raw_lengths = self.headers.get_all("Content-Length", [])
+        if len(raw_lengths) > 1:
+            raise RequestValidationError("Content-Length 必须且只能出现一次")
+        if not raw_lengths:
+            if required:
+                raise RequestValidationError("缺少 Content-Length", status=411)
+            return 0
+        raw_length = raw_lengths[0].strip()
+        if not raw_length.isascii() or not raw_length.isdigit():
+            raise RequestValidationError("Content-Length 必须是非负十进制整数")
+        length = int(raw_length, 10)
+        if length > max_bytes:
+            raise RequestValidationError("请求内容超过大小限制", status=413)
+        return length
+
+    def _validate_mutating_request(self) -> None:
+        fetch_site_headers = self.headers.get_all("Sec-Fetch-Site", [])
+        if len(fetch_site_headers) > 1:
+            raise RequestValidationError("Sec-Fetch-Site 请求头无效", status=403)
+        if fetch_site_headers and fetch_site_headers[0].strip().lower() not in {
+            "none",
+            "same-origin",
+        }:
+            raise RequestValidationError("拒绝跨站写操作", status=403)
+
+        origin_headers = self.headers.get_all("Origin", [])
+        host_header = self.headers.get("Host", "")
+        if len(origin_headers) > 1 or (
+            origin_headers and not is_same_origin(origin_headers[0], host_header)
+        ):
+            raise RequestValidationError("写操作必须来自当前本地页面", status=403)
+
+        content_type_headers = self.headers.get_all("Content-Type", [])
+        if len(content_type_headers) != 1:
+            raise RequestValidationError(
+                "写操作必须使用 application/json",
+                status=415,
+            )
+        media_type, *parameters = [
+            item.strip().lower() for item in content_type_headers[0].split(";")
+        ]
+        if media_type != "application/json" or any(
+            parameter.startswith("charset=")
+            and parameter.split("=", 1)[1].strip('"') not in {"utf-8", "utf8"}
+            for parameter in parameters
+        ):
+            raise RequestValidationError(
+                "写操作必须使用 UTF-8 application/json",
+                status=415,
+            )
+
+        path = urlparse(self.path).path
+        max_bytes = (
+            MAX_VISION_JSON_BODY_BYTES
+            if path == "/api/vision/analyze"
+            else MAX_JSON_BODY_BYTES
+        )
+        self._validated_content_length = self._validate_content_length(
+            required=self.command in {"POST", "PUT"},
+            max_bytes=max_bytes,
+        )
+        if self.command == "DELETE" and self._validated_content_length:
+            raise RequestValidationError("DELETE 请求不接受请求体")
+
+    def _dispatch_request(self, action, *, mutating: bool = False) -> None:
         try:
-            length = int(raw_length)
+            self._validate_host_and_target()
+            if mutating:
+                self._validate_mutating_request()
+            action()
+        except RequestValidationError as error:
+            self._send_json_if_possible({"error": str(error)}, error.status)
+        except json.JSONDecodeError:
+            self._send_json_if_possible({"error": "请求 JSON 无法解析"}, 400)
         except ValueError as error:
-            raise ValueError("请求长度无效") from error
-        if length <= 0:
-            return {}
-        if length > MAX_JSON_BODY_BYTES:
-            raise ValueError("请求内容超过 30 MB 限制")
+            self._send_json_if_possible({"error": str(error)}, 400)
+        except sqlite3.IntegrityError:
+            self._send_json_if_possible({"error": "数据冲突，请刷新后重试"}, 409)
+        except Exception as error:  # Keep request threads from leaking tracebacks.
+            self.log_error("Unhandled request error: %s", type(error).__name__)
+            self._send_json_if_possible({"error": "服务器内部错误"}, 500)
+
+    def _send_json_if_possible(self, payload: dict, status: int) -> None:
+        if self._response_started:
+            self.close_connection = True
+            return
         try:
-            body = self.rfile.read(length).decode("utf-8")
+            self.send_json(payload, status=status)
+        except OSError:
+            self.close_connection = True
+
+    def read_json(self) -> dict:
+        length = self._validated_content_length
+        if length is None:
+            length = self._validate_content_length(
+                required=True,
+                max_bytes=MAX_JSON_BODY_BYTES,
+            )
+        if length == 0:
+            return {}
+        previous_timeout = self.connection.gettimeout()
+        timeout_seconds = (
+            VISION_REQUEST_BODY_TIMEOUT_SECONDS
+            if urlparse(self.path).path == "/api/vision/analyze"
+            else REQUEST_BODY_TIMEOUT_SECONDS
+        )
+        deadline = time.monotonic() + timeout_seconds
+        chunks: list[bytes] = []
+        remaining = length
+        try:
+            while remaining:
+                time_left = deadline - time.monotonic()
+                if time_left <= 0:
+                    raise RequestValidationError("请求体读取超过总时限")
+                self.connection.settimeout(time_left)
+                chunk = self.rfile.read1(remaining)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+        except (TimeoutError, OSError) as error:
+            raise RequestValidationError("请求体读取超时或不完整") from error
+        finally:
+            self.connection.settimeout(previous_timeout)
+        raw_body = b"".join(chunks)
+        if len(raw_body) != length:
+            raise RequestValidationError("请求体长度与 Content-Length 不一致")
+        try:
+            body = raw_body.decode("utf-8")
         except UnicodeDecodeError as error:
             raise ValueError("请求 JSON 必须使用 UTF-8 编码") from error
-        payload = json.loads(body) if body.strip() else {}
+        try:
+            payload = json.loads(
+                body,
+                parse_constant=reject_json_constant,
+                parse_float=strict_json_float,
+                object_pairs_hook=strict_json_object_pairs,
+            )
+        except RecursionError as error:
+            raise ValueError("请求 JSON 嵌套层级过深") from error
         if not isinstance(payload, dict):
             raise ValueError("请求 JSON 顶层必须是对象")
         return payload
@@ -532,10 +974,15 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         )
 
     def do_GET(self) -> None:
+        self._dispatch_request(self._route_get)
+
+    def _route_get(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path.startswith("/api/prompt-templates"):
+        if parsed.path == "/api/prompt-templates" or parsed.path.startswith(
+            "/api/prompt-templates/"
+        ):
             return self.handle_prompt_templates_get(parsed.path)
-        if parsed.path.startswith("/api/projects"):
+        if parsed.path == "/api/projects" or parsed.path.startswith("/api/projects/"):
             return self.handle_projects_get(parsed.path)
         if parsed.path == "/api/favorites":
             return self.handle_favorites_get(parsed.query)
@@ -555,7 +1002,19 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             return self.send_error(404)
         return super().do_GET()
 
+    def do_HEAD(self) -> None:
+        self._dispatch_request(self._route_head)
+
+    def _route_head(self) -> None:
+        parsed = urlparse(self.path)
+        if not is_public_static_path(parsed.path):
+            return self.send_error(404)
+        return super().do_HEAD()
+
     def do_POST(self) -> None:
+        self._dispatch_request(self._route_post, mutating=True)
+
+    def _route_post(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/api/text/expand":
             return self.handle_text_expand()
@@ -579,18 +1038,32 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             return self.handle_local_llm_stop()
         if parsed.path == "/api/projects":
             return self.handle_project_create()
-        if parsed.path.startswith("/api/projects/") and parsed.path.endswith(
-            "/versions"
+        version_parts = parsed.path.split("/")
+        if (
+            len(version_parts) == 5
+            and version_parts[1:3] == ["api", "projects"]
+            and version_parts[3]
+            and version_parts[4] == "versions"
+            and not parsed.params
         ):
-            project_id = unquote(parsed.path.split("/")[-2])
+            project_id = unquote(version_parts[3])
             return self.handle_version_create(project_id)
         if parsed.path == "/api/favorites":
             return self.handle_favorite_upsert()
         return self.send_json({"error": "未找到 API"}, status=404)
 
     def do_PUT(self) -> None:
+        self._dispatch_request(self._route_put, mutating=True)
+
+    def _route_put(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path.startswith("/api/prompt-templates/"):
+        template_parts = parsed.path.split("/")
+        if (
+            len(template_parts) == 4
+            and template_parts[1:3] == ["api", "prompt-templates"]
+            and template_parts[3]
+            and not parsed.params
+        ):
             template_id = unquote(parsed.path.rsplit("/", 1)[-1])
             return self.handle_prompt_template_put(template_id)
         if parsed.path == "/api/settings":
@@ -598,9 +1071,18 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         return self.send_json({"error": "未找到 API"}, status=404)
 
     def do_DELETE(self) -> None:
+        self._dispatch_request(self._route_delete, mutating=True)
+
+    def _route_delete(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path.startswith("/api/favorites/"):
-            favorite_id = unquote(parsed.path.rsplit("/", 1)[-1])
+        favorite_parts = parsed.path.split("/")
+        if (
+            len(favorite_parts) == 4
+            and favorite_parts[1:3] == ["api", "favorites"]
+            and favorite_parts[3]
+            and not parsed.params
+        ):
+            favorite_id = unquote(favorite_parts[3])
             return self.handle_favorite_delete(favorite_id)
         return self.send_json({"error": "未找到 API"}, status=404)
 
@@ -609,9 +1091,10 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         if path == "/api/projects":
             return self.send_json({"items": list_projects()})
         prefix = "/api/projects/"
-        project_id = unquote(path[len(prefix) :])
-        if not project_id or "/" in project_id:
+        raw_project_id = path[len(prefix) :]
+        if not raw_project_id or "/" in raw_project_id or "\\" in raw_project_id:
             return self.send_json({"error": "作品 ID 无效"}, status=400)
+        project_id = unquote(raw_project_id)
         project = get_project(project_id)
         if not project:
             return self.send_json({"error": "作品不存在"}, status=404)
@@ -791,7 +1274,12 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
 
     def handle_local_llm_start(self) -> None:
         try:
+            payload = self.read_json()
+            if payload:
+                raise ValueError("本地 LLM 启动接口不接受额外字段")
             item = start_local_llm()
+        except ValueError as error:
+            return self.send_json({"error": str(error)}, status=400)
         except LocalLlmError as error:
             return self.send_json(
                 {"error": error.message, "code": error.code},
@@ -801,7 +1289,12 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
 
     def handle_local_llm_stop(self) -> None:
         try:
+            payload = self.read_json()
+            if payload:
+                raise ValueError("本地 LLM 停止接口不接受额外字段")
             item = stop_local_llm()
+        except ValueError as error:
+            return self.send_json({"error": str(error)}, status=400)
         except LocalLlmError as error:
             return self.send_json(
                 {"error": error.message, "code": error.code},
@@ -848,7 +1341,7 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
 
     def handle_settings_get(self) -> None:
         init_db()
-        self.send_json({"settings": get_settings()})
+        self.send_json({"settings": redact_settings(get_settings())})
 
     def handle_settings_put(self) -> None:
         init_db()
@@ -858,7 +1351,11 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             return self.send_bad_json()
         except ValueError as error:
             return self.send_json({"error": str(error)}, status=400)
-        self.send_json({"settings": put_settings(payload)})
+        settings_update = validate_settings_update(
+            preserve_saved_setting_keys(payload)
+        )
+        saved_settings = put_settings(settings_update)
+        self.send_json({"settings": redact_settings(saved_settings)})
 
     def handle_status(self) -> None:
         try:
@@ -900,7 +1397,13 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         if len(parts) != 6 or parts[4] not in ALLOWED_MODES:
             return self.send_error(404)
         mode, slug = parts[4], unquote(parts[5])
-        if not slug or "/" in slug or "\\" in slug or slug in {".", ".."}:
+        slug_parts = slug.replace("\\", "/").split("/")
+        if (
+            not slug
+            or len(slug) > 1_024
+            or any(ord(character) < 32 or ord(character) == 127 for character in slug)
+            or any(item in {".", ".."} for item in slug_parts)
+        ):
             return self.send_error(400)
         try:
             body, content_type = fetch_upstream(f"/thumb/{mode}/{quote(slug, safe='')}")
@@ -915,6 +1418,16 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    if HOST.lower().strip("[]") not in BASE_ALLOWED_HOSTS:
+        if not ALLOW_NETWORK_BIND:
+            raise SystemExit(
+                "拒绝非回环监听；如确需局域网访问，请显式设置 "
+                "PROMPT_STUDIO_ALLOW_NETWORK=1 和 PROMPT_STUDIO_ALLOWED_HOSTS。"
+            )
+        if not EXPLICIT_ALLOWED_HOSTS:
+            raise SystemExit(
+                "非回环监听必须通过 PROMPT_STUDIO_ALLOWED_HOSTS 配置允许的 Host。"
+            )
     db_path = init_db()
     server = ThreadingHTTPServer((HOST, PORT), PromptStudioHandler)
     print(f"Prompt Studio: http://{HOST}:{PORT}")

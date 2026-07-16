@@ -8,7 +8,19 @@ const {
   reduceState,
   getCombinedPrompt,
   isSupportedImageFile,
+  compileBlocks,
+  compileBlockFragment,
+  composeArtistMix,
+  normalizeBlockWeight,
+  normalizeResourceWeights,
+  canonicalizePromptItem,
+  normalizeModelStatus,
+  statusLabel,
+  projectSettingsMetadata,
+  settingsWritePayload,
+  enqueueByKey,
 } = require("../app.js");
+const unicode15 = require("../unicode15-data.js");
 
 function createGeneratedState() {
   const blockIds = [
@@ -465,6 +477,11 @@ test("static prototype exposes every major review surface", () => {
   ]) {
     assert.match(html, new RegExp(`id=["']${id}["']`));
   }
+  const unicodeDataIndex = html.indexOf("unicode15-data.js?v=20260716-unicode15");
+  const appScriptIndex = html.indexOf("app.js?v=20260716-github-sync-v1");
+  assert.notEqual(unicodeDataIndex, -1);
+  assert.notEqual(appScriptIndex, -1);
+  assert.ok(unicodeDataIndex < appScriptIndex);
 });
 
 test("prototype targets a 1920x1080 desktop workspace without mobile navigation", () => {
@@ -1046,6 +1063,141 @@ test("compilation deduplicates repeated items and applies block weight syntax", 
   assert.match(state.output.positiveEn, /\(light bloom:1\.2\)/);
 });
 
+test("block weights are finite and constrained at every frontend ingress", () => {
+  assert.equal(normalizeBlockWeight(-250), 0);
+  assert.equal(normalizeBlockWeight(1_000_000), 120);
+  assert.equal(normalizeBlockWeight("45"), 45);
+  assert.equal(normalizeBlockWeight(Number.NaN), 100);
+  assert.equal(normalizeBlockWeight(Number.POSITIVE_INFINITY), 100);
+  assert.equal(normalizeBlockWeight("Infinity"), 100);
+  assert.equal(normalizeBlockWeight(null), 100);
+
+  const databaseRecipe = normalizeResourceWeights({
+    id: "database-recipe",
+    type: "snippets",
+    weight: -1,
+    blocks: [
+      { id: "scene", weight: -250 },
+      { id: "effects", weight: 1_000_000 },
+      { id: "artist", weight: Number.NaN },
+      { id: "pose", weight: "Infinity" },
+    ],
+  });
+  assert.equal(databaseRecipe.weight, 0);
+  assert.deepEqual(
+    databaseRecipe.blocks.map((block) => block.weight),
+    [0, 120, 100, 100]
+  );
+
+  let state = createGeneratedState();
+  state = reduceState(state, {
+    type: "SET_BLOCK_WEIGHT",
+    id: "effects",
+    value: Number.NaN,
+  });
+  assert.equal(state.blocks.find((block) => block.id === "effects").weight, 100);
+  state = reduceState(state, {
+    type: "SET_BLOCK_WEIGHT",
+    id: "effects",
+    value: 1_000_000,
+  });
+  assert.equal(state.blocks.find((block) => block.id === "effects").weight, 120);
+});
+
+test("hostile recipe weights are normalized before storage and application", () => {
+  let state = createGeneratedState();
+  const recipe = {
+    id: "hostile-weight-recipe",
+    type: "snippets",
+    name: "异常权重配方",
+    blocks: [
+      { id: "scene", en: "scene", zh: "场景", weight: -250 },
+      { id: "effects", en: "effects", zh: "效果", weight: 1_000_000 },
+      { id: "artist", en: "artist", zh: "画师", weight: Number.NaN },
+      { id: "pose", en: "pose", zh: "姿势", weight: "Infinity" },
+    ],
+  };
+
+  state = reduceState(state, { type: "ADD_RECIPE", recipe });
+  const stored = state.resources.snippets.find(
+    (item) => item.id === "hostile-weight-recipe"
+  );
+  assert.deepEqual(
+    stored.blocks.map((block) => block.weight),
+    [0, 120, 100, 100]
+  );
+
+  state = reduceState(state, {
+    type: "APPLY_RESOURCE",
+    id: "hostile-weight-recipe",
+  });
+  assert.equal(state.blocks.find((block) => block.id === "scene").weight, 0);
+  assert.equal(state.blocks.find((block) => block.id === "effects").weight, 120);
+  assert.equal(state.blocks.find((block) => block.id === "artist").weight, 100);
+  assert.equal(state.blocks.find((block) => block.id === "pose").weight, 100);
+});
+
+test("compilation cannot emit negative or oversized block weight factors", () => {
+  const output = compileBlocks([
+    { id: "scene", en: "hidden scene", zh: "隐藏场景", weight: -5 },
+    { id: "effects", en: "light bloom", zh: "光晕", weight: 1_000_000 },
+    { id: "quality", en: "masterpiece", zh: "杰作", weight: Number.NaN },
+  ]);
+
+  assert.doesNotMatch(output.positiveEn, /hidden scene/);
+  assert.match(output.positiveEn, /\(light bloom:1\.2\)/);
+  assert.match(output.positiveEn, /masterpiece/);
+  assert.doesNotMatch(output.positiveEn, /:-|:10000/);
+  assert.equal(
+    compileBlockFragment({ id: "effects", en: "sparkles", weight: -1 }),
+    ""
+  );
+});
+
+test("artist mixer keeps its independent 10 to 150 percent range", () => {
+  const mixed = composeArtistMix([
+    { id: "artist-high", tag: "@artist_high", weight: 150 },
+    { id: "artist-low", tag: "@artist_low", weight: 10 },
+  ]);
+
+  assert.equal(mixed, "(@artist_high:1.5), (@artist_low:0.1)");
+});
+
+test("Unicode prompt tags use NFKC, whitespace, and sharp-s deduplication", () => {
+  const output = compileBlocks([
+    {
+      id: "scene",
+      en: "Straße, Éclair, red  dress, \ufeffblue sky\ufeff",
+      zh: "ＣＡＴ",
+      weight: 100,
+    },
+    {
+      id: "effects",
+      en: "STRASSE, e\u0301clair, red dress, blue sky",
+      zh: "CAT",
+      weight: 100,
+    },
+  ]);
+
+  assert.equal(canonicalizePromptItem("Straße"), "strasse");
+  assert.equal(canonicalizePromptItem("Éclair"), canonicalizePromptItem("e\u0301clair"));
+  assert.equal(canonicalizePromptItem("  red\t dress "), "red dress");
+  assert.equal(canonicalizePromptItem("red\ufeffdress"), "red dress");
+  assert.equal(canonicalizePromptItem("red\u0085dress"), "red dress");
+  assert.equal(canonicalizePromptItem("red\u200bdress"), "red\u200bdress");
+  assert.equal(canonicalizePromptItem("\u001cred\u001c"), "\u001cred\u001c");
+  assert.equal(unicode15.unicodeVersion, "15.0.0");
+  assert.equal(unicode15.isAssignedCodePoint(0x41), true);
+  assert.equal(unicode15.isAssignedCodePoint(0x1c89), false);
+  assert.equal(unicode15.lowercase("AΣẞ"), "aσß");
+  assert.equal(canonicalizePromptItem("\u1c89"), "\u1c89");
+  assert.equal(canonicalizePromptItem("\ua7f1"), "\ua7f1");
+  assert.equal(canonicalizePromptItem("A\u0295Σ"), "a\u0295σ");
+  assert.equal(canonicalizePromptItem("AΣ\u0295"), "aσ\u0295");
+  assert.equal(output.positiveEn, "Straße, Éclair, red  dress, blue sky");
+  assert.equal(output.positiveZh, "ＣＡＴ");
+});
+
 test("a zero-weight block is excluded from compiled output", () => {
   let state = createGeneratedState();
   state = reduceState(state, {
@@ -1058,7 +1210,6 @@ test("a zero-weight block is excluded from compiled output", () => {
 });
 
 test("negative blocks do not expose positive prompt weight controls", () => {
-  const { compileBlockFragment } = require("../app.js");
   const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
 
   assert.equal(
@@ -1066,6 +1217,111 @@ test("negative blocks do not expose positive prompt weight controls", () => {
     ""
   );
   assert.match(app, /block\.id === "negative"\s*\?\s*""\s*:/);
+});
+
+test("unknown model statuses use a safe class and label", () => {
+  const hostileStatus = '\"><img src=x onerror="alert(1)">';
+  assert.equal(normalizeModelStatus("ready"), "ready");
+  assert.equal(statusLabel("ready"), "已就绪");
+  assert.equal(normalizeModelStatus(hostileStatus), "unknown");
+  assert.equal(statusLabel(hostileStatus), "未知状态");
+
+  let state = createInitialState();
+  state = reduceState(state, {
+    type: "APPLY_IMAGE_ANALYSIS",
+    item: {
+      analyzers: [{ id: "florence", status: hostileStatus }],
+      blocks: [],
+    },
+  });
+  assert.equal(state.analyzers.florence.status, "unknown");
+});
+
+test("project metadata excludes API keys and unrecognized settings", () => {
+  const settings = {
+    textProvider: "api",
+    localTextUrl: "http://127.0.0.1:8080/v1",
+    apiTextModel: "model-name",
+    autoCombine: true,
+    localTextKey: "local-secret",
+    apiTextKey: "api-secret",
+    futureSecret: "must-not-persist",
+  };
+
+  assert.deepEqual(projectSettingsMetadata(settings), {
+    textProvider: "api",
+    localTextUrl: "http://127.0.0.1:8080/v1",
+    apiTextModel: "model-name",
+    autoCombine: true,
+  });
+  assert.equal(settings.apiTextKey, "api-secret");
+
+  const source = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  assert.match(source, /settings: app\.projectSettingsMetadata\(state\.settings\)/);
+  assert.doesNotMatch(source, /settings: state\.settings/);
+});
+
+test("settings writes omit masked or blank keys but keep newly entered keys", () => {
+  assert.deepEqual(
+    settingsWritePayload({
+      textProvider: "api",
+      apiTextKey: "",
+      apiTextKeyConfigured: true,
+      localTextKey: "   ",
+      localTextKeyConfigured: true,
+    }),
+    { textProvider: "api" }
+  );
+  assert.deepEqual(
+    settingsWritePayload({
+      textProvider: "api",
+      apiTextKey: "replacement-key",
+      apiTextKeyConfigured: true,
+    }),
+    { textProvider: "api", apiTextKey: "replacement-key" }
+  );
+
+  const source = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  assert.match(source, /已配置；留空保持不变/);
+});
+
+test("favorite persistence keeps the server-generated deletion id", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+
+  assert.match(source, /added\.favoriteId = saved\.item\.favoriteId/);
+  assert.match(source, /removed\.favoriteId \|\| removed\.id/);
+});
+
+test("favorite mutations for the same resource are serialized", async () => {
+  const queue = new Map();
+  const events = [];
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+
+  const first = enqueueByKey(queue, "artist-1", async () => {
+    events.push("first:start");
+    await firstGate;
+    events.push("first:end");
+  });
+  const second = enqueueByKey(queue, "artist-1", async () => {
+    events.push("second:start");
+    events.push("second:end");
+  });
+
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(events, ["first:start"]);
+  releaseFirst();
+  await Promise.all([first, second]);
+  assert.deepEqual(events, [
+    "first:start",
+    "first:end",
+    "second:start",
+    "second:end",
+  ]);
+  assert.equal(queue.size, 0);
 });
 
 test("a block variant can be compared then kept or reverted", () => {

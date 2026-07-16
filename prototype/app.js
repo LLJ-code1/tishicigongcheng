@@ -2,6 +2,16 @@
   const data =
     root.PROMPT_STUDIO_DATA ||
     (typeof require !== "undefined" ? require("./data.js") : {});
+  const unicode15 =
+    root.PROMPT_STUDIO_UNICODE15 ||
+    (typeof require !== "undefined" ? require("./unicode15-data.js") : null);
+  if (
+    !unicode15 ||
+    typeof unicode15.isAssignedCodePoint !== "function" ||
+    typeof unicode15.lowercase !== "function"
+  ) {
+    throw new Error("Unicode 15 canonicalization data is unavailable");
+  }
   const RANDOM_VARIANT_BLOCKS = new Set([
     "subject",
     "appearance",
@@ -11,9 +21,153 @@
     "lighting",
     "effects",
   ]);
+  const DEFAULT_BLOCK_WEIGHT = 100;
+  const MIN_BLOCK_WEIGHT = 0;
+  const MAX_BLOCK_WEIGHT = 120;
+  const PROMPT_WHITESPACE_PATTERN =
+    /[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+/g;
+  const PROMPT_EDGE_WHITESPACE_PATTERN =
+    /^[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+|[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+$/g;
+  const MODEL_STATUS_LABELS = Object.freeze({
+    idle: "未加载",
+    waiting: "等待中",
+    running: "运行中",
+    ready: "已就绪",
+    releasing: "释放中",
+    error: "错误",
+    unavailable: "未安装",
+    unknown: "未知状态",
+  });
+  const PROJECT_SETTING_KEYS = Object.freeze([
+    "textProvider",
+    "localTextUrl",
+    "localTextModel",
+    "apiTextUrl",
+    "apiTextModel",
+    "expansionLevel",
+    "visionProvider",
+    "residency",
+    "autoCombine",
+  ]);
 
   function clone(value) {
     return JSON.parse(JSON.stringify(value));
+  }
+
+  function finiteWeight(value) {
+    if (typeof value === "number") return value;
+    if (typeof value === "string" && value.trim()) return Number(value);
+    return Number.NaN;
+  }
+
+  function normalizeBlockWeight(value, fallback = DEFAULT_BLOCK_WEIGHT) {
+    const candidate = finiteWeight(value);
+    const fallbackValue = finiteWeight(fallback);
+    const weight = Number.isFinite(candidate)
+      ? candidate
+      : Number.isFinite(fallbackValue)
+        ? fallbackValue
+        : DEFAULT_BLOCK_WEIGHT;
+    return Math.min(MAX_BLOCK_WEIGHT, Math.max(MIN_BLOCK_WEIGHT, weight));
+  }
+
+  function normalizeBlocks(blocks) {
+    if (!Array.isArray(blocks)) return [];
+    return blocks
+      .filter((block) => block && typeof block === "object" && !Array.isArray(block))
+      .map((block) => ({
+        ...clone(block),
+        weight: normalizeBlockWeight(block.weight),
+      }));
+  }
+
+  function normalizeResourceWeights(resource) {
+    if (!resource || typeof resource !== "object" || Array.isArray(resource)) {
+      return {};
+    }
+    const normalized = clone(resource);
+    if (Array.isArray(resource.blocks)) {
+      normalized.blocks = normalizeBlocks(resource.blocks);
+    }
+    if (Object.prototype.hasOwnProperty.call(resource, "weight")) {
+      normalized.weight = normalizeBlockWeight(resource.weight);
+    }
+    return normalized;
+  }
+
+  function normalizeUnicode15AssignedRuns(value) {
+    const output = [];
+    let assignedRun = "";
+    const flush = () => {
+      if (!assignedRun) return;
+      output.push(
+        unicode15
+          .lowercase(assignedRun.normalize("NFKC"))
+          .replace(/\u00df/g, "ss")
+      );
+      assignedRun = "";
+    };
+    for (const character of String(value ?? "")) {
+      if (unicode15.isAssignedCodePoint(character.codePointAt(0))) {
+        assignedRun += character;
+      } else {
+        flush();
+        output.push(character);
+      }
+    }
+    flush();
+    return output.join("");
+  }
+
+  // Keep the backend rule in sync: normalize only Unicode-15 assigned runs,
+  // apply the generated Unicode-15 lowercase table, collapse White_Space plus
+  // copied BOMs, then fold sharp-s to "ss" inside normalized runs.
+  function canonicalizePromptItem(value) {
+    return normalizeUnicode15AssignedRuns(value)
+      .replace(PROMPT_WHITESPACE_PATTERN, " ")
+      .replace(/^ +| +$/g, "");
+  }
+
+  function normalizeModelStatus(status) {
+    const value = String(status || "");
+    return Object.prototype.hasOwnProperty.call(MODEL_STATUS_LABELS, value)
+      ? value
+      : "unknown";
+  }
+
+  function statusLabel(status) {
+    return MODEL_STATUS_LABELS[normalizeModelStatus(status)];
+  }
+
+  function projectSettingsMetadata(settings) {
+    const source = settings && typeof settings === "object" ? settings : {};
+    return Object.fromEntries(
+      PROJECT_SETTING_KEYS.filter((key) =>
+        Object.prototype.hasOwnProperty.call(source, key) &&
+        source[key] !== undefined
+      ).map((key) => [key, clone(source[key])])
+    );
+  }
+
+  function settingsWritePayload(settings) {
+    const source = settings && typeof settings === "object" ? settings : {};
+    const payload = clone(source);
+    for (const key of ["apiTextKey", "localTextKey"]) {
+      if (typeof payload[key] !== "string" || !payload[key].trim()) {
+        delete payload[key];
+      }
+      delete payload[`${key}Configured`];
+    }
+    return payload;
+  }
+
+  function enqueueByKey(queue, key, task) {
+    const previous = queue.get(key) || Promise.resolve();
+    const current = previous.catch(() => undefined).then(task);
+    queue.set(key, current);
+    return current.finally(() => {
+      if (queue.get(key) === current) queue.delete(key);
+    });
   }
 
   function isSupportedImageFile(file) {
@@ -137,19 +291,30 @@
   function splitPromptItems(value) {
     return String(value || "")
       .split(/[,，;；\n]+/)
-      .map((item) => item.trim())
+      .map((item) => item.replace(PROMPT_EDGE_WHITESPACE_PATTERN, ""))
       .filter(Boolean);
   }
 
   function formatBlockWeight(weight) {
-    const value = Number(weight);
-    if (!Number.isFinite(value) || value === 100) return "";
+    const value = normalizeBlockWeight(weight);
+    if (value === DEFAULT_BLOCK_WEIGHT) return "";
+    return (value / 100).toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+  }
+
+  function formatArtistWeight(weight) {
+    const candidate = finiteWeight(weight);
+    const value = Number.isFinite(candidate)
+      ? Math.min(150, Math.max(10, candidate))
+      : DEFAULT_BLOCK_WEIGHT;
+    if (value === DEFAULT_BLOCK_WEIGHT) return "";
     return (value / 100).toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
   }
 
   function compileBlockFragment(block) {
     if (block.id === "negative") return "";
-    const factor = formatBlockWeight(block.weight);
+    const weight = normalizeBlockWeight(block.weight);
+    if (weight === 0) return "";
+    const factor = formatBlockWeight(weight);
     return splitPromptItems(block.en)
       .map((item) => (factor ? `(${item}:${factor})` : item))
       .join(", ");
@@ -163,19 +328,17 @@
     const seenZh = new Set();
     const zhItems = [];
     for (const block of positive) {
-      const weight = Number.isFinite(Number(block.weight))
-        ? Number(block.weight)
-        : 100;
+      const weight = normalizeBlockWeight(block.weight);
       if (weight === 0) continue;
       const factor = formatBlockWeight(weight);
       for (const item of splitPromptItems(block.en)) {
-        const key = item.toLowerCase();
+        const key = canonicalizePromptItem(item);
         if (seenEn.has(key)) continue;
         seenEn.add(key);
         enItems.push(factor ? `(${item}:${factor})` : item);
       }
       for (const item of splitPromptItems(block.zh)) {
-        const key = item.toLowerCase();
+        const key = canonicalizePromptItem(item);
         if (seenZh.has(key)) continue;
         seenZh.add(key);
         zhItems.push(item);
@@ -194,7 +357,7 @@
   }
 
   function suggestTags(dictionary, token, limit = 8) {
-    const query = String(token || "").trim().toLowerCase();
+    const query = canonicalizePromptItem(String(token || "").trim());
     if (query.length < 2) return [];
     const source = Array.isArray(dictionary) ? dictionary : [];
     const seen = new Set();
@@ -202,7 +365,7 @@
     const contains = [];
     for (const raw of source) {
       const tag = String(raw || "").trim();
-      const key = tag.toLowerCase();
+      const key = canonicalizePromptItem(tag);
       if (!tag || seen.has(key) || key === query) continue;
       seen.add(key);
       if (key.startsWith(query)) starts.push(tag);
@@ -216,7 +379,7 @@
       .map((entry) => {
         const tag = String(entry.tag || "").trim();
         if (!tag) return "";
-        const factor = formatBlockWeight(entry.weight);
+        const factor = formatArtistWeight(entry.weight);
         return factor ? `(${tag}:${factor})` : tag;
       })
       .filter(Boolean)
@@ -234,9 +397,10 @@
   }
 
   function initializeVersion(next, output, blocks) {
+    const normalizedBlocks = normalizeBlocks(blocks);
     next.output = clone(output);
-    next.blocks = clone(blocks);
-    next.appliedBlocks = clone(blocks);
+    next.blocks = clone(normalizedBlocks);
+    next.appliedBlocks = clone(normalizedBlocks);
     next.dirtyBlockIds = [];
     next.selectedVariantBlockIds = [];
     next.batchRegenerating = false;
@@ -245,7 +409,7 @@
       {
         version: 1,
         output: clone(output),
-        blocks: clone(blocks),
+        blocks: clone(normalizedBlocks),
       },
     ];
   }
@@ -506,6 +670,8 @@
 
   function reduceState(state, action) {
     const next = clone(state);
+    next.blocks = normalizeBlocks(next.blocks);
+    next.appliedBlocks = normalizeBlocks(next.appliedBlocks);
 
     switch (action.type) {
       case "NAVIGATE":
@@ -803,7 +969,7 @@
             : "本次任务使用外部 API";
         return next;
       case "CREATE_RESOURCE": {
-        const resource = clone(action.resource);
+        const resource = normalizeResourceWeights(action.resource);
         const type = resource.type || "snippets";
         if (!next.resources[type]) next.resources[type] = [];
         next.resources[type].push(resource);
@@ -816,7 +982,7 @@
         if (!recipe || !Array.isArray(recipe.blocks) || !recipe.blocks.length) {
           return next;
         }
-        next.resources.snippets.push(clone(recipe));
+        next.resources.snippets.push(normalizeResourceWeights(recipe));
         next.toast = `已保存配方「${recipe.name}」`;
         return next;
       }
@@ -836,10 +1002,11 @@
         return next;
       }
       case "APPLY_RESOURCE": {
-        const resource = findResource(next.resources, action.id);
-        if (!resource) return next;
+        const foundResource = findResource(next.resources, action.id);
+        if (!foundResource) return next;
+        const resource = normalizeResourceWeights(foundResource);
         if (!next.blocks.length) {
-          next.blocks = clone(data.promptBlocks || []);
+          next.blocks = normalizeBlocks(data.promptBlocks || []);
           next.appliedBlocks = clone(next.blocks);
         }
         const resourceBlocks = resource.blocks || [
@@ -857,8 +1024,7 @@
           block.zh =
             resourceBlock.zh || `待本地 LLM 翻译：${resourceBlock.en}`;
           if (resourceBlock.weight !== undefined) {
-            const weight = Number(resourceBlock.weight);
-            if (Number.isFinite(weight)) block.weight = weight;
+            block.weight = normalizeBlockWeight(resourceBlock.weight, block.weight);
           }
           block.source = resource.source || block.source;
           markDirty(next, block.id);
@@ -916,7 +1082,9 @@
         const item = action.item || {};
         for (const analyzer of item.analyzers || []) {
           if (next.analyzers[analyzer.id]) {
-            next.analyzers[analyzer.id].status = analyzer.status || "ready";
+            next.analyzers[analyzer.id].status = normalizeModelStatus(
+              analyzer.status || "ready"
+            );
             next.analyzers[analyzer.id].raw = analyzer.raw || "";
             next.analyzers[analyzer.id].error = analyzer.error || "";
           }
@@ -1006,7 +1174,9 @@
         return next;
       case "SET_BLOCK_WEIGHT": {
         const block = next.blocks.find((item) => item.id === action.id);
-        if (block) block.weight = Number(action.value);
+        if (block) {
+          block.weight = normalizeBlockWeight(action.value, block.weight);
+        }
         if (block) {
           markDirty(next, block.id);
           refreshPreview(next);
@@ -1167,15 +1337,16 @@
           return next;
         }
         next.version = Math.max(1, next.version) + 1;
-        next.blocks = clone(snapshot.blocks);
-        next.appliedBlocks = clone(snapshot.blocks);
+        const restoredBlocks = normalizeBlocks(snapshot.blocks);
+        next.blocks = clone(restoredBlocks);
+        next.appliedBlocks = clone(restoredBlocks);
         next.output = clone(snapshot.output);
         next.dirtyBlockIds = [];
         next.previewOutput = null;
         next.versionHistory.push({
           version: next.version,
           output: clone(snapshot.output),
-          blocks: clone(snapshot.blocks),
+          blocks: clone(restoredBlocks),
           restoredFrom: snapshot.version,
         });
         next.toast = `已从 V${snapshot.version} 恢复，生成 V${next.version}`;
@@ -1213,6 +1384,15 @@
     composeArtistMix,
     splitPromptItems,
     suggestTags,
+    normalizeBlockWeight,
+    normalizeBlocks,
+    normalizeResourceWeights,
+    canonicalizePromptItem,
+    normalizeModelStatus,
+    statusLabel,
+    projectSettingsMetadata,
+    settingsWritePayload,
+    enqueueByKey,
     randomVariantBlockIds: Array.from(RANDOM_VARIANT_BLOCKS),
   };
 
@@ -1239,6 +1419,7 @@
   let resourceRequestId = 0;
   let previewResourceId = "";
   let favoriteResources = [];
+  const favoriteMutationQueue = new Map();
   const artistMix = new Map();
   let resourceSource = {
     status: "checking",
@@ -1285,7 +1466,9 @@
       const parsed = JSON.parse(
         localStorage.getItem("promptStudio.resourceFavorites.v1") || "[]"
       );
-      return Array.isArray(parsed) ? parsed : [];
+      return Array.isArray(parsed)
+        ? parsed.map((item) => app.normalizeResourceWeights(item))
+        : [];
     } catch {
       return [];
     }
@@ -1399,7 +1582,7 @@
   async function persistFavoriteResource(resource) {
     return apiJson("/api/favorites", {
       method: "POST",
-      body: JSON.stringify(resource),
+      body: JSON.stringify(app.normalizeResourceWeights(resource)),
     });
   }
 
@@ -1423,7 +1606,9 @@
           remoteFavorites = result.items || [];
         }
       }
-      favoriteResources = remoteFavorites;
+      favoriteResources = remoteFavorites.map((item) =>
+        app.normalizeResourceWeights(item)
+      );
       writeFavoriteResources();
       render();
     } catch {
@@ -1451,6 +1636,9 @@
   }
 
   function syncFavoriteResourceGroups() {
+    favoriteResources = favoriteResources.map((item) =>
+      app.normalizeResourceWeights(item)
+    );
     state.resources["favorite-characters"] = favoriteResourcesForTab(
       "favorite-characters"
     );
@@ -1472,7 +1660,7 @@
     return favoriteResources.some((item) => item.id === id);
   }
 
-  async function toggleFavoriteResource(id) {
+  async function applyFavoriteResourceToggle(id) {
     const existing = favoriteResources.findIndex((item) => item.id === id);
     let removed = null;
     let added = null;
@@ -1493,12 +1681,24 @@
     if (isFavoriteTab()) previewResourceId = "";
     render();
     try {
-      if (added) await persistFavoriteResource(added);
+      if (added) {
+        const saved = await persistFavoriteResource(added);
+        if (saved?.item?.favoriteId) {
+          added.favoriteId = saved.item.favoriteId;
+          writeFavoriteResources();
+        }
+      }
       if (removed) await removePersistedFavoriteResource(removed.favoriteId || removed.id);
     } catch {
       state.toast = "本次收藏已暂存到浏览器，后端恢复后会再迁移";
       renderToast();
     }
+  }
+
+  function toggleFavoriteResource(id) {
+    return app.enqueueByKey(favoriteMutationQueue, id, () =>
+      applyFavoriteResourceToggle(id)
+    );
   }
 
   function findQuickResource(id) {
@@ -1534,7 +1734,7 @@
     try {
       await apiJson("/api/settings", {
         method: "PUT",
-        body: JSON.stringify(state.settings),
+        body: JSON.stringify(app.settingsWritePayload(state.settings)),
       });
     } catch {
       state.toast = "设置已在本次会话中生效，暂时未写入数据库";
@@ -2103,7 +2303,7 @@
             metadata: {
               textMode: state.textMode,
               draftInput: state.draftInput,
-              settings: state.settings,
+              settings: app.projectSettingsMetadata(state.settings),
               imageName: state.imageName,
             },
           }),
@@ -2140,15 +2340,11 @@
   }
 
   function statusLabel(status) {
-    return {
-      idle: "未加载",
-      waiting: "等待中",
-      running: "运行中",
-      ready: "已就绪",
-      releasing: "释放中",
-      error: "错误",
-      unavailable: "未安装",
-    }[status] || status;
+    return app.statusLabel(status);
+  }
+
+  function statusClass(status) {
+    return app.normalizeModelStatus(status);
   }
 
   function renderNavigation() {
@@ -2638,7 +2834,7 @@
               <strong>${escapeHtml(model.name)}</strong>
               <span>${escapeHtml(model.error || model.detail)} · ${escapeHtml(model.speed)}</span>
             </span>
-            <b class="model-status ${escapeHtml(model.status)}">${statusLabel(model.status)}</b>
+            <b class="model-status ${statusClass(model.status)}">${statusLabel(model.status)}</b>
           </label>
         `
       )
@@ -2649,7 +2845,7 @@
       .filter((model) => model.selected)
       .map(
         (model) =>
-          `<span class="queue-step ${escapeHtml(model.status)}" title="${escapeHtml(model.name)}: ${statusLabel(model.status)}"></span>`
+          `<span class="queue-step ${statusClass(model.status)}" title="${escapeHtml(model.name)}: ${statusLabel(model.status)}"></span>`
       )
       .join("");
   }
@@ -3010,6 +3206,11 @@
       if (document.activeElement !== input) {
         input.value = state.settings[key] || "";
       }
+      if (key.endsWith("Key")) {
+        input.placeholder = state.settings[`${key}Configured`]
+          ? "已配置；留空保持不变"
+          : "仅保存在本机数据库";
+      }
     });
 
     $("#drawerModelList").innerHTML = Object.values(state.analyzers)
@@ -3021,7 +3222,7 @@
               <strong>${escapeHtml(model.name)}</strong>
               <span>${escapeHtml(model.device)} · ${escapeHtml(model.detail)}</span>
             </span>
-            <b class="model-status ${escapeHtml(model.status)}">${statusLabel(model.status)}</b>
+            <b class="model-status ${statusClass(model.status)}">${statusLabel(model.status)}</b>
           </div>
         `
       )

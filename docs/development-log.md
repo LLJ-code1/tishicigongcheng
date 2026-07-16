@@ -300,7 +300,7 @@
 
 - 实时编译：块编辑与权重调整即时预览最终输出（`previewOutput`），
   "应用"语义不变仍固化版本；前端 `compileBlocks` 与后端对齐
-  （按逗号/分号拆项 + casefold 跨块去重）。
+  （当时按逗号/分号拆项 + lowercase 跨块去重；2026-07-16 已升级为统一规范化键）。
 - 权重语法落地：非 100% 编译为 `(item:factor)`，0% 剔除该块；
   展开的结构块下方显示该块编译进英文正向的实际片段。
 - 随机变体保留变体前内容，支持对比后"保留新变体/回退"；联合随机同。
@@ -325,3 +325,63 @@
 - Node 测试 44 → 60（转义回归、取消、实时预览、权重编译、
   变体对比、版本回滚、配方、矩阵、Tag 建议排序等）。
 - Python 87 个测试在干净克隆下全部通过。
+
+## 2026-07-16 GitHub 整合与本地边界收口
+
+### GitHub 差异与安全整合
+
+- 获取并逐文件比较 `origin/main` 的 3 个新提交：产品需求与实施文档、工作台升级、
+  以及九类共 471 条词库原稿。
+- 将原工作区完整保存到 `codex/pre-sync-snapshot-20260716`（`65a52a8`），再从
+  `origin/main` 创建 `codex/github-sync-20260716`，只回放确认过的本地真实增量。
+- 整合提交 `06a8dd2` 保留远端 PRD、路线图、词库和前端升级，同时带回本地服务器、
+  测试和文档加固；整个过程未使用破坏性 reset，也未推送 GitHub。
+
+### HTTP、密钥和模型副作用边界
+
+- Host 仅允许回环和显式配置值；非回环监听需要双重显式开关，防止 DNS rebinding
+  和误暴露局域网服务。
+- 写接口校验同源 `Origin`/`Sec-Fetch-Site` 与 UTF-8 JSON；GET/HEAD 共用公共静态
+  白名单，响应补齐 CSP、nosniff、frame deny 与 Referrer-Policy。
+- 严格校验唯一非负 Content-Length，拒绝 Transfer-Encoding；请求头同时设置空闲和
+  固定总时限，请求体使用固定总 deadline，拒绝短 body、慢速滴流、重复 JSON key、
+  非有限数和非对象顶层。视觉大图使用独立 30 秒正文时限，避免合法 30 MiB 请求被
+  普通 JSON 的 2 秒时限误拒。
+- LLM start/stop 必须先完整读取并验证空 JSON 对象，再执行进程副作用；异常或不完整
+  body 不会启动/停止模型。
+- 设置 GET 不再回显 API Key，只返回 `*Configured`；PUT 省略、空白或掩码值会保留
+  已有密钥。项目/版本/收藏 metadata 递归过滤 token、secret、password、private key、
+  credential 等别名。
+- 图片分析在字节和像素上限后由 Pillow 完整 verify/load；AnimaDex 缩略图兼容 URL
+  编码的斜杠 slug，同时拒绝控制字符和路径穿越段。
+
+### 数据与前端一致性
+
+- 新建项目/版本/收藏采用类型、长度、枚举和严格 UTF-8 schema；版本号在
+  `BEGIN IMMEDIATE` 事务中由服务端连续分配，错误稳定返回 400/409/500 JSON。
+- 历史项目中含空格、Unicode 或斜杠的 ID 仍可读取和追加版本；历史坏 JSON/非有限
+  block 降级为安全默认，复杂 AnimaDex 收藏 ID 使用稳定 hash 路由，删除会清理重复行。
+- 结构块权重在导入、配方、版本恢复、图片结果和数据库入口统一为 0–120；画师混合器
+  独立保留 10–150。
+- 前后端统一以
+  `Unicode 15 已分配片段 NFKC → 固定 Unicode 15 单码点 lowercase 表 → Unicode
+  White_Space/BOM 折叠 → ß→ss` 生成去重键；Unicode 15 未分配字符原样保留。
+  分配范围和 1,433 条 lowercase 映射由脚本生成给 Python 与 JS，防止 Python Unicode
+  15 与浏览器/Node Unicode 17 的版本漂移。U+FEFF、U+0085、U+200B、U+001C、
+  U+1C89、U+A7F1 与 Greek Final Sigma 上下文均有跨语言测试，首个原始文本仍保留展示。
+  未知状态降级为 `unknown`，项目 metadata 不再混入设置密钥。
+- 收藏快速添加/取消按资源 ID 串行化，保留服务端 `favoriteId`，消除竞态和错误删除。
+
+### 验证
+
+- Python `prototype/tests`：131 项，130 通过，1 项因缺少可选 NumPy 跳过。
+- Node：74/74；`scripts/tests`：4/4；`py_compile`、`pip check`、`git diff --check`
+  全部通过。
+- 最终跨运行时穷举覆盖全部 1,112,064 个 Unicode scalar 的 4 组常规场景，以及
+  286,719 个 Unicode 15 已分配 scalar 的 4 组 Greek Final Sigma 上下文场景；共
+  5,595,132 组 Python/JS 成对结果，差异为 0。
+- 所有 HTTP/数据库攻击用例使用真实本地测试服务器、临时 SQLite、假密钥与模型 stub；
+  不调用真实模型或外部 API。最终对抗矩阵记录在
+  `docs/github-sync-audit-2026-07-16.md`。
+- 主数据库保持 77,824 字节，SHA-256 为
+  `88F597EF8094775F2449F8693806E99FA00FFD72EFC3782EF5CB273C03682395`，测试前后未变。
