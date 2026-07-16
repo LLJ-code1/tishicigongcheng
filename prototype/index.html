@@ -8,7 +8,7 @@
       content="Anima Prompt Studio 本地提示词工作台交互原型"
     />
     <title>Anima Prompt Studio Prototype</title>
-    <link rel="stylesheet" href="styles.css?v=20260622-model-random-v3" />
+    <link rel="stylesheet" href="styles.css?v=20260709-workbench-v5" />
   </head>
   <body>
     <div id="app" data-target-viewport="1920x1080">
@@ -186,6 +186,12 @@
                     </p>
                     <span id="generationProgressProvider">尚未调用模型</span>
                   </div>
+                  <button
+                    class="ghost-button hidden"
+                    id="cancelGenerationBtn"
+                    type="button"
+                    data-action="cancel-generation"
+                  >取消</button>
                 </div>
               </div>
 
@@ -289,6 +295,7 @@
                   <button type="button" data-resource-page="next">下一页</button>
                 </div>
                 <div id="quickPicks"></div>
+                <div class="artist-mixer hidden" id="artistMixer"></div>
               </div>
             </section>
 
@@ -346,6 +353,12 @@
               <button class="primary-button full" id="analyzeBtn" type="button">
                 开始多模型分析
               </button>
+              <button
+                class="ghost-button full hidden"
+                id="cancelAnalysisBtn"
+                type="button"
+                data-action="cancel-analysis"
+              >取消分析</button>
 
               <div class="queue-panel">
                 <div class="mini-heading">
@@ -374,9 +387,13 @@
                 <div class="title-with-version">
                   <h2>结构化编辑</h2>
                   <span class="version-badge" id="versionBadge">尚未生成</span>
+                  <div class="version-timeline hidden" id="versionTimeline"></div>
                 </div>
               </div>
               <div class="editor-actions">
+                <button class="secondary-button" type="button" data-action="save-recipe" title="把当前十个结构块保存为可复用配方">
+                  存为配方
+                </button>
                 <button class="secondary-button" type="button" data-action="collapse-blocks">
                   收起全部
                 </button>
@@ -407,19 +424,29 @@
                 >
                   联合随机
                 </button>
+                <button
+                  class="secondary-button"
+                  id="variantMatrixBtn"
+                  type="button"
+                  data-action="variant-matrix"
+                  title="一次生成 3 组候选，对比后挑选"
+                >
+                  矩阵×3
+                </button>
               </div>
             </div>
             <div class="pending-bar hidden" id="pendingBar">
-              <span id="pendingSummary">有未应用的修改，右侧输出仍保持上一版本。</span>
+              <span id="pendingSummary">有未应用的修改，右侧输出为实时预览。</span>
               <div>
                 <button class="secondary-button" type="button" data-action="discard-changes">
                   撤销未应用
                 </button>
-                <button class="primary-button" type="button" data-action="apply-changes">
+                <button class="primary-button" type="button" data-action="apply-changes" title="Ctrl+Shift+Enter">
                   应用修改并生成新版本
                 </button>
               </div>
             </div>
+            <div class="variant-matrix hidden" id="variantMatrix"></div>
             <div class="empty-editor" id="editorEmpty">
               <span>SceneSpec</span>
               <h3>生成结果后在这里逐块调整</h3>
@@ -827,7 +854,7 @@
       <div class="toast" id="toast" role="status" aria-live="polite"></div>
     </div>
 
-    <script src="data.js?v=20260622-model-random-v3"></script>
-    <script src="app.js?v=20260622-model-random-v3"></script>
+    <script src="data.js?v=20260709-workbench-v5"></script>
+    <script src="app.js?v=20260709-workbench-v5"></script>
   </body>
 </html>

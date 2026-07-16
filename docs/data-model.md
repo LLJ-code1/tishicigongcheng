@@ -78,6 +78,11 @@
 - `characters`
 - `artists`
 
+
+补充：`type = snippets` 且携带 `blocks` 数组的收藏用于"配方"——
+把当前十个结构块整组保存；前端从"我的素材"带入时按 `blocks`
+逐块回填。未新增表或字段。
+
 ## settings
 
 设置表。以 key-value 方式保存。

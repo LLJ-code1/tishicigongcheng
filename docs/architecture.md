@@ -91,6 +91,15 @@ AnimaDex 网关：
 - `GET /api/animadex/resources`
 - `GET /api/animadex/thumb/<type>/<slug>`
 
+## 前端编译约定
+
+结构块到最终提示词的编译在前端 `app.js` 的 `compileBlocks` 完成：
+按 `,，;；` 与换行拆项、casefold 跨块去重；块权重非 100% 时英文项
+编译为 `(item:factor)`，0% 剔除整块。后端
+`compile_normalized_blocks` 仅在 LLM 原始输出规范化时执行
+（此时权重均为默认 100），两处拆项与去重规则保持一致；
+若后端未来引入权重编译，需与前端语法对齐。
+
 ## 开发约定
 
 - 前端展示和交互仍在 `prototype/app.js`。

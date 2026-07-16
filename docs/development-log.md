@@ -262,3 +262,54 @@
 - 两次结果均为不同的完整原创场景，证明不再返回静态示例。
 - HTTP 验证结果：`prototype/data/external-random-validation.json`。
 - 浏览器结果截图：`prototype/external-random-generated.png`。
+
+## 2026-07-09 仓库完整性修复与前端工作台升级
+
+### 仓库完整性
+
+- 发现 `.gitignore` 中非锚定的 `models/` 同时忽略了
+  `prototype/prompts/text/models/`，导致核心提示词模块 `anima.md`
+  从未入库，干净克隆后 87 个 Python 测试有 10 个失败。
+- 修复：`models/` 改为 `/models/`；从编译产物
+  `prompts/compiled/text_expand_anima.md` 逐字节还原 `anima.md`，
+  `test_compiled_review_file_matches_runtime_system_prompt` 通过证明还原精确。
+
+### 前端安全与健壮性
+
+- 统一 6 处 innerHTML 渲染的 HTML 转义（结构块 textarea、分析器列表、
+  队列指示、参考卡片、Raw 标签页、设置抽屉模型列表），阻断 LLM 输出
+  或服务端错误文本破坏 DOM / 注入脚本的路径。
+- `apiJson` 对非 JSON 错误响应容错，回退为可读中文提示。
+- 文本拓展、全随机、拆解、图片分析接入 AbortController，
+  进度面板与分析页提供取消按钮（前端中断等待；后端推理仍会完成）。
+- 合并 `renderBlocks` 折叠/展开两套重复模板为 `renderBlockCard`。
+
+### 编辑器能力
+
+- 实时编译：块编辑与权重调整即时预览最终输出（`previewOutput`），
+  "应用"语义不变仍固化版本；前端 `compileBlocks` 与后端对齐
+  （按逗号/分号拆项 + casefold 跨块去重）。
+- 权重语法落地：非 100% 编译为 `(item:factor)`，0% 剔除该块；
+  展开的结构块下方显示该块编译进英文正向的实际片段。
+- 随机变体保留变体前内容，支持对比后"保留新变体/回退"；联合随机同。
+- 版本时间线：版本徽标旁可点回滚（生成新版本，历史不丢）。
+- 快捷键：Ctrl+Enter 拓展、Ctrl+Shift+Enter 应用、Ctrl+S 保存、Esc 关闭弹层。
+
+### 新功能
+
+- 画师混合器：画师收藏页勾选画师并配权重（10%-150%），实时预览
+  `(tag:factor)` 组合并一键写入画师块。
+- 配方：编辑头部"存为配方"把十个结构块整组存为 `type=snippets`
+  且带 `blocks` 的收藏（复用 favorites API，无后端改动），
+  素材库带入即整组回填。
+- 变体矩阵：并行发起 3 次联合随机，候选卡片网格对比后择一应用，
+  部分失败保留其余候选。
+- Tag 联想补全：英文结构块输入 ≥2 字符弹出联想（前缀优先），
+  ↑↓/Enter/Tab/Esc 操作；词典为 `data.js` 的 `promptTagDictionary`
+  （224 项）并合并当前块内已有条目。
+
+### 测试
+
+- Node 测试 44 → 60（转义回归、取消、实时预览、权重编译、
+  变体对比、版本回滚、配方、矩阵、Tag 建议排序等）。
+- Python 87 个测试在干净克隆下全部通过。

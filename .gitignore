@@ -18,7 +18,7 @@ runtime/
 .superpowers/
 
 # Local model caches
-models/
+/models/
 
 # Imported/generated local datasets
 animadex-data/

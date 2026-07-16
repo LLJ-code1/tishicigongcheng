@@ -2243,3 +2243,274 @@ select:focus {
   transform: translateY(0);
   opacity: 1;
 }
+
+.reference-empty {
+  grid-column: 1 / -1;
+  padding: 28px 12px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.ghost-button {
+  border: 1px solid var(--line, #d5dbd8);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+
+.ghost-button:hover {
+  color: var(--ink, #1f2b27);
+  border-color: var(--muted);
+}
+
+.ghost-button.full {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.generation-progress .ghost-button {
+  align-self: center;
+  flex-shrink: 0;
+}
+
+.version-timeline {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 10px;
+  flex-wrap: wrap;
+}
+
+.version-chip {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.version-chip:hover:not(:disabled) {
+  color: var(--ink, #1f2b27);
+  border-color: var(--line-strong);
+}
+
+.version-chip.active {
+  border-color: var(--line-strong);
+  color: var(--ink, #1f2b27);
+  font-weight: 600;
+  cursor: default;
+}
+
+.variant-compare {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 12px 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.02);
+}
+
+.variant-compare-copy span {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.variant-compare-copy p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  max-width: 48em;
+  overflow-wrap: anywhere;
+}
+
+.variant-compare-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.variant-compare-actions button {
+  border: 1px solid var(--line);
+  background: transparent;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.variant-compare-actions button:first-child {
+  border-color: var(--line-strong);
+  font-weight: 600;
+}
+
+.block-fragment {
+  display: block;
+  margin: 6px 12px 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+}
+
+.artist-mixer {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.artist-mixer-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.artist-mix-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--line);
+}
+
+.artist-mix-row:last-of-type {
+  border-bottom: none;
+}
+
+.artist-mix-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  min-width: 0;
+}
+
+.artist-mix-pick span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artist-mix-weight {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.artist-mix-weight input[type="range"] {
+  width: 90px;
+}
+
+.artist-mix-weight b {
+  font-size: 12px;
+  width: 38px;
+  text-align: right;
+}
+
+.artist-mix-preview {
+  display: block;
+  margin: 10px 0 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+}
+
+.secondary-button.full {
+  width: 100%;
+}
+
+.variant-matrix {
+  margin: 10px 0;
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.02);
+}
+
+.variant-matrix-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.variant-matrix-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.variant-matrix-card header {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.variant-matrix-block strong {
+  font-size: 12px;
+}
+
+.variant-matrix-block p {
+  margin: 2px 0 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.variant-matrix-block p.zh {
+  color: var(--muted);
+}
+
+.variant-matrix-card > button {
+  margin-top: auto;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  border-radius: 6px;
+  padding: 6px 0;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tag-suggest {
+  position: absolute;
+  z-index: 60;
+  min-width: 180px;
+  max-width: 320px;
+  background: #fff;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+}
+
+.tag-suggest button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.tag-suggest button.active,
+.tag-suggest button:hover {
+  background: rgba(0, 0, 0, 0.06);
+}

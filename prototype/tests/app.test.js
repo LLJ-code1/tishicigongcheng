@@ -935,3 +935,254 @@ test("image analysis sends the uploaded file to the real vision endpoint", () =>
   assert.doesNotMatch(app, /data\.mergedImageResult/);
   assert.doesNotMatch(app, /startAnalysisSimulation/);
 });
+
+test("dynamic HTML rendering escapes model and user provided text", () => {
+  const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+
+  // 结构块 textarea 必须转义,防止 LLM 输出破坏 DOM 或注入脚本
+  assert.match(app, />\$\{escapeHtml\(block\.en\)\}<\/textarea>/);
+  assert.match(app, />\$\{escapeHtml\(block\.zh\)\}<\/textarea>/);
+  assert.doesNotMatch(app, />\$\{block\.(?:en|zh)\}<\/textarea>/);
+
+  // 分析器错误文本、参考卡片、结构块标题不允许未转义直插
+  assert.doesNotMatch(app, /\$\{model\.error \|\| model\.detail\}/);
+  assert.doesNotMatch(app, /<strong>\$\{block\.label\}<\/strong>/);
+  assert.doesNotMatch(app, /<p>\$\{item\.promptZh\}<\/p>/);
+  assert.match(app, /\$\{escapeHtml\(model\.error \|\| model\.detail\)\}/);
+});
+
+test("api helper survives non-JSON error responses", () => {
+  const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  assert.match(app, /服务返回了无法解析的响应/);
+  assert.doesNotMatch(app, /const payload = await response\.json\(\);\s*\n\s*if \(!response\.ok\)/);
+});
+
+test("long-running requests are cancellable via AbortController", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+
+  assert.match(html, /id=["']cancelGenerationBtn["']/);
+  assert.match(html, /id=["']cancelAnalysisBtn["']/);
+  assert.match(app, /new AbortController\(\)/);
+  assert.match(app, /signal: activeTextAbort\.signal/);
+  assert.match(app, /signal: activeVisionAbort\.signal/);
+  assert.match(app, /isAbortError/);
+  assert.match(app, /已取消图片分析/);
+});
+
+test("reference library renders an empty state when nothing matches", () => {
+  const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  const css = fs.readFileSync(path.join(__dirname, "..", "styles.css"), "utf8");
+  assert.match(app, /reference-empty/);
+  assert.match(css, /\.reference-empty/);
+});
+
+test("editing a block produces a live preview without touching the version", () => {
+  let state = createGeneratedState();
+  const originalOutput = state.output.positiveEn;
+
+  state = reduceState(state, {
+    type: "UPDATE_BLOCK",
+    id: "pose",
+    language: "en",
+    value: "kneeling in shallow water",
+  });
+
+  assert.equal(state.output.positiveEn, originalOutput);
+  assert.ok(state.previewOutput);
+  assert.match(state.previewOutput.positiveEn, /kneeling in shallow water/);
+  assert.equal(state.version, 1);
+
+  state = reduceState(state, { type: "APPLY_CHANGES" });
+  assert.equal(state.previewOutput, null);
+  assert.match(state.output.positiveEn, /kneeling in shallow water/);
+});
+
+test("compilation deduplicates repeated items and applies block weight syntax", () => {
+  let state = createGeneratedState();
+  state = reduceState(state, {
+    type: "UPDATE_BLOCK",
+    id: "scene",
+    language: "en",
+    value: "misty harbor, neon lights",
+  });
+  state = reduceState(state, {
+    type: "UPDATE_BLOCK",
+    id: "effects",
+    language: "en",
+    value: "misty harbor, light bloom",
+  });
+  state = reduceState(state, {
+    type: "SET_BLOCK_WEIGHT",
+    id: "effects",
+    value: 120,
+  });
+  state = reduceState(state, { type: "APPLY_CHANGES" });
+
+  const occurrences = state.output.positiveEn.match(/misty harbor/g) || [];
+  assert.equal(occurrences.length, 1);
+  assert.match(state.output.positiveEn, /\(light bloom:1\.2\)/);
+});
+
+test("a zero-weight block is excluded from compiled output", () => {
+  let state = createGeneratedState();
+  state = reduceState(state, {
+    type: "SET_BLOCK_WEIGHT",
+    id: "effects",
+    value: 0,
+  });
+  state = reduceState(state, { type: "APPLY_CHANGES" });
+  assert.doesNotMatch(state.output.positiveEn, /effects en/);
+});
+
+test("a block variant can be compared then kept or reverted", () => {
+  let state = createGeneratedState();
+  const originalPose = state.blocks.find((block) => block.id === "pose").en;
+
+  state = reduceState(state, {
+    type: "APPLY_BLOCK_VARIANT",
+    item: { id: "pose", en: "new pose", zh: "新姿势", source: "外部 API · 随机变体" },
+  });
+  let pose = state.blocks.find((block) => block.id === "pose");
+  assert.equal(pose.pendingVariant.previousEn, originalPose);
+
+  state = reduceState(state, { type: "REVERT_BLOCK_VARIANT", id: "pose" });
+  pose = state.blocks.find((block) => block.id === "pose");
+  assert.equal(pose.en, originalPose);
+  assert.equal(pose.pendingVariant, undefined);
+  assert.deepEqual(state.dirtyBlockIds, []);
+
+  state = reduceState(state, {
+    type: "APPLY_BLOCK_VARIANT",
+    item: { id: "pose", en: "kept pose", zh: "保留姿势" },
+  });
+  state = reduceState(state, { type: "KEEP_BLOCK_VARIANT", id: "pose" });
+  pose = state.blocks.find((block) => block.id === "pose");
+  assert.equal(pose.en, "kept pose");
+  assert.equal(pose.pendingVariant, undefined);
+  assert.deepEqual(state.dirtyBlockIds, ["pose"]);
+});
+
+test("restoring an old version creates a new version with the old content", () => {
+  let state = createGeneratedState();
+  const v1Pose = state.blocks.find((block) => block.id === "pose").en;
+  state = reduceState(state, {
+    type: "UPDATE_BLOCK",
+    id: "pose",
+    language: "en",
+    value: "changed pose",
+  });
+  state = reduceState(state, { type: "APPLY_CHANGES" });
+  assert.equal(state.version, 2);
+
+  state = reduceState(state, { type: "RESTORE_VERSION", version: 1 });
+  assert.equal(state.version, 3);
+  assert.equal(state.blocks.find((block) => block.id === "pose").en, v1Pose);
+  assert.equal(state.versionHistory.length, 3);
+  assert.equal(state.versionHistory[2].restoredFrom, 1);
+});
+
+test("editor exposes version timeline, variant compare and shortcuts", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  const css = fs.readFileSync(path.join(__dirname, "..", "styles.css"), "utf8");
+
+  assert.match(html, /id=["']versionTimeline["']/);
+  assert.match(app, /data-restore-version/);
+  assert.match(app, /data-keep-variant/);
+  assert.match(app, /data-revert-variant/);
+  assert.match(app, /block-fragment/);
+  assert.match(css, /\.version-chip/);
+  assert.match(css, /\.variant-compare/);
+  assert.match(app, /addEventListener\("keydown"/);
+});
+
+test("artist mix composes weighted tags for the artist block", () => {
+  const { composeArtistMix } = require("../app.js");
+
+  assert.equal(
+    composeArtistMix([
+      { tag: "@lack", weight: 80 },
+      { tag: "toi8", weight: 100 },
+      { tag: "wlop", weight: 120 },
+    ]),
+    "(@lack:0.8), toi8, (wlop:1.2)"
+  );
+  assert.equal(composeArtistMix([]), "");
+  assert.equal(composeArtistMix([{ tag: "  ", weight: 90 }]), "");
+});
+
+test("quick library exposes the artist mixer panel", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+
+  assert.match(html, /id=["']artistMixer["']/);
+  assert.match(app, /data-mix-artist/);
+  assert.match(app, /data-mix-weight/);
+  assert.match(app, /applyArtistMixBtn/);
+  assert.match(app, /function applyArtistMix/);
+});
+
+test("a recipe saves all blocks and can be applied back", () => {
+  let state = createGeneratedState();
+  const recipe = {
+    id: "recipe-1",
+    type: "snippets",
+    name: "测试配方",
+    meta: "配方 · 整组结构块",
+    blocks: state.blocks.map((block) => ({
+      id: block.id,
+      en: `${block.id} recipe en`,
+      zh: `${block.id} recipe zh`,
+    })),
+  };
+  state = reduceState(state, { type: "ADD_RECIPE", recipe });
+  assert.ok(state.resources.snippets.some((item) => item.id === "recipe-1"));
+
+  state = reduceState(state, { type: "APPLY_RESOURCE", id: "recipe-1" });
+  assert.equal(
+    state.blocks.find((block) => block.id === "scene").en,
+    "scene recipe en"
+  );
+  assert.ok(state.previewOutput);
+  assert.ok(state.dirtyBlockIds.length > 0);
+});
+
+test("a variant matrix candidate applies with explicit block ids", () => {
+  let state = createGeneratedState();
+  state = reduceState(state, {
+    type: "APPLY_BLOCKS_VARIANT",
+    item: {
+      items: [
+        { id: "pose", en: "matrix pose", zh: "矩阵姿势" },
+        { id: "scene", en: "matrix scene", zh: "矩阵场景" },
+      ],
+    },
+    blockIds: ["pose", "scene"],
+  });
+  assert.equal(state.blocks.find((block) => block.id === "pose").en, "matrix pose");
+  assert.equal(state.blocks.find((block) => block.id === "scene").en, "matrix scene");
+});
+
+test("tag suggestions rank prefix matches first", () => {
+  const { suggestTags } = require("../app.js");
+  const dictionary = ["twintails", "twin braids", "wind lift", "sitting"];
+  assert.deepEqual(suggestTags(dictionary, "twin"), ["twintails", "twin braids"]);
+  assert.deepEqual(suggestTags(dictionary, "ind"), ["wind lift"]);
+  assert.deepEqual(suggestTags(dictionary, "t"), []);
+  assert.deepEqual(suggestTags(dictionary, "sitting"), []);
+});
+
+test("editor exposes recipe, matrix and tag suggest features", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  const dataJs = fs.readFileSync(path.join(__dirname, "..", "data.js"), "utf8");
+
+  assert.match(html, /data-action=["']save-recipe["']/);
+  assert.match(html, /id=["']variantMatrixBtn["']/);
+  assert.match(html, /id=["']variantMatrix["']/);
+  assert.match(app, /BLOCKS_VARIANT_READY/);
+  assert.match(app, /data-pick-matrix/);
+  assert.match(app, /function updateTagSuggest/);
+  assert.match(dataJs, /promptTagDictionary/);
+});

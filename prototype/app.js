@@ -45,6 +45,7 @@
       dirtyBlockIds: [],
       version: 0,
       versionHistory: [],
+      previewOutput: null,
       analyzers: clone(data.analyzers || {}),
       analysisQueue: [],
       analysisComplete: false,
@@ -133,16 +134,54 @@
     };
   }
 
+  function splitPromptItems(value) {
+    return String(value || "")
+      .split(/[,，;；\n]+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  function formatBlockWeight(weight) {
+    const value = Number(weight);
+    if (!Number.isFinite(value) || value === 100) return "";
+    return (value / 100).toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+  }
+
+  function compileBlockFragment(block) {
+    const factor = formatBlockWeight(block.weight);
+    return splitPromptItems(block.en)
+      .map((item) => (factor ? `(${item}:${factor})` : item))
+      .join(", ");
+  }
+
   function compileBlocks(blocks, relationEn = "", relationZh = "") {
     const negative = blocks.find((block) => block.id === "negative");
-    const positive = blocks.filter(
-      (block) => block.id !== "negative" && block.en.trim()
-    );
-    const positiveEn = positive.map((block) => block.en.trim()).join(", ");
-    const positiveZh = positive
-      .map((block) => block.zh.trim())
-      .filter(Boolean)
-      .join("；");
+    const positive = blocks.filter((block) => block.id !== "negative");
+    const seenEn = new Set();
+    const enItems = [];
+    const seenZh = new Set();
+    const zhItems = [];
+    for (const block of positive) {
+      const weight = Number.isFinite(Number(block.weight))
+        ? Number(block.weight)
+        : 100;
+      if (weight === 0) continue;
+      const factor = formatBlockWeight(weight);
+      for (const item of splitPromptItems(block.en)) {
+        const key = item.toLowerCase();
+        if (seenEn.has(key)) continue;
+        seenEn.add(key);
+        enItems.push(factor ? `(${item}:${factor})` : item);
+      }
+      for (const item of splitPromptItems(block.zh)) {
+        const key = item.toLowerCase();
+        if (seenZh.has(key)) continue;
+        seenZh.add(key);
+        zhItems.push(item);
+      }
+    }
+    const positiveEn = enItems.join(", ");
+    const positiveZh = zhItems.join("；");
     return {
       positiveEn: [positiveEn, relationEn.trim()].filter(Boolean).join(". "),
       positiveZh: [positiveZh, relationZh.trim()].filter(Boolean).join("。"),
@@ -151,6 +190,46 @@
       relationEn: relationEn.trim(),
       relationZh: relationZh.trim(),
     };
+  }
+
+  function suggestTags(dictionary, token, limit = 8) {
+    const query = String(token || "").trim().toLowerCase();
+    if (query.length < 2) return [];
+    const source = Array.isArray(dictionary) ? dictionary : [];
+    const seen = new Set();
+    const starts = [];
+    const contains = [];
+    for (const raw of source) {
+      const tag = String(raw || "").trim();
+      const key = tag.toLowerCase();
+      if (!tag || seen.has(key) || key === query) continue;
+      seen.add(key);
+      if (key.startsWith(query)) starts.push(tag);
+      else if (key.includes(query)) contains.push(tag);
+    }
+    return [...starts, ...contains].slice(0, limit);
+  }
+
+  function composeArtistMix(entries) {
+    return (entries || [])
+      .map((entry) => {
+        const tag = String(entry.tag || "").trim();
+        if (!tag) return "";
+        const factor = formatBlockWeight(entry.weight);
+        return factor ? `(${tag}:${factor})` : tag;
+      })
+      .filter(Boolean)
+      .join(", ");
+  }
+
+  function refreshPreview(next) {
+    next.previewOutput = next.dirtyBlockIds.length
+      ? compileBlocks(
+          next.blocks,
+          next.output.relationEn,
+          next.output.relationZh
+        )
+      : null;
   }
 
   function initializeVersion(next, output, blocks) {
@@ -731,6 +810,15 @@
         next.toast = `已新建资源：${resource.name}`;
         return next;
       }
+      case "ADD_RECIPE": {
+        const recipe = action.recipe;
+        if (!recipe || !Array.isArray(recipe.blocks) || !recipe.blocks.length) {
+          return next;
+        }
+        next.resources.snippets.push(clone(recipe));
+        next.toast = `已保存配方「${recipe.name}」`;
+        return next;
+      }
       case "SAVE_BLOCK_AS_RESOURCE": {
         const block = next.blocks.find((item) => item.id === action.id);
         if (!block) return next;
@@ -769,6 +857,7 @@
           block.source = resource.source || block.source;
           markDirty(next, block.id);
         });
+        refreshPreview(next);
         next.view = "text";
         next.toast = `已带入资源：${resource.name}，等待应用`;
         return next;
@@ -912,7 +1001,10 @@
       case "SET_BLOCK_WEIGHT": {
         const block = next.blocks.find((item) => item.id === action.id);
         if (block) block.weight = Number(action.value);
-        if (block) markDirty(next, block.id);
+        if (block) {
+          markDirty(next, block.id);
+          refreshPreview(next);
+        }
         return next;
       }
       case "UPDATE_BLOCK": {
@@ -920,6 +1012,7 @@
         if (block && !block.locked) {
           block[action.language] = action.value;
           markDirty(next, block.id);
+          refreshPreview(next);
         }
         return next;
       }
@@ -936,22 +1029,38 @@
         const items = Array.isArray(action.item?.items)
           ? action.item.items
           : [];
-        const selected = new Set(next.selectedVariantBlockIds);
+        const selected = new Set(
+          Array.isArray(action.blockIds) && action.blockIds.length
+            ? action.blockIds
+            : next.selectedVariantBlockIds
+        );
         for (const item of items) {
           const block = next.blocks.find((entry) => entry.id === item.id);
           if (!block || block.locked || !selected.has(block.id)) continue;
+          block.pendingVariant = {
+            previousEn: block.en,
+            previousZh: block.zh,
+            previousSource: block.source,
+            previousConfidence: block.confidence,
+          };
           block.en = item.en || block.en;
           block.zh = item.zh || block.zh;
           block.source = item.source || "模型 · 联合随机";
           block.confidence = item.confidence || 88;
           markDirty(next, block.id);
         }
+        refreshPreview(next);
         const changedCount = items.filter((item) => selected.has(item.id)).length;
         next.batchRegenerating = false;
         next.selectedVariantBlockIds = [];
         next.toast = `已联合随机 ${changedCount} 个结构块，等待应用`;
         return next;
       }
+      case "BLOCKS_VARIANT_READY":
+        next.batchRegenerating = false;
+        next.selectedVariantBlockIds = [];
+        next.toast = `已生成 ${action.count} 组候选变体，请对比挑选`;
+        return next;
       case "BLOCKS_VARIANT_FAILED":
         next.batchRegenerating = false;
         next.toast = action.error || "联合随机失败";
@@ -961,12 +1070,19 @@
         const block = next.blocks.find((entry) => entry.id === item.id);
         next.regeneratingBlockId = "";
         if (!block || block.locked) return next;
+        block.pendingVariant = {
+          previousEn: block.en,
+          previousZh: block.zh,
+          previousSource: block.source,
+          previousConfidence: block.confidence,
+        };
         block.en = item.en || block.en;
         block.zh = item.zh || block.zh;
         block.source = item.source || "模型 · 随机变体";
         block.confidence = item.confidence || 88;
         markDirty(next, block.id);
-        next.toast = `已生成“${block.label}”随机变体，等待应用`;
+        refreshPreview(next);
+        next.toast = `已生成“${block.label}”随机变体，可对比后保留或回退`;
         return next;
       }
       case "BLOCK_VARIANT_FAILED":
@@ -976,10 +1092,14 @@
       case "DISCARD_CHANGES":
         next.blocks = clone(next.appliedBlocks);
         next.dirtyBlockIds = [];
+        next.previewOutput = null;
         next.toast = "已撤销未应用修改";
         return next;
       case "APPLY_CHANGES": {
         if (!next.dirtyBlockIds.length) return next;
+        next.blocks.forEach((block) => {
+          delete block.pendingVariant;
+        });
         const output = compileBlocks(
           next.blocks,
           next.output.relationEn,
@@ -994,7 +1114,65 @@
           output: clone(output),
           blocks: clone(next.blocks),
         });
+        next.previewOutput = null;
         next.toast = `修改已应用，生成 V${next.version}`;
+        return next;
+      }
+      case "KEEP_BLOCK_VARIANT": {
+        const block = next.blocks.find((item) => item.id === action.id);
+        if (block && block.pendingVariant) {
+          delete block.pendingVariant;
+          next.toast = `已保留“${block.label}”的新变体`;
+        }
+        return next;
+      }
+      case "REVERT_BLOCK_VARIANT": {
+        const block = next.blocks.find((item) => item.id === action.id);
+        if (!block || !block.pendingVariant) return next;
+        const previous = block.pendingVariant;
+        block.en = previous.previousEn;
+        block.zh = previous.previousZh;
+        block.source = previous.previousSource;
+        block.confidence = previous.previousConfidence;
+        delete block.pendingVariant;
+        const applied = next.appliedBlocks.find(
+          (item) => item.id === block.id
+        );
+        if (
+          applied &&
+          applied.en === block.en &&
+          applied.zh === block.zh &&
+          Number(applied.weight ?? 100) === Number(block.weight ?? 100)
+        ) {
+          next.dirtyBlockIds = next.dirtyBlockIds.filter(
+            (id) => id !== block.id
+          );
+        }
+        refreshPreview(next);
+        next.toast = `已回退“${block.label}”到变体前内容`;
+        return next;
+      }
+      case "RESTORE_VERSION": {
+        const snapshot = next.versionHistory.find(
+          (entry) => entry.version === action.version
+        );
+        if (!snapshot) return next;
+        if (snapshot.version === next.version && !next.dirtyBlockIds.length) {
+          return next;
+        }
+        next.version = Math.max(1, next.version) + 1;
+        next.blocks = clone(snapshot.blocks);
+        next.appliedBlocks = clone(snapshot.blocks);
+        next.output = clone(snapshot.output);
+        next.dirtyBlockIds = [];
+        next.previewOutput = null;
+        next.versionHistory.push({
+          version: next.version,
+          output: clone(snapshot.output),
+          blocks: clone(snapshot.blocks),
+          restoredFrom: snapshot.version,
+        });
+        next.toast = `已从 V${snapshot.version} 恢复，生成 V${next.version}`;
         return next;
       }
       case "CLEAR_TOAST":
@@ -1019,6 +1197,11 @@
     reduceState,
     getCombinedPrompt,
     isSupportedImageFile,
+    compileBlocks,
+    compileBlockFragment,
+    composeArtistMix,
+    splitPromptItems,
+    suggestTags,
     randomVariantBlockIds: Array.from(RANDOM_VARIANT_BLOCKS),
   };
 
@@ -1045,6 +1228,7 @@
   let resourceRequestId = 0;
   let previewResourceId = "";
   let favoriteResources = [];
+  const artistMix = new Map();
   let resourceSource = {
     status: "checking",
     label: "正在检查 AnimaDex",
@@ -1053,6 +1237,8 @@
   let outputLanguage = "both";
   let collapsedBlocks = false;
   let generationProgressTimer = null;
+  let activeTextAbort = null;
+  let activeVisionAbort = null;
   let uploadedImageFile = null;
   let imagePreviewUrl = "";
   let promptTemplateDialog = {
@@ -1102,11 +1288,25 @@
         ...(options.headers || {}),
       },
     });
-    const payload = await response.json();
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
     if (!response.ok) {
-      throw new Error(payload.error || `HTTP ${response.status}`);
+      throw new Error(
+        (payload && payload.error) || `HTTP ${response.status}`
+      );
+    }
+    if (payload === null) {
+      throw new Error("服务返回了无法解析的响应");
     }
     return payload;
+  }
+
+  function isAbortError(error) {
+    return Boolean(error) && error.name === "AbortError";
   }
 
   async function openPromptTemplate(templateId) {
@@ -1246,6 +1446,15 @@
     state.resources["favorite-artists"] = favoriteResourcesForTab(
       "favorite-artists"
     );
+    const persistedSnippets = favoriteResources.filter(
+      (item) => item.type === "snippets"
+    );
+    if (persistedSnippets.length) {
+      const known = new Set(state.resources.snippets.map((item) => item.id));
+      for (const item of persistedSnippets) {
+        if (!known.has(item.id)) state.resources.snippets.push(item);
+      }
+    }
   }
 
   function isFavoriteResource(id) {
@@ -1417,9 +1626,11 @@
     if (state.textGenerating || state.textDecomposing) return;
 
     dispatch({ type: "START_TEXT_EXPANSION", startedAt: Date.now() });
+    activeTextAbort = new AbortController();
     try {
       const result = await apiJson("/api/text/expand", {
         method: "POST",
+        signal: activeTextAbort.signal,
         body: JSON.stringify({
           input,
           provider: state.settings.textProvider,
@@ -1444,18 +1655,24 @@
     } catch (error) {
       dispatch({
         type: "TEXT_EXPANSION_FAILED",
-        error: error.message || "提示词拓展失败",
+        error: isAbortError(error)
+          ? "已取消本次拓展"
+          : error.message || "提示词拓展失败",
         finishedAt: Date.now(),
       });
+    } finally {
+      activeTextAbort = null;
     }
   }
 
   async function randomizeTextPrompt() {
     if (state.textGenerating || state.textDecomposing) return;
     dispatch({ type: "START_TEXT_RANDOM", startedAt: Date.now() });
+    activeTextAbort = new AbortController();
     try {
       const result = await apiJson("/api/text/random", {
         method: "POST",
+        signal: activeTextAbort.signal,
         body: JSON.stringify({
           provider: state.settings.textProvider,
           targetModel: "anima",
@@ -1469,9 +1686,13 @@
     } catch (error) {
       dispatch({
         type: "TEXT_RANDOM_FAILED",
-        error: error.message || "全随机生成失败",
+        error: isAbortError(error)
+          ? "已取消全随机生成"
+          : error.message || "全随机生成失败",
         finishedAt: Date.now(),
       });
+    } finally {
+      activeTextAbort = null;
     }
   }
 
@@ -1485,9 +1706,11 @@
     if (state.textGenerating || state.textDecomposing) return;
 
     dispatch({ type: "START_TEXT_DECOMPOSITION", startedAt: Date.now() });
+    activeTextAbort = new AbortController();
     try {
       const result = await apiJson("/api/text/decompose", {
         method: "POST",
+        signal: activeTextAbort.signal,
         body: JSON.stringify({
           input,
           provider: state.settings.textProvider,
@@ -1501,9 +1724,13 @@
     } catch (error) {
       dispatch({
         type: "TEXT_DECOMPOSITION_FAILED",
-        error: error.message || "提示词拆解失败",
+        error: isAbortError(error)
+          ? "已取消提示词拆解"
+          : error.message || "提示词拆解失败",
         finishedAt: Date.now(),
       });
+    } finally {
+      activeTextAbort = null;
     }
   }
 
@@ -1576,6 +1803,251 @@
         error: error.message || "随机变体生成失败",
       });
     }
+  }
+
+  const tagSuggest = {
+    element: null,
+    items: [],
+    index: 0,
+    target: null,
+    tokenStart: 0,
+    tokenEnd: 0,
+  };
+
+  function ensureTagSuggestElement() {
+    if (!tagSuggest.element) {
+      const element = document.createElement("div");
+      element.className = "tag-suggest hidden";
+      element.addEventListener("mousedown", (event) => {
+        const button = event.target.closest("button[data-suggest-index]");
+        if (!button) return;
+        event.preventDefault();
+        applyTagSuggestion(Number(button.dataset.suggestIndex));
+      });
+      document.body.appendChild(element);
+      tagSuggest.element = element;
+    }
+    return tagSuggest.element;
+  }
+
+  function hideTagSuggest() {
+    if (tagSuggest.element) tagSuggest.element.classList.add("hidden");
+    tagSuggest.items = [];
+    tagSuggest.target = null;
+  }
+
+  function tagSuggestOpen() {
+    return Boolean(
+      tagSuggest.target &&
+        tagSuggest.items.length &&
+        tagSuggest.element &&
+        !tagSuggest.element.classList.contains("hidden")
+    );
+  }
+
+  function suggestDictionary() {
+    const dictionary = [...(data.promptTagDictionary || [])];
+    for (const block of state.blocks) {
+      for (const item of app.splitPromptItems(block.en)) {
+        dictionary.push(item);
+      }
+    }
+    return dictionary;
+  }
+
+  function updateTagSuggest(target) {
+    if (target.dataset.language !== "en") {
+      hideTagSuggest();
+      return;
+    }
+    const cursor = target.selectionStart ?? target.value.length;
+    const before = target.value.slice(0, cursor);
+    const match = before.match(/(?:^|[,，;；\n])\s*([^,，;；\n]*)$/);
+    const token = match ? match[1] : "";
+    if (!token || token.trim().length < 2) {
+      hideTagSuggest();
+      return;
+    }
+    const items = app.suggestTags(suggestDictionary(), token.trim());
+    if (!items.length) {
+      hideTagSuggest();
+      return;
+    }
+    tagSuggest.items = items;
+    tagSuggest.index = 0;
+    tagSuggest.target = target;
+    tagSuggest.tokenStart = cursor - token.length;
+    tagSuggest.tokenEnd = cursor;
+    const element = ensureTagSuggestElement();
+    element.innerHTML = items
+      .map(
+        (item, index) => `
+          <button
+            type="button"
+            class="${index === 0 ? "active" : ""}"
+            data-suggest-index="${index}"
+          >${escapeHtml(item)}</button>`
+      )
+      .join("");
+    const rect = target.getBoundingClientRect();
+    element.style.left = `${rect.left + window.scrollX}px`;
+    element.style.top = `${rect.bottom + window.scrollY + 4}px`;
+    element.classList.remove("hidden");
+  }
+
+  function moveTagSuggest(delta) {
+    if (!tagSuggestOpen()) return;
+    const count = tagSuggest.items.length;
+    tagSuggest.index = (tagSuggest.index + delta + count) % count;
+    tagSuggest.element
+      .querySelectorAll("button[data-suggest-index]")
+      .forEach((button, index) => {
+        button.classList.toggle("active", index === tagSuggest.index);
+      });
+  }
+
+  function applyTagSuggestion(index = tagSuggest.index) {
+    if (!tagSuggestOpen()) return;
+    const target = tagSuggest.target;
+    const replacement = tagSuggest.items[index];
+    if (!target || replacement === undefined) return;
+    const value = target.value;
+    const nextValue =
+      value.slice(0, tagSuggest.tokenStart) +
+      replacement +
+      value.slice(tagSuggest.tokenEnd);
+    const cursor = tagSuggest.tokenStart + replacement.length;
+    target.value = nextValue;
+    target.setSelectionRange(cursor, cursor);
+    hideTagSuggest();
+    state = app.reduceState(state, {
+      type: "UPDATE_BLOCK",
+      id: target.dataset.blockInput,
+      language: "en",
+      value: nextValue,
+    });
+    target.closest(".prompt-block")?.classList.add("dirty");
+    renderEditorStatus();
+    renderOutput();
+  }
+
+  async function saveCurrentRecipe() {
+    if (!state.blocks.length) {
+      state.toast = "还没有结构块，先生成或拆解一次";
+      renderToast();
+      return;
+    }
+    const recipe = {
+      id: `recipe-${Date.now()}`,
+      type: "snippets",
+      name: `${state.projectName || "未命名作品"} · 配方 V${state.version || 1}`,
+      meta: "配方 · 整组结构块",
+      targetBlock: "",
+      en: state.blocks
+        .map((block) => block.en)
+        .filter(Boolean)
+        .join(" / ")
+        .slice(0, 160),
+      zh: "",
+      blocks: state.blocks.map((block) => ({
+        id: block.id,
+        en: block.en,
+        zh: block.zh,
+      })),
+    };
+    dispatch({ type: "ADD_RECIPE", recipe });
+    try {
+      await persistFavoriteResource(recipe);
+    } catch {
+      state.toast = "配方已保存在本次会话，但服务端持久化失败";
+      renderToast();
+    }
+  }
+
+  let variantMatrix = null;
+
+  async function generateVariantMatrix(count = 3) {
+    const targetBlockIds = state.selectedVariantBlockIds.filter((blockId) => {
+      const block = state.blocks.find((item) => item.id === blockId);
+      return block && !block.locked && RANDOM_VARIANT_BLOCKS.has(blockId);
+    });
+    if (targetBlockIds.length < 2 || state.batchRegenerating) {
+      state.toast = "变体矩阵至少选择两个可随机结构块";
+      renderToast();
+      return;
+    }
+    dispatch({ type: "START_BLOCKS_VARIANT" });
+    const request = () =>
+      apiJson("/api/text/regenerate-blocks", {
+        method: "POST",
+        body: JSON.stringify({
+          targetBlockIds,
+          blocks: state.blocks,
+          provider: state.settings.textProvider,
+          expansionLevel: state.settings.expansionLevel || "balanced",
+        }),
+      });
+    const settled = await Promise.allSettled(
+      Array.from({ length: count }, request)
+    );
+    const candidates = settled
+      .filter((entry) => entry.status === "fulfilled")
+      .map((entry) => entry.value.item);
+    if (!candidates.length) {
+      const failure = settled.find((entry) => entry.status === "rejected");
+      dispatch({
+        type: "BLOCKS_VARIANT_FAILED",
+        error: failure?.reason?.message || "变体矩阵生成失败",
+      });
+      return;
+    }
+    variantMatrix = { blockIds: targetBlockIds, candidates };
+    dispatch({ type: "BLOCKS_VARIANT_READY", count: candidates.length });
+  }
+
+  function renderVariantMatrix() {
+    const container = $("#variantMatrix");
+    if (!container) return;
+    if (!variantMatrix) {
+      container.classList.add("hidden");
+      container.innerHTML = "";
+      return;
+    }
+    const labels = {};
+    state.blocks.forEach((block) => {
+      labels[block.id] = block.label;
+    });
+    container.classList.remove("hidden");
+    container.innerHTML = `
+      <div class="mini-heading">
+        <strong>变体矩阵</strong>
+        <button type="button" data-dismiss-matrix="1">放弃全部</button>
+      </div>
+      <div class="variant-matrix-grid">
+        ${variantMatrix.candidates
+          .map((candidate, index) => {
+            const items = (candidate.items || []).filter((item) =>
+              variantMatrix.blockIds.includes(item.id)
+            );
+            return `
+              <article class="variant-matrix-card">
+                <header>候选 ${index + 1}</header>
+                ${items
+                  .map(
+                    (item) => `
+                      <div class="variant-matrix-block">
+                        <strong>${escapeHtml(labels[item.id] || item.id)}</strong>
+                        <p>${escapeHtml(item.en)}</p>
+                        <p class="zh">${escapeHtml(item.zh)}</p>
+                      </div>`
+                  )
+                  .join("")}
+                <button type="button" data-pick-matrix="${index}">应用这组</button>
+              </article>`;
+          })
+          .join("")}
+      </div>
+    `;
   }
 
   async function regeneratePromptBlocks() {
@@ -1721,20 +2193,145 @@
       return !search || haystack.includes(search);
     });
 
+    if (!references.length) {
+      const message = search
+        ? "没有匹配的参考条目，换个关键词试试。"
+        : "暂无参考条目。";
+      $("#referenceCards").innerHTML =
+        `<p class="reference-empty">${escapeHtml(message)}</p>`;
+      return;
+    }
     $("#referenceCards").innerHTML = references
       .map(
         (item) => `
           <article class="reference-card">
-            <img src="${item.image}" alt="${item.title}" />
+            <img src="${escapeHtml(item.image)}" alt="${escapeHtml(item.title)}" />
             <div class="reference-card-body">
-              <strong>${item.title}</strong>
-              <p>${item.promptZh}</p>
-              <button type="button" data-import-reference="${item.id}">带入拓展</button>
+              <strong>${escapeHtml(item.title)}</strong>
+              <p>${escapeHtml(item.promptZh)}</p>
+              <button type="button" data-import-reference="${escapeHtml(item.id)}">带入拓展</button>
             </div>
           </article>
         `
       )
       .join("");
+  }
+
+  function artistTagForResource(item) {
+    const items = app.splitPromptItems(item.en || "");
+    return items[0] || item.name || "";
+  }
+
+  function selectedArtistEntries(favorites) {
+    return favorites
+      .filter((item) => artistMix.has(item.id))
+      .map((item) => ({
+        tag: artistTagForResource(item),
+        weight: artistMix.get(item.id),
+      }));
+  }
+
+  function renderArtistMixer() {
+    const container = $("#artistMixer");
+    if (!container) return;
+    const active = quickTab === "favorite-artists";
+    container.classList.toggle("hidden", !active);
+    if (!active) return;
+    const favorites = favoriteResourcesForTab("favorite-artists");
+    for (const id of Array.from(artistMix.keys())) {
+      if (!favorites.some((item) => item.id === id)) artistMix.delete(id);
+    }
+    if (!favorites.length) {
+      container.innerHTML =
+        '<p class="artist-mixer-empty">先在上方列表收藏几位画师，就能在这里混合权重。</p>';
+      return;
+    }
+    const preview = app.composeArtistMix(selectedArtistEntries(favorites));
+    container.innerHTML = `
+      <div class="mini-heading">
+        <strong>画师混合器</strong>
+        <span>勾选并配权重</span>
+      </div>
+      ${favorites
+        .map((item) => {
+          const checked = artistMix.has(item.id);
+          const weight = artistMix.get(item.id) ?? 100;
+          const itemId = escapeHtml(item.id);
+          return `
+            <div class="artist-mix-row">
+              <label class="artist-mix-pick">
+                <input
+                  type="checkbox"
+                  data-mix-artist="${itemId}"
+                  ${checked ? "checked" : ""}
+                />
+                <span>${escapeHtml(artistTagForResource(item))}</span>
+              </label>
+              <label class="artist-mix-weight ${checked ? "" : "hidden"}">
+                <input
+                  type="range"
+                  min="10"
+                  max="150"
+                  step="5"
+                  value="${weight}"
+                  data-mix-weight="${itemId}"
+                />
+                <b>${weight}%</b>
+              </label>
+            </div>`;
+        })
+        .join("")}
+      <code class="artist-mix-preview ${preview ? "" : "hidden"}" id="artistMixPreview">${escapeHtml(preview)}</code>
+      <button
+        class="secondary-button full"
+        id="applyArtistMixBtn"
+        type="button"
+        ${preview ? "" : "disabled"}
+      >写入画师块</button>
+    `;
+  }
+
+  function refreshArtistMixPreview() {
+    const favorites = favoriteResourcesForTab("favorite-artists");
+    const preview = app.composeArtistMix(selectedArtistEntries(favorites));
+    const element = $("#artistMixPreview");
+    if (element) {
+      element.textContent = preview;
+      element.classList.toggle("hidden", !preview);
+    }
+    const button = $("#applyArtistMixBtn");
+    if (button) button.disabled = !preview;
+  }
+
+  function applyArtistMix() {
+    const favorites = favoriteResourcesForTab("favorite-artists");
+    const composed = app.composeArtistMix(selectedArtistEntries(favorites));
+    if (!composed) return;
+    if (!state.blocks.length) {
+      state.toast = "请先生成结构块，再写入画师混合";
+      renderToast();
+      return;
+    }
+    const artistBlock = state.blocks.find((block) => block.id === "artist");
+    if (artistBlock && artistBlock.locked) {
+      state.toast = "画师块已锁定，请先解锁";
+      renderToast();
+      return;
+    }
+    dispatch({
+      type: "UPDATE_BLOCK",
+      id: "artist",
+      language: "en",
+      value: composed,
+    });
+    dispatch({
+      type: "UPDATE_BLOCK",
+      id: "artist",
+      language: "zh",
+      value: `待本地 LLM 翻译：${composed}`,
+    });
+    state.toast = "画师混合已写入，右侧实时预览";
+    renderToast();
   }
 
   function renderQuickPicks() {
@@ -1861,6 +2458,7 @@
                   : "还没有收藏画师。"
               : "还没有保存的素材，可以从结构块保存或点击“新建”。"
         }</p>`;
+    renderArtistMixer();
   }
 
   async function loadAnimaDexResources(options = {}) {
@@ -1990,6 +2588,13 @@
       progress.status === "idle"
         ? "--"
         : formatProgressElapsed(elapsedSeconds);
+    const cancelButton = $("#cancelGenerationBtn");
+    if (cancelButton) {
+      cancelButton.classList.toggle(
+        "hidden",
+        progress.status !== "running"
+      );
+    }
 
     if (progress.status === "running" && !generationProgressTimer) {
       generationProgressTimer = window.setInterval(
@@ -2009,7 +2614,7 @@
           <label class="analyzer-card">
             <input
               type="checkbox"
-              data-analyzer="${model.id}"
+              data-analyzer="${escapeHtml(model.id)}"
               ${model.selected ? "checked" : ""}
               ${
                 model.status === "running" || model.available === false
@@ -2018,10 +2623,10 @@
               }
             />
             <span>
-              <strong>${model.name}</strong>
-              <span>${model.error || model.detail} · ${model.speed}</span>
+              <strong>${escapeHtml(model.name)}</strong>
+              <span>${escapeHtml(model.error || model.detail)} · ${escapeHtml(model.speed)}</span>
             </span>
-            <b class="model-status ${model.status}">${statusLabel(model.status)}</b>
+            <b class="model-status ${escapeHtml(model.status)}">${statusLabel(model.status)}</b>
           </label>
         `
       )
@@ -2032,7 +2637,7 @@
       .filter((model) => model.selected)
       .map(
         (model) =>
-          `<span class="queue-step ${model.status}" title="${model.name}: ${statusLabel(model.status)}"></span>`
+          `<span class="queue-step ${escapeHtml(model.status)}" title="${escapeHtml(model.name)}: ${statusLabel(model.status)}"></span>`
       )
       .join("");
   }
@@ -2072,6 +2677,13 @@
     analyzeButton.textContent = state.analysisQueue.length
       ? "正在真实识图..."
       : "开始多模型分析";
+    const cancelAnalysisButton = $("#cancelAnalysisBtn");
+    if (cancelAnalysisButton) {
+      cancelAnalysisButton.classList.toggle(
+        "hidden",
+        state.analysisQueue.length === 0
+      );
+    }
   }
 
   function loadImageFile(file) {
@@ -2109,8 +2721,8 @@
           <button
             class="${state.activeRawResult === tab.id ? "active" : ""}"
             type="button"
-            data-raw-result="${tab.id}"
-          >${tab.name}</button>
+            data-raw-result="${escapeHtml(tab.id)}"
+          >${escapeHtml(tab.name)}</button>
         `
       )
       .join("");
@@ -2140,97 +2752,43 @@
       batchButton.textContent = state.batchRegenerating
         ? "联合随机中..."
         : "联合随机";
+      const matrixButton = $("#variantMatrixBtn");
+      if (matrixButton) {
+        matrixButton.disabled =
+          selectedCount < 2 || state.batchRegenerating;
+        matrixButton.textContent = state.batchRegenerating
+          ? "生成中..."
+          : "矩阵×3";
+      }
       $("#clearVariantSelectionBtn").disabled =
         selectedCount === 0 || state.batchRegenerating;
     }
-    $("#blockList").innerHTML = collapsedBlocks
-      ? state.blocks
-          .map(
-            (block) => `
-              <article class="prompt-block ${block.locked ? "locked" : ""} ${
-                state.dirtyBlockIds.includes(block.id) ? "dirty" : ""
-              }" data-block-card="${block.id}">
-                <div class="block-head">
-                  <label class="variant-select" title="加入联合随机">
-                    <input
-                      type="checkbox"
-                      data-select-variant-block="${block.id}"
-                      ${
-                        state.selectedVariantBlockIds.includes(block.id)
-                          ? "checked"
-                          : ""
-                      }
-                      ${
-                        block.locked ||
-                        !RANDOM_VARIANT_BLOCKS.has(block.id) ||
-                        state.batchRegenerating
-                          ? "disabled"
-                          : ""
-                      }
-                    />
-                    <span>选择</span>
-                  </label>
-                  <div class="block-title">
-                    <strong>${block.label}</strong>
-                    <span>${block.source} · 置信度 ${block.confidence}%</span>
-                  </div>
-                  <span class="model-status ready">${block.weight}%</span>
-                  <button
-                    class="regen-button"
-                    type="button"
-                    data-regenerate-block="${block.id}"
-                    title="基于其他结构块生成随机变体"
-                    ${
-                      block.locked ||
-                      !RANDOM_VARIANT_BLOCKS.has(block.id) ||
-                      Boolean(state.regeneratingBlockId) ||
-                      state.batchRegenerating
-                        ? "disabled"
-                        : ""
-                    }
-                  >${
-                    state.regeneratingBlockId === block.id
-                      ? "随机中..."
-                      : "↻ 随机变体"
-                  }</button>
-                  <button class="lock-button" type="button" data-lock-block="${block.id}" title="锁定">
-                    ${block.locked ? "锁" : "开"}
-                  </button>
-                </div>
-              </article>
-            `
-          )
-          .join("")
-      : state.blocks
-          .map(
-            (block) => `
-              <article class="prompt-block ${block.locked ? "locked" : ""} ${
-                state.dirtyBlockIds.includes(block.id) ? "dirty" : ""
-              }" data-block-card="${block.id}">
-                <div class="block-head">
-                  <label class="variant-select" title="加入联合随机">
-                    <input
-                      type="checkbox"
-                      data-select-variant-block="${block.id}"
-                      ${
-                        state.selectedVariantBlockIds.includes(block.id)
-                          ? "checked"
-                          : ""
-                      }
-                      ${
-                        block.locked ||
-                        !RANDOM_VARIANT_BLOCKS.has(block.id) ||
-                        state.batchRegenerating
-                          ? "disabled"
-                          : ""
-                      }
-                    />
-                    <span>选择</span>
-                  </label>
-                  <div class="block-title">
-                    <strong>${block.label}</strong>
-                    <span>${block.hint}</span>
-                  </div>
+    $("#blockList").innerHTML = state.blocks
+      .map((block) => renderBlockCard(block, collapsedBlocks))
+      .join("");
+  }
+
+  function renderBlockCard(block, collapsed) {
+    const blockId = escapeHtml(block.id);
+    const variantDisabled =
+      block.locked ||
+      !RANDOM_VARIANT_BLOCKS.has(block.id) ||
+      state.batchRegenerating
+        ? "disabled"
+        : "";
+    const regenDisabled =
+      block.locked ||
+      !RANDOM_VARIANT_BLOCKS.has(block.id) ||
+      Boolean(state.regeneratingBlockId) ||
+      state.batchRegenerating
+        ? "disabled"
+        : "";
+    const subtitle = collapsed
+      ? `${escapeHtml(block.source)} · 置信度 ${escapeHtml(block.confidence)}%`
+      : escapeHtml(block.hint);
+    const weightArea = collapsed
+      ? `<span class="model-status ready">${block.weight}%</span>`
+      : `
                   <label class="weight-control">
                     <span>权重</span>
                     <input
@@ -2238,73 +2796,151 @@
                       min="0"
                       max="120"
                       value="${block.weight}"
-                      data-block-weight="${block.id}"
+                      data-block-weight="${blockId}"
                     />
                     <b>${block.weight}%</b>
+                  </label>`;
+    const variantCompare =
+      !collapsed && block.pendingVariant
+        ? `
+                <div class="variant-compare">
+                  <div class="variant-compare-copy">
+                    <span>变体前内容</span>
+                    <p>${escapeHtml(block.pendingVariant.previousEn)}</p>
+                    <p>${escapeHtml(block.pendingVariant.previousZh)}</p>
+                  </div>
+                  <div class="variant-compare-actions">
+                    <button type="button" data-keep-variant="${blockId}">保留新变体</button>
+                    <button type="button" data-revert-variant="${blockId}">回退</button>
+                  </div>
+                </div>`
+        : "";
+    const fragment = app.compileBlockFragment(block);
+    const fragmentPreview =
+      !collapsed && block.id !== "negative" && fragment
+        ? `
+                <code class="block-fragment" title="该块编译进英文正向提示词的实际片段">${escapeHtml(fragment)}</code>`
+        : "";
+    const body = collapsed
+      ? ""
+      : `${variantCompare}
+                <div class="block-body">
+                  <label>
+                    <span>English prompt</span>
+                    <textarea
+                      data-block-input="${blockId}"
+                      data-language="en"
+                      ${block.locked ? "readonly" : ""}
+                    >${escapeHtml(block.en)}</textarea>
                   </label>
+                  <label>
+                    <span>中文释义</span>
+                    <textarea
+                      data-block-input="${blockId}"
+                      data-language="zh"
+                      ${block.locked ? "readonly" : ""}
+                    >${escapeHtml(block.zh)}</textarea>
+                  </label>
+                </div>${fragmentPreview}
+                <div class="block-foot">
+                  <span>来源：${escapeHtml(block.source)}</span>
+                  <span>置信度 ${escapeHtml(block.confidence)}%</span>
+                  <button type="button" data-save-block="${blockId}">保存为资源</button>
+                </div>`;
+    return `
+              <article class="prompt-block ${block.locked ? "locked" : ""} ${
+                state.dirtyBlockIds.includes(block.id) ? "dirty" : ""
+              }" data-block-card="${blockId}">
+                <div class="block-head">
+                  <label class="variant-select" title="加入联合随机">
+                    <input
+                      type="checkbox"
+                      data-select-variant-block="${blockId}"
+                      ${
+                        state.selectedVariantBlockIds.includes(block.id)
+                          ? "checked"
+                          : ""
+                      }
+                      ${variantDisabled}
+                    />
+                    <span>选择</span>
+                  </label>
+                  <div class="block-title">
+                    <strong>${escapeHtml(block.label)}</strong>
+                    <span>${subtitle}</span>
+                  </div>
+                  ${weightArea}
                   <button
                     class="regen-button"
                     type="button"
-                    data-regenerate-block="${block.id}"
+                    data-regenerate-block="${blockId}"
                     title="基于其他结构块生成随机变体"
-                    ${
-                      block.locked ||
-                      !RANDOM_VARIANT_BLOCKS.has(block.id) ||
-                      Boolean(state.regeneratingBlockId) ||
-                      state.batchRegenerating
-                        ? "disabled"
-                        : ""
-                    }
+                    ${regenDisabled}
                   >${
                     state.regeneratingBlockId === block.id
                       ? "随机中..."
                       : "↻ 随机变体"
                   }</button>
-                  <button class="lock-button" type="button" data-lock-block="${block.id}" title="锁定">
+                  <button class="lock-button" type="button" data-lock-block="${blockId}" title="锁定">
                     ${block.locked ? "锁" : "开"}
                   </button>
-                </div>
-                <div class="block-body">
-                  <label>
-                    <span>English prompt</span>
-                    <textarea
-                      data-block-input="${block.id}"
-                      data-language="en"
-                      ${block.locked ? "readonly" : ""}
-                    >${block.en}</textarea>
-                  </label>
-                  <label>
-                    <span>中文释义</span>
-                    <textarea
-                      data-block-input="${block.id}"
-                      data-language="zh"
-                      ${block.locked ? "readonly" : ""}
-                    >${block.zh}</textarea>
-                  </label>
-                </div>
-                <div class="block-foot">
-                  <span>来源：${block.source}</span>
-                  <span>置信度 ${block.confidence}%</span>
-                  <button type="button" data-save-block="${block.id}">保存为资源</button>
-                </div>
+                </div>${body}
               </article>
-            `
-          )
-          .join("");
+            `;
   }
 
   function renderEditorStatus() {
     const hasVersion = state.version > 0;
-    $("#versionBadge").textContent = hasVersion ? `V${state.version}` : "尚未生成";
+    const previewing = Boolean(state.previewOutput);
+    $("#versionBadge").textContent = hasVersion
+      ? previewing
+        ? `V${state.version} · 实时预览`
+        : `V${state.version}`
+      : "尚未生成";
     const pendingBar = $("#pendingBar");
     const dirtyCount = state.dirtyBlockIds.length;
     pendingBar.classList.toggle("hidden", dirtyCount === 0);
     $("#pendingSummary").textContent = dirtyCount
-      ? `已修改 ${dirtyCount} 个结构块，右侧仍是 V${state.version}。`
+      ? `已修改 ${dirtyCount} 个结构块，右侧输出为实时预览；应用后固化为 V${state.version + 1}。`
       : "";
+    renderVersionTimeline();
+  }
+
+  function renderVersionTimeline() {
+    const container = $("#versionTimeline");
+    if (!container) return;
+    const history = state.versionHistory || [];
+    container.classList.toggle("hidden", history.length < 2);
+    if (history.length < 2) {
+      container.innerHTML = "";
+      return;
+    }
+    container.innerHTML = history
+      .slice(-8)
+      .map((entry) => {
+        const isCurrent = entry.version === state.version;
+        const label = entry.restoredFrom
+          ? `V${entry.version}↩`
+          : `V${entry.version}`;
+        return `
+          <button
+            class="version-chip ${isCurrent ? "active" : ""}"
+            type="button"
+            data-restore-version="${entry.version}"
+            title="${
+              isCurrent
+                ? "当前版本"
+                : `恢复到 V${entry.version}（会生成新版本，不丢历史）`
+            }"
+            ${isCurrent ? "disabled" : ""}
+          >${label}</button>
+        `;
+      })
+      .join("");
   }
 
   function renderOutput() {
+    const output = state.previewOutput || state.output;
     for (const key of [
       "positiveEn",
       "positiveZh",
@@ -2312,7 +2948,7 @@
       "negativeZh",
     ]) {
       const element = $(`#${key}`);
-      if (element) element.value = state.output[key] || "";
+      if (element) element.value = output[key] || "";
     }
     $$("[data-output-lang]").forEach((button) => {
       button.classList.toggle(
@@ -2368,10 +3004,10 @@
         (model) => `
           <div class="drawer-model-row">
             <span>
-              <strong>${model.name}</strong>
-              <span>${model.device} · ${model.detail}</span>
+              <strong>${escapeHtml(model.name)}</strong>
+              <span>${escapeHtml(model.device)} · ${escapeHtml(model.detail)}</span>
             </span>
-            <b class="model-status ${model.status}">${statusLabel(model.status)}</b>
+            <b class="model-status ${escapeHtml(model.status)}">${statusLabel(model.status)}</b>
           </div>
         `
       )
@@ -2459,6 +3095,7 @@
     renderImageUpload();
     renderRawResults();
     renderBlocks();
+    renderVariantMatrix();
     renderEditorStatus();
     renderOutput();
     renderDrawer();
@@ -2494,8 +3131,10 @@
     if (!analyzerIds.length) return;
     try {
       const dataBase64 = await fileToBase64(uploadedImageFile);
+      activeVisionAbort = new AbortController();
       const result = await apiJson("/api/vision/analyze", {
         method: "POST",
+        signal: activeVisionAbort.signal,
         body: JSON.stringify({
           filename: uploadedImageFile.name,
           mimeType: uploadedImageFile.type,
@@ -2507,8 +3146,12 @@
     } catch (error) {
       dispatch({
         type: "IMAGE_ANALYSIS_FAILED",
-        error: error.message || "图片分析失败",
+        error: isAbortError(error)
+          ? "已取消图片分析"
+          : error.message || "图片分析失败",
       });
+    } finally {
+      activeVisionAbort = null;
     }
   }
 
@@ -2613,6 +3256,47 @@
       dispatch({ type: "SET_RAW_RESULT", id: button.dataset.rawResult });
       return;
     }
+    if (button.dataset.pickMatrix !== undefined && variantMatrix) {
+      const candidate =
+        variantMatrix.candidates[Number(button.dataset.pickMatrix)];
+      if (candidate) {
+        dispatch({
+          type: "APPLY_BLOCKS_VARIANT",
+          item: candidate,
+          blockIds: variantMatrix.blockIds,
+        });
+      }
+      variantMatrix = null;
+      renderVariantMatrix();
+      return;
+    }
+    if (button.dataset.dismissMatrix) {
+      variantMatrix = null;
+      renderVariantMatrix();
+      return;
+    }
+    if (button.id === "applyArtistMixBtn") {
+      applyArtistMix();
+      return;
+    }
+    if (button.dataset.keepVariant) {
+      dispatch({ type: "KEEP_BLOCK_VARIANT", id: button.dataset.keepVariant });
+      return;
+    }
+    if (button.dataset.revertVariant) {
+      dispatch({
+        type: "REVERT_BLOCK_VARIANT",
+        id: button.dataset.revertVariant,
+      });
+      return;
+    }
+    if (button.dataset.restoreVersion) {
+      dispatch({
+        type: "RESTORE_VERSION",
+        version: Number(button.dataset.restoreVersion),
+      });
+      return;
+    }
     if (button.dataset.lockBlock) {
       dispatch({ type: "TOGGLE_BLOCK_LOCK", id: button.dataset.lockBlock });
       return;
@@ -2650,6 +3334,14 @@
     }
 
     const action = button.dataset.action;
+    if (action === "cancel-generation") {
+      if (activeTextAbort) activeTextAbort.abort();
+      return;
+    }
+    if (action === "cancel-analysis") {
+      if (activeVisionAbort) activeVisionAbort.abort();
+      return;
+    }
     if (action === "open-models") {
       dispatch({ type: "TOGGLE_DRAWER", open: true });
       loadLocalLlmStatus();
@@ -2694,6 +3386,10 @@
       dispatch({ type: "APPLY_CHANGES" });
     } else if (action === "clear-variant-selection") {
       dispatch({ type: "CLEAR_VARIANT_SELECTION" });
+    } else if (action === "save-recipe") {
+      saveCurrentRecipe();
+    } else if (action === "variant-matrix") {
+      generateVariantMatrix();
     } else if (action === "regenerate-selected-blocks") {
       regeneratePromptBlocks();
     } else if (action === "quick-resource") {
@@ -2739,6 +3435,14 @@
       }, 260);
     } else if (event.target.id === "promptTemplateContent") {
       promptTemplateDialog.content = event.target.value;
+    } else if (event.target.dataset.mixWeight) {
+      const id = event.target.dataset.mixWeight;
+      if (artistMix.has(id)) {
+        artistMix.set(id, Number(event.target.value));
+        const label = event.target.closest(".artist-mix-weight");
+        if (label) label.querySelector("b").textContent = `${event.target.value}%`;
+        refreshArtistMixPreview();
+      }
     } else if (event.target.dataset.blockWeight) {
       state = app.reduceState(state, {
         type: "SET_BLOCK_WEIGHT",
@@ -2749,6 +3453,7 @@
       if (control) control.querySelector("b").textContent = `${event.target.value}%`;
       event.target.closest(".prompt-block")?.classList.add("dirty");
       renderEditorStatus();
+      renderOutput();
     } else if (event.target.dataset.blockInput) {
       state = app.reduceState(state, {
         type: "UPDATE_BLOCK",
@@ -2758,10 +3463,84 @@
       });
       event.target.closest(".prompt-block")?.classList.add("dirty");
       renderEditorStatus();
+      renderOutput();
+      updateTagSuggest(event.target);
+    }
+  });
+
+  document.addEventListener(
+    "blur",
+    (event) => {
+      if (event.target === tagSuggest.target) hideTagSuggest();
+    },
+    true
+  );
+
+  document.addEventListener("keydown", (event) => {
+    if (tagSuggestOpen() && event.target === tagSuggest.target) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        moveTagSuggest(1);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        moveTagSuggest(-1);
+        return;
+      }
+      if (event.key === "Tab" || (event.key === "Enter" && !event.ctrlKey && !event.metaKey)) {
+        event.preventDefault();
+        applyTagSuggestion();
+        return;
+      }
+      if (event.key === "Escape") {
+        hideTagSuggest();
+        return;
+      }
+    }
+    const modifier = event.ctrlKey || event.metaKey;
+    if (event.key === "Escape") {
+      if (state.drawerOpen) {
+        dispatch({ type: "TOGGLE_DRAWER", open: false });
+        return;
+      }
+      if (state.resourceDialogOpen) {
+        dispatch({ type: "TOGGLE_RESOURCE_DIALOG", open: false });
+        return;
+      }
+      return;
+    }
+    if (!modifier) return;
+    if (event.key === "Enter" && event.shiftKey) {
+      if (state.view === "text" && state.dirtyBlockIds.length) {
+        event.preventDefault();
+        dispatch({ type: "APPLY_CHANGES" });
+      }
+      return;
+    }
+    if (event.key === "Enter") {
+      if (state.view === "text" && !state.textGenerating && !state.textDecomposing) {
+        event.preventDefault();
+        expandTextPrompt();
+      }
+      return;
+    }
+    if ((event.key === "s" || event.key === "S") && !event.shiftKey) {
+      if (state.view === "text" && state.version > 0) {
+        event.preventDefault();
+        saveCurrentProject();
+      }
     }
   });
 
   document.addEventListener("change", (event) => {
+    if (event.target.dataset.mixArtist) {
+      const id = event.target.dataset.mixArtist;
+      if (event.target.checked) artistMix.set(id, artistMix.get(id) ?? 100);
+      else artistMix.delete(id);
+      renderArtistMixer();
+      return;
+    }
     if (event.target.dataset.selectVariantBlock) {
       dispatch({
         type: "TOGGLE_VARIANT_SELECTION",

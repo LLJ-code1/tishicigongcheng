@@ -3,6 +3,9 @@
 ## 先读
 
 - [项目总览](project-overview.md)：产品边界与核心模块。
+- [产品需求文档](product-requirements.md)：已确认的目标用户、主流程、功能边界与非目标。
+- [分阶段实施计划](implementation-plan.md)：从现状收口到资产库的实施顺序。
+- [验收标准](acceptance-criteria.md)：功能、数据、隐私和实际出图的完成定义。
 - [架构说明](architecture.md)：进程、数据边界和 API 速查。
 - [数据模型](data-model.md)：Prompt Studio SQLite 表结构。
 - [路线图](roadmap.md)：已落地能力和下一阶段工作。
