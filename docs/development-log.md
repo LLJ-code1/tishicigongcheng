@@ -1,5 +1,17 @@
 # 开发日志
 
+## 2026-07-14 对抗式边界测试与修复
+
+- 发现 `SimpleHTTPRequestHandler` 会把 `prototype/data/prompt_studio.db`
+  作为静态文件下载；该数据库可能含外部 API Key。静态服务现改为仅公开
+  工作台所需的入口、JS、CSS 与 `assets/`，并拒绝编码路径绕过。
+- 发现顶层数组、字符串或非 UTF-8 JSON 会造成部分 API 请求线程异常断开。
+  现统一要求 UTF-8 JSON 对象并限制请求体为 30 MB，返回可读的 HTTP 400。
+- 图片分析不再仅信任浏览器 MIME 声明，服务端会校验 PNG/JPG/WEBP 的文件签名，
+  阻止伪装的任意字节进入本地视觉 worker。
+- 新增 HTTP 边界回归测试，覆盖私有数据库访问、编码路径绕过、非对象/非 UTF-8
+  JSON 与伪装图片数据。
+
 ## 2026-06-20
 
 ### 项目化

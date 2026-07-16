@@ -148,6 +148,7 @@
   }
 
   function compileBlockFragment(block) {
+    if (block.id === "negative") return "";
     const factor = formatBlockWeight(block.weight);
     return splitPromptItems(block.en)
       .map((item) => (factor ? `(${item}:${factor})` : item))
@@ -846,6 +847,7 @@
             id: resource.targetBlock,
             en: resource.en,
             zh: resource.zh,
+            weight: resource.weight,
           },
         ];
         resourceBlocks.forEach((resourceBlock) => {
@@ -854,6 +856,10 @@
           block.en = resourceBlock.en;
           block.zh =
             resourceBlock.zh || `待本地 LLM 翻译：${resourceBlock.en}`;
+          if (resourceBlock.weight !== undefined) {
+            const weight = Number(resourceBlock.weight);
+            if (Number.isFinite(weight)) block.weight = weight;
+          }
           block.source = resource.source || block.source;
           markDirty(next, block.id);
         });
@@ -1183,12 +1189,17 @@
     }
   }
 
+  function currentOutput(state) {
+    return state.previewOutput || state.output;
+  }
+
   function getCombinedPrompt(state) {
+    const output = currentOutput(state);
     return [
-      state.output.positiveEn,
-      state.output.positiveZh,
-      state.output.negativeEn,
-      state.output.negativeZh,
+      output.positiveEn,
+      output.positiveZh,
+      output.negativeEn,
+      output.negativeZh,
     ].join("\n");
   }
 
@@ -1953,6 +1964,7 @@
         id: block.id,
         en: block.en,
         zh: block.zh,
+        weight: block.weight,
       })),
     };
     dispatch({ type: "ADD_RECIPE", recipe });
@@ -2786,9 +2798,11 @@
     const subtitle = collapsed
       ? `${escapeHtml(block.source)} · 置信度 ${escapeHtml(block.confidence)}%`
       : escapeHtml(block.hint);
-    const weightArea = collapsed
-      ? `<span class="model-status ready">${block.weight}%</span>`
-      : `
+    const weightArea = block.id === "negative"
+      ? ""
+      : collapsed
+        ? `<span class="model-status ready">${block.weight}%</span>`
+        : `
                   <label class="weight-control">
                     <span>权重</span>
                     <input
@@ -3320,7 +3334,8 @@
       return;
     }
     if (button.dataset.copy) {
-      copyText(state.output[button.dataset.copy]);
+      const output = state.previewOutput || state.output;
+      copyText(output[button.dataset.copy]);
       return;
     }
     if (button.dataset.setting) {

@@ -1,13 +1,21 @@
 import sys
+import tempfile
 import unittest
 import base64
+import json
+import threading
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+from unittest.mock import patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from server import (  # noqa: E402
     PROMPT_TEMPLATES,
+    PromptStudioHandler,
     map_artist,
     map_character,
     normalize_search_result,
@@ -424,7 +432,9 @@ class AnimaDexAdapterTests(unittest.TestCase):
             {
                 "filename": "reference.webp",
                 "mimeType": "image/webp",
-                "dataBase64": base64.b64encode(b"actual-image").decode("ascii"),
+                "dataBase64": base64.b64encode(
+                    b"RIFF\x04\x00\x00\x00WEBP"
+                ).decode("ascii"),
                 "analyzerIds": ["florence"],
             },
             settings_payload={"localTextModel": "local-model"},
@@ -432,7 +442,7 @@ class AnimaDexAdapterTests(unittest.TestCase):
         )
 
         self.assertEqual(result["positiveEn"], "multiple girls")
-        self.assertEqual(captured["bytes"], b"actual-image")
+        self.assertEqual(captured["bytes"], b"RIFF\x04\x00\x00\x00WEBP")
         self.assertEqual(captured["filename"], "reference.webp")
         self.assertEqual(captured["analyzers"], ["florence"])
         self.assertEqual(captured["model"], "local-model")
@@ -455,6 +465,21 @@ class AnimaDexAdapterTests(unittest.TestCase):
                         engine=lambda *args, **kwargs: {},
                     )
 
+    def test_vision_analysis_rejects_non_image_bytes_with_a_forged_mime_type(self):
+        payload = {
+            "filename": "disguised.png",
+            "mimeType": "image/png",
+            "dataBase64": base64.b64encode(b"not actually an image").decode("ascii"),
+            "analyzerIds": ["florence"],
+        }
+
+        with self.assertRaises(ValueError):
+            process_vision_analyze_request(
+                payload,
+                settings_payload={},
+                engine=lambda *args, **kwargs: {},
+            )
+
     def test_local_llm_routes_are_declared(self):
         source = (Path(__file__).resolve().parents[1] / "server.py").read_text(
             encoding="utf-8"
@@ -469,6 +494,65 @@ class AnimaDexAdapterTests(unittest.TestCase):
         self.assertIn('"/api/text/random"', source)
         self.assertIn('"/api/text/translate-pending"', source)
         self.assertIn('"/api/vision/analyze"', source)
+
+
+class HttpBoundaryAdversarialTests(unittest.TestCase):
+    """Exercise malformed requests and direct static-file access at the HTTP boundary."""
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name)
+        (self.root / "index.html").write_text("safe home", encoding="utf-8")
+        private_data = self.root / "data"
+        private_data.mkdir()
+        (private_data / "prompt_studio.db").write_bytes(b"secret sqlite content")
+        self.root_patch = patch("server.ROOT", self.root)
+        self.root_patch.start()
+        self.db_patch = patch("server.init_db")
+        self.db_patch.start()
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), PromptStudioHandler)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.base_url = f"http://127.0.0.1:{self.httpd.server_port}"
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.thread.join(timeout=2)
+        self.httpd.server_close()
+        self.db_patch.stop()
+        self.root_patch.stop()
+        self.tempdir.cleanup()
+
+    def test_static_handler_serves_only_public_assets(self):
+        with urlopen(f"{self.base_url}/index.html") as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.read(), b"safe home")
+
+        with self.assertRaises(HTTPError) as context:
+            urlopen(f"{self.base_url}/data/prompt_studio.db")
+
+        self.assertEqual(context.exception.code, 404)
+
+        with self.assertRaises(HTTPError) as context:
+            urlopen(f"{self.base_url}/assets/%2e%2e/data/prompt_studio.db")
+
+        self.assertEqual(context.exception.code, 404)
+
+    def test_json_endpoints_reject_non_object_and_non_utf8_bodies(self):
+        for body in (b"[]", b'"not an object"', b"\xff"):
+            with self.subTest(body=body):
+                with self.assertRaises(HTTPError) as context:
+                    request = Request(
+                        f"{self.base_url}/api/text/expand",
+                        data=body,
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    urlopen(request)
+
+                self.assertEqual(context.exception.code, 400)
+                payload = json.loads(context.exception.read().decode("utf-8"))
+                self.assertIn("error", payload)
 
 
 if __name__ == "__main__":

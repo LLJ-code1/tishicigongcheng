@@ -109,4 +109,7 @@ AnimaDex 网关：
 - 每次实现明显功能后，更新 `docs/development-log.md`。
 - 重要设计变化更新 `docs/architecture.md` 或 `docs/roadmap.md`。
 - API Key 仅保存在本机 Prompt Studio SQLite；数据库文件不得分享或提交。
+- 静态 HTTP 只提供工作台入口、脚本、样式和 `assets/`；`data/`、源码和提示词文件
+  不得通过静态路径下载。所有 JSON API 仅接受 UTF-8 对象且请求体上限为 30 MB；
+  图片分析还会校验 PNG/JPG/WEBP 文件签名与声明格式一致。
 - 自动测试使用临时数据库和 mock provider，不依赖本机模型或外部网络。

@@ -998,6 +998,28 @@ test("editing a block produces a live preview without touching the version", () 
   assert.match(state.output.positiveEn, /kneeling in shallow water/);
 });
 
+test("combined prompt uses the live preview while edits are pending", () => {
+  const { getCombinedPrompt } = require("../app.js");
+  let state = createGeneratedState();
+
+  state = reduceState(state, {
+    type: "UPDATE_BLOCK",
+    id: "pose",
+    language: "en",
+    value: "balancing on a glass bridge",
+  });
+
+  assert.match(getCombinedPrompt(state), /balancing on a glass bridge/);
+  assert.doesNotMatch(getCombinedPrompt(state), /pose en/);
+});
+
+test("copy buttons read the same live output shown in the panel", () => {
+  const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+
+  assert.match(app, /state\.previewOutput \|\| state\.output/);
+  assert.doesNotMatch(app, /copyText\(state\.output\[button\.dataset\.copy\]\)/);
+});
+
 test("compilation deduplicates repeated items and applies block weight syntax", () => {
   let state = createGeneratedState();
   state = reduceState(state, {
@@ -1033,6 +1055,17 @@ test("a zero-weight block is excluded from compiled output", () => {
   });
   state = reduceState(state, { type: "APPLY_CHANGES" });
   assert.doesNotMatch(state.output.positiveEn, /effects en/);
+});
+
+test("negative blocks do not expose positive prompt weight controls", () => {
+  const { compileBlockFragment } = require("../app.js");
+  const app = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+
+  assert.equal(
+    compileBlockFragment({ id: "negative", en: "bad anatomy", weight: 0 }),
+    ""
+  );
+  assert.match(app, /block\.id === "negative"\s*\?\s*""\s*:/);
 });
 
 test("a block variant can be compared then kept or reverted", () => {
@@ -1146,6 +1179,27 @@ test("a recipe saves all blocks and can be applied back", () => {
   );
   assert.ok(state.previewOutput);
   assert.ok(state.dirtyBlockIds.length > 0);
+});
+
+test("recipes preserve block weights when reapplied", () => {
+  let state = createGeneratedState();
+  const recipe = {
+    id: "weighted-recipe",
+    type: "snippets",
+    name: "权重配方",
+    meta: "配方 · 整组结构块",
+    blocks: state.blocks.map((block) => ({
+      id: block.id,
+      en: `${block.id} weighted en`,
+      zh: `${block.id} weighted zh`,
+      weight: block.id === "effects" ? 45 : block.weight,
+    })),
+  };
+
+  state = reduceState(state, { type: "ADD_RECIPE", recipe });
+  state = reduceState(state, { type: "APPLY_RESOURCE", id: "weighted-recipe" });
+
+  assert.equal(state.blocks.find((block) => block.id === "effects").weight, 45);
 });
 
 test("a variant matrix candidate applies with explicit block ids", () => {

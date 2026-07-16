@@ -55,6 +55,8 @@ UPSTREAM_TIMEOUT = float(os.environ.get("ANIMADEX_TIMEOUT", "3"))
 RESOURCE_PAGE_SIZE = 72
 ALLOWED_MODES = {"characters", "artists"}
 PROMPT_TEMPLATE_DIR = ROOT / "prompts"
+MAX_JSON_BODY_BYTES = 30 * 1024 * 1024
+PUBLIC_STATIC_FILES = {"/", "/index.html", "/app.js", "/data.js", "/styles.css"}
 DEFAULT_TEXT_SETTINGS = {
     "textProvider": "local",
     "localTextUrl": "http://127.0.0.1:8080/v1",
@@ -134,6 +136,25 @@ def search_path(mode: str, query: str, page: int, sort: str = "count") -> str:
     return f"/api/{mode}/search?{urlencode(params)}"
 
 
+def is_public_static_path(path: str) -> bool:
+    """Allow only the workbench files needed by the browser.
+
+    SimpleHTTPRequestHandler otherwise exposes every file below ``ROOT``, including
+    the local SQLite database that stores provider settings and API keys.
+    """
+
+    decoded_path = unquote(urlparse(path).path)
+    if decoded_path in PUBLIC_STATIC_FILES:
+        return True
+    try:
+        resolved_path = (ROOT / decoded_path.lstrip("/")).resolve()
+        assets_directory = (ROOT / "assets").resolve()
+        resolved_path.relative_to(assets_directory)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def pending_translation(value: str) -> str:
     return f"待本地 LLM 翻译：{value}" if value else ""
 
@@ -142,6 +163,22 @@ def normalize_tags(value: object) -> str:
     if isinstance(value, list):
         return ", ".join(str(tag).strip() for tag in value if str(tag).strip())
     return str(value or "").strip()
+
+
+def detect_image_mime_type(image_bytes: bytes) -> str:
+    """Identify the image format from its signature instead of client metadata."""
+
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if (
+        len(image_bytes) >= 12
+        and image_bytes[:4] == b"RIFF"
+        and image_bytes[8:12] == b"WEBP"
+    ):
+        return "image/webp"
+    return ""
 
 
 def map_character(item: dict) -> dict:
@@ -430,6 +467,11 @@ def process_vision_analyze_request(
         raise ValueError("图片数据不是有效的 Base64") from error
     if not image_bytes or len(image_bytes) > 20 * 1024 * 1024:
         raise ValueError("图片为空或超过 20 MB")
+    detected_mime_type = detect_image_mime_type(image_bytes)
+    if not detected_mime_type:
+        raise ValueError("图片内容不是受支持的 PNG、JPG 或 WEBP 文件")
+    if detected_mime_type != mime_type:
+        raise ValueError("图片内容与声明的格式不一致，请重新选择文件")
     saved_settings = (
         settings_payload if settings_payload is not None else get_settings()
     )
@@ -454,11 +496,23 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def read_json(self) -> dict:
-        length = int(self.headers.get("Content-Length") or 0)
+        raw_length = self.headers.get("Content-Length") or "0"
+        try:
+            length = int(raw_length)
+        except ValueError as error:
+            raise ValueError("请求长度无效") from error
         if length <= 0:
             return {}
-        body = self.rfile.read(length).decode("utf-8")
-        return json.loads(body) if body.strip() else {}
+        if length > MAX_JSON_BODY_BYTES:
+            raise ValueError("请求内容超过 30 MB 限制")
+        try:
+            body = self.rfile.read(length).decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise ValueError("请求 JSON 必须使用 UTF-8 编码") from error
+        payload = json.loads(body) if body.strip() else {}
+        if not isinstance(payload, dict):
+            raise ValueError("请求 JSON 顶层必须是对象")
+        return payload
 
     def send_bad_json(self) -> None:
         self.send_json({"error": "请求 JSON 无法解析"}, status=400)
@@ -497,6 +551,8 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             return self.handle_resources(parsed.query)
         if parsed.path.startswith("/api/animadex/thumb/"):
             return self.handle_thumbnail(parsed.path)
+        if not is_public_static_path(parsed.path):
+            return self.send_error(404)
         return super().do_GET()
 
     def do_POST(self) -> None:
@@ -584,6 +640,8 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             payload = self.read_json()
         except json.JSONDecodeError:
             return self.send_bad_json()
+        except ValueError as error:
+            return self.send_json({"error": str(error)}, status=400)
         content = payload.get("content")
         if not isinstance(content, str):
             return self.send_json({"error": "模板内容必须是字符串"}, status=400)
@@ -598,6 +656,8 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             payload = self.read_json()
         except json.JSONDecodeError:
             return self.send_bad_json()
+        except ValueError as error:
+            return self.send_json({"error": str(error)}, status=400)
         project = create_project(payload)
         self.send_json({"item": project}, status=201)
 
@@ -757,6 +817,8 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             payload = self.read_json()
         except json.JSONDecodeError:
             return self.send_bad_json()
+        except ValueError as error:
+            return self.send_json({"error": str(error)}, status=400)
         version = create_prompt_version(project_id, payload)
         self.send_json({"item": version}, status=201)
 
@@ -794,6 +856,8 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             payload = self.read_json()
         except json.JSONDecodeError:
             return self.send_bad_json()
+        except ValueError as error:
+            return self.send_json({"error": str(error)}, status=400)
         self.send_json({"settings": put_settings(payload)})
 
     def handle_status(self) -> None:

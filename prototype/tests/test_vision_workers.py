@@ -1,9 +1,9 @@
 import json
 import sys
 import unittest
+from importlib.util import find_spec
 from pathlib import Path
 
-import numpy
 from PIL import Image
 
 
@@ -12,7 +12,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from vision_worker_common import encode_worker_result  # noqa: E402
 from vision_worker_joycaption import resolve_joycaption_model  # noqa: E402
 from vision_worker_qwenvl import qwen_model_status  # noqa: E402
-from vision_worker_wd14 import prepare_wd14_image  # noqa: E402
+
+
+HAS_NUMPY = find_spec("numpy") is not None
+if HAS_NUMPY:
+    import numpy
+    from vision_worker_wd14 import prepare_wd14_image  # noqa: E402
 
 
 class VisionWorkerTests(unittest.TestCase):
@@ -22,6 +27,7 @@ class VisionWorkerTests(unittest.TestCase):
         self.assertEqual(payload["result"], "1girl, solo")
         self.assertEqual(payload["elapsed"], 1.25)
 
+    @unittest.skipUnless(HAS_NUMPY, "WD14 preprocessing requires optional numpy")
     def test_wd14_preprocesses_to_bgr_square_float_batch(self):
         image = Image.new("RGB", (640, 320), (255, 0, 0))
         batch = prepare_wd14_image(image, 448)
