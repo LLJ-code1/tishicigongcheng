@@ -1,0 +1,147 @@
+{
+  "kind": "anima_model_profile",
+  "schemaVersion": 1,
+  "profileId": "anima-1.1-v1",
+  "displayName": "MiaoMiao Harem Anima_1.1",
+  "validationStatus": "pending_local_validation",
+  "model": {
+    "family": "MiaoMiao Harem",
+    "branch": "Anima",
+    "versionName": "Anima_1.1",
+    "versionId": 3004063,
+    "baseModel": "Anima",
+    "checkpoint": {
+      "filename": null,
+      "sha256": null,
+      "verificationStatus": "unverified"
+    }
+  },
+  "prompting": {
+    "positivePrefix": [
+      "masterpiece",
+      "best quality",
+      "score_7"
+    ],
+    "optionalEnhancements": [
+      "very aesthetic",
+      "ultra-detailed",
+      "high contrast"
+    ],
+    "positiveSuffix": [],
+    "negativeDefault": [
+      "worst quality",
+      "low quality",
+      "score_1",
+      "score_2",
+      "score_3",
+      "artist name"
+    ]
+  },
+  "parameters": {
+    "defaults": {
+      "sampler": "Euler",
+      "scheduler": "Normal",
+      "steps": 30,
+      "cfg": 5.5
+    },
+    "recommendedRanges": {
+      "cfg": {
+        "min": 4.0,
+        "max": 6.0
+      }
+    },
+    "samplerSchedulerPairs": [
+      {
+        "sampler": "Euler",
+        "scheduler": "Normal"
+      },
+      {
+        "sampler": "Euler a",
+        "scheduler": "Normal"
+      }
+    ],
+    "verificationStatus": "author_reported"
+  },
+  "resolutions": {
+    "validatedPresets": [],
+    "candidatePresets": [
+      {
+        "id": "portrait-768x1024",
+        "width": 768,
+        "height": 1024,
+        "label": "768 × 1024（来源候选，待本地验证）",
+        "verificationStatus": "author_reported_pending_local_validation",
+        "evidenceRef": "author-page-2026-06-08",
+        "autoRecommend": false
+      },
+      {
+        "id": "portrait-832x1216",
+        "width": 832,
+        "height": 1216,
+        "label": "832 × 1216（来源候选，待本地验证）",
+        "verificationStatus": "author_reported_pending_local_validation",
+        "evidenceRef": "author-page-2026-06-08",
+        "autoRecommend": false
+      },
+      {
+        "id": "portrait-896x1152",
+        "width": 896,
+        "height": 1152,
+        "label": "896 × 1152（来源候选，待本地验证）",
+        "verificationStatus": "author_reported_pending_local_validation",
+        "evidenceRef": "author-page-2026-06-08",
+        "autoRecommend": false
+      },
+      {
+        "id": "square-1024x1024",
+        "width": 1024,
+        "height": 1024,
+        "label": "1024 × 1024（来源候选，待本地验证）",
+        "verificationStatus": "author_reported_pending_local_validation",
+        "evidenceRef": "author-page-2026-06-08",
+        "autoRecommend": false
+      },
+      {
+        "id": "portrait-920x1536",
+        "width": 920,
+        "height": 1536,
+        "label": "920 × 1536（来源候选，待本地验证）",
+        "verificationStatus": "author_reported_pending_local_validation",
+        "evidenceRef": "author-page-2026-06-08",
+        "autoRecommend": false
+      }
+    ],
+    "policy": "只有进入 validatedPresets 且标记为 locally_validated 的尺寸才能自动推荐；当前候选只供用户查看或手动选择。"
+  },
+  "compatibility": {
+    "loraTypes": [],
+    "knownCompatibleLoras": [],
+    "knownConflicts": [],
+    "verificationStatus": "not_assessed"
+  },
+  "evidence": [
+    {
+      "id": "author-page-2026-06-08",
+      "kind": "author_page_snapshot",
+      "title": "MiaoMiao Harem 模型页与 API 信息的项目记录",
+      "url": "https://civitai.com/models/934764/miaomiao-harem",
+      "retrievedAt": "2026-06-08",
+      "claimScope": "版本 ID、基础模型、提示词能力、采样参数基线与页面常用尺寸候选。",
+      "verificationStatus": "recorded_source_snapshot_not_rechecked"
+    },
+    {
+      "id": "local-validation-pending",
+      "kind": "local_validation",
+      "title": "本机模型与参数验收",
+      "url": null,
+      "retrievedAt": "not-run",
+      "claimScope": "checkpoint 文件名与哈希、尺寸质量、LoRA 兼容性和最终推荐参数。",
+      "verificationStatus": "not_run"
+    }
+  ],
+  "metadata": {
+    "baselineStatus": "initial_profile_pending_local_validation",
+    "sourceDocument": "MiaoMiao_Harem_Anima_项目规范.md",
+    "productRequirement": "docs/product-requirements.md"
+  }
+}

@@ -26,6 +26,11 @@ node --test prototype\tests\app.test.js
   `prototype/prompts/compiled/text_expand_anima.md` 由
   `scripts/export_text_expand_prompt.py` 生成。
 - AnimaDex 数据保持只读；用户收藏、译名、备注、版本和设置写入 Prompt Studio。
+- 当前前端保存只走 `POST /api/workspace/commit`，保持稳定 `operationId` /
+  `Idempotency-Key` 和冻结正文；不要重新拆成项目、版本、metadata 多次写入。
+- 词库 `random-plan` 必须保留实验环境变量与目录发布门禁；未完成语义审核前不得把
+  `runtimeReady` 改为 true。
+- 产品恢复只能写隔离数据库并返回 `activated=false`；不得由 HTTP 请求替换当前库。
 - 视觉 worker 必须输出统一 JSON，并允许单模型失败时保留其他模型结果。
 - 新增或修改行为时同步 Python/Node 测试；不得用真实外部 API 作为自动测试前提。
 
@@ -35,3 +40,5 @@ node --test prototype\tests\app.test.js
   对应接入文档；完成状态更新 `docs/roadmap.md`。
 - `docs/superpowers/specs/` 与 `docs/superpowers/plans/` 是历史快照，不作为当前待办。
 - 新增 API 时同步架构 API 速查；新增表或字段时同步数据模型。
+- API 示例见 `docs/integration-guide.md`；环境变量、构建、回归和恢复操作见
+  `docs/operator-runbook.md`。

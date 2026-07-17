@@ -1,0 +1,66 @@
+name: Regression
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    name: Windows clean-environment regression
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository and submodules
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install minimal Python dependency
+        run: python -m pip install --disable-pip-version-check --no-input Pillow==12.2.0
+
+      - name: Run Prompt Studio Python tests
+        run: python -m unittest discover -s prototype/tests -p "test_*.py"
+
+      - name: Run Prompt Studio Node tests
+        run: node --test prototype/tests/app.test.js
+
+      - name: Run repository script tests
+        run: python -m unittest discover -s scripts/tests -p "test_*.py"
+
+      - name: Check generated Unicode tables
+        run: python scripts/generate_unicode15_ranges.py --check
+
+      - name: Check compiled random-wordlist catalog
+        run: python scripts/build_random_wordlists.py --check
+
+      - name: Check compiled text prompt
+        shell: pwsh
+        run: |
+          $generated = Join-Path $env:RUNNER_TEMP "text_expand_anima.md"
+          python scripts/export_text_expand_prompt.py --output $generated
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+          $expectedHash = (Get-FileHash -Algorithm SHA256 "prototype/prompts/compiled/text_expand_anima.md").Hash
+          $actualHash = (Get-FileHash -Algorithm SHA256 $generated).Hash
+          if ($actualHash -ne $expectedHash) {
+            throw "prototype/prompts/compiled/text_expand_anima.md is stale"
+          }

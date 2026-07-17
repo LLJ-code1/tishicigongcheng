@@ -5,6 +5,13 @@ const path = require("node:path");
 
 const {
   createInitialState,
+  createNewProjectState,
+  hydrateProjectState,
+  buildProjectPayload,
+  buildVersionPayload,
+  buildWorkspaceCommitPayload,
+  createClientId,
+  shouldConfirmWorkspaceDiscard,
   reduceState,
   getCombinedPrompt,
   isSupportedImageFile,
@@ -19,6 +26,7 @@ const {
   projectSettingsMetadata,
   settingsWritePayload,
   enqueueByKey,
+  isWorkspaceRequestCurrent,
 } = require("../app.js");
 const unicode15 = require("../unicode15-data.js");
 
@@ -59,11 +67,436 @@ function createGeneratedState() {
   });
 }
 
+function applyServerSave(state, version, extraMetadata = {}) {
+  const payload = buildVersionPayload(state);
+  return reduceState(state, {
+    type: "PROJECT_SAVED",
+    savedRevision: state.workingRevision,
+    item: {
+      id: `version-${version}`,
+      projectId: state.projectId || "project-test",
+      version,
+      ...payload,
+      metadata: { ...payload.metadata, ...extraMetadata },
+      createdAt: `2026-07-${String(version).padStart(2, "0")}T08:00:00+00:00`,
+    },
+  });
+}
+
+function createPersistedGeneratedState() {
+  let state = createGeneratedState();
+  state = reduceState(state, {
+    type: "PROJECT_CREATED",
+    item: { id: "project-test", name: "Rain Study", status: "draft" },
+  });
+  return applyServerSave(state, 1);
+}
+
 test("starts on a blank new-work screen", () => {
   const state = createInitialState();
   assert.equal(state.view, "home");
   assert.equal(state.projectName, "未命名作品");
   assert.equal(state.output.positiveEn, "");
+});
+
+test("project list state covers loading ready empty and error data", () => {
+  let state = createInitialState();
+  state = reduceState(state, { type: "PROJECTS_LOADING" });
+  assert.equal(state.projectsStatus, "loading");
+  assert.equal(state.projectsError, "");
+
+  state = reduceState(state, {
+    type: "PROJECTS_LOADED",
+    items: [
+      {
+        id: "project-rain",
+        name: "Rain Study",
+        latestVersion: 2,
+        versionCount: 2,
+      },
+    ],
+  });
+  assert.equal(state.projectsStatus, "ready");
+  assert.equal(state.projects[0].latestVersion, 2);
+
+  state = reduceState(state, { type: "PROJECTS_LOADED", items: [] });
+  assert.equal(state.projectsStatus, "ready");
+  assert.deepEqual(state.projects, []);
+
+  state = reduceState(state, {
+    type: "PROJECTS_FAILED",
+    error: "database unavailable",
+  });
+  assert.equal(state.projectsStatus, "error");
+  assert.equal(state.projectsError, "database unavailable");
+});
+
+test("hydrates a server project and its persisted history from the latest version", () => {
+  const original = createInitialState();
+  original.settings.textProvider = "api";
+  original.settings.apiTextKey = "keep-only-in-global-settings";
+  const state = hydrateProjectState(original, {
+    id: "project-rain",
+    name: "Rain Study",
+    mode: "text",
+    status: "draft",
+    metadata: { textMode: "expand", draftInput: "old input" },
+    updatedAt: "2026-07-16T09:00:00+00:00",
+    versions: [
+      {
+        id: "version-2",
+        version: 2,
+        source: "expand",
+        positiveEn: "latest prompt",
+        positiveZh: "最新提示词",
+        negativeEn: "latest negative",
+        negativeZh: "最新负面词",
+        blocks: [{ id: "scene", en: "latest scene", weight: 110 }],
+        metadata: {
+          textMode: "random",
+          draftInput: "latest input",
+          relationEn: "latest relation",
+          relationZh: "最新关系",
+          randomSeed: 42,
+          outputChecks: { bilingualAligned: true },
+        },
+        createdAt: "2026-07-16T09:00:00+00:00",
+      },
+      {
+        id: "version-1",
+        version: 1,
+        positiveEn: "first prompt",
+        blocks: [{ id: "scene", en: "first scene" }],
+        metadata: {},
+        createdAt: "2026-07-15T09:00:00+00:00",
+      },
+    ],
+  });
+
+  assert.equal(state.projectId, "project-rain");
+  assert.equal(state.projectName, "Rain Study");
+  assert.equal(state.version, 2);
+  assert.deepEqual(state.versionHistory.map((entry) => entry.version), [1, 2]);
+  assert.equal(state.output.positiveEn, "latest prompt");
+  assert.equal(state.output.relationEn, "latest relation");
+  assert.equal(state.blocks[0].weight, 110);
+  assert.equal(state.textMode, "random");
+  assert.equal(state.draftInput, "latest input");
+  assert.equal(state.randomSeed, 42);
+  assert.equal(state.hasUnsavedChanges, false);
+  assert.equal(state.settings.apiTextKey, "keep-only-in-global-settings");
+});
+
+test("current project metadata can restore draft-only edits without a new version", () => {
+  const state = hydrateProjectState(createInitialState(), {
+    id: "project-draft",
+    name: "Draft only edit",
+    mode: "text",
+    metadata: {
+      workspaceBaseVersion: 1,
+      textMode: "expand",
+      draftInput: "input saved after V1",
+    },
+    versions: [
+      {
+        id: "version-1",
+        version: 1,
+        source: "image",
+        positiveEn: "saved output",
+        blocks: [],
+        metadata: { textMode: "random", draftInput: "input inside V1" },
+      },
+    ],
+  });
+
+  assert.equal(state.version, 1);
+  assert.equal(state.output.positiveEn, "saved output");
+  assert.equal(state.view, "text");
+  assert.equal(state.analysisComplete, false);
+  assert.equal(state.textMode, "expand");
+  assert.equal(state.draftInput, "input saved after V1");
+});
+
+test("latest persisted version source wins when project header mode is stale", () => {
+  const state = hydrateProjectState(createInitialState(), {
+    id: "project-stale-mode",
+    name: "Stale header",
+    mode: "text",
+    metadata: {},
+    versions: [
+      {
+        id: "version-image",
+        version: 1,
+        source: "image",
+        positiveEn: "image result",
+        blocks: [],
+        metadata: {},
+      },
+    ],
+  });
+
+  assert.equal(state.view, "image");
+  assert.equal(state.analysisComplete, true);
+});
+
+test("project update payload carries the server concurrency token", () => {
+  const freshPayload = buildProjectPayload(createInitialState());
+  assert.equal("baseUpdatedAt" in freshPayload, false);
+
+  const state = hydrateProjectState(createInitialState(), {
+    id: "project-cas",
+    name: "CAS project",
+    mode: "text",
+    status: "draft",
+    updatedAt: "2026-07-16T09:00:00.123456+00:00",
+    metadata: {},
+    versions: [],
+  });
+  assert.equal(
+    buildProjectPayload(state).baseUpdatedAt,
+    "2026-07-16T09:00:00.123456+00:00"
+  );
+  assert.equal(
+    buildVersionPayload(state).baseUpdatedAt,
+    "2026-07-16T09:00:00.123456+00:00"
+  );
+  const source = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  assert.match(source, /projectResult\?\.item\?\.updatedAt/);
+  assert.match(source, /guardedVersionPayload/);
+});
+
+test("new project clears project state but preserves global settings and resources", () => {
+  let state = createPersistedGeneratedState();
+  state.settings.textProvider = "api";
+  state.resources.snippets.push({ id: "saved-recipe", name: "Saved Recipe" });
+  state.projects = [{ id: "project-test", name: "Rain Study" }];
+  state.projectsStatus = "ready";
+  state.analyzers.florence.selected = true;
+  state.analyzers.florence.available = true;
+  state.analyzers.florence.status = "ready";
+  state.analyzers.florence.raw = "PROJECT_A_SECRET_RAW";
+  state.analyzers.florence.error = "old error";
+
+  const fresh = createNewProjectState(state);
+
+  assert.equal(fresh.view, "home");
+  assert.equal(fresh.projectId, null);
+  assert.equal(fresh.version, 0);
+  assert.deepEqual(fresh.versionHistory, []);
+  assert.equal(fresh.output.positiveEn, "");
+  assert.equal(fresh.settings.textProvider, "api");
+  assert.ok(fresh.resources.snippets.some((item) => item.id === "saved-recipe"));
+  assert.equal(fresh.projects[0].id, "project-test");
+  assert.equal(fresh.projectsStatus, "ready");
+  assert.equal(fresh.analyzers.florence.selected, true);
+  assert.equal(fresh.analyzers.florence.available, true);
+  assert.equal(fresh.analyzers.florence.status, "idle");
+  assert.equal(fresh.analyzers.florence.raw, "");
+  assert.equal(fresh.analyzers.florence.error, "");
+});
+
+test("opening another project clears prior analyzer results and task loaders", () => {
+  let previous = createGeneratedState();
+  previous.analyzers.florence.selected = true;
+  previous.analyzers.florence.available = true;
+  previous.analyzers.florence.status = "ready";
+  previous.analyzers.florence.raw = "PROJECT_A_SECRET_RAW";
+  previous.analyzers.florence.error = "old error";
+  previous = reduceState(previous, {
+    type: "START_TEXT_EXPANSION",
+    startedAt: 123,
+  });
+  previous = reduceState(previous, { type: "START_PENDING_TRANSLATION" });
+  previous = reduceState(previous, {
+    type: "START_BLOCK_VARIANT",
+    id: "pose",
+  });
+  previous.batchRegenerating = true;
+  previous.analysisQueue = ["florence"];
+  previous.analyzers.florence.status = "running";
+
+  const opened = hydrateProjectState(previous, {
+    id: "project-b",
+    name: "Project B",
+    mode: "text",
+    metadata: {},
+    versions: [],
+  });
+
+  assert.equal(opened.analyzers.florence.selected, true);
+  assert.equal(opened.analyzers.florence.available, true);
+  assert.equal(opened.analyzers.florence.status, "idle");
+  assert.equal(opened.analyzers.florence.raw, "");
+  assert.equal(opened.analyzers.florence.error, "");
+  assert.deepEqual(opened.analysisQueue, []);
+  assert.equal(opened.textGenerating, false);
+  assert.equal(opened.textDecomposing, false);
+  assert.equal(opened.translatingPending, false);
+  assert.equal(opened.regeneratingBlockId, "");
+  assert.equal(opened.batchRegenerating, false);
+  assert.equal(opened.generationProgress.status, "idle");
+});
+
+test("cancelling old workspace requests clears loaders even when opening fails", () => {
+  let state = createGeneratedState();
+  state = reduceState(state, { type: "START_TEXT_EXPANSION", startedAt: 123 });
+  state = reduceState(state, { type: "START_PENDING_TRANSLATION" });
+  state = reduceState(state, { type: "START_BLOCK_VARIANT", id: "pose" });
+  state.batchRegenerating = true;
+  state.analysisQueue = ["florence"];
+  state.analyzers.florence.available = true;
+  state.analyzers.florence.status = "running";
+
+  state = reduceState(state, { type: "WORKSPACE_REQUESTS_CANCELLED" });
+
+  assert.equal(state.textGenerating, false);
+  assert.equal(state.translatingPending, false);
+  assert.equal(state.regeneratingBlockId, "");
+  assert.equal(state.batchRegenerating, false);
+  assert.deepEqual(state.analysisQueue, []);
+  assert.equal(state.analyzers.florence.status, "idle");
+  assert.equal(state.generationProgress.status, "idle");
+
+  const source = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  assert.match(source, /hideTagSuggest\(\);\s*dispatch\(\{ type: "WORKSPACE_REQUESTS_CANCELLED" \}\)/);
+});
+
+test("workspace replacement asks before discarding meaningful unsaved work", () => {
+  let state = createInitialState();
+  assert.equal(shouldConfirmWorkspaceDiscard(state), false);
+
+  state = reduceState(state, { type: "NAVIGATE", view: "text" });
+  assert.equal(shouldConfirmWorkspaceDiscard(state), false);
+
+  state = reduceState(state, {
+    type: "SET_PROJECT_NAME",
+    value: "Named draft",
+  });
+  assert.equal(shouldConfirmWorkspaceDiscard(state), true);
+
+  state = createGeneratedState();
+  assert.equal(shouldConfirmWorkspaceDiscard(state), true);
+  state = reduceState(state, {
+    type: "UPDATE_BLOCK",
+    id: "pose",
+    language: "en",
+    value: "pending edit",
+  });
+  assert.equal(shouldConfirmWorkspaceDiscard(state), true);
+});
+
+test("version payload uses the persisted base and never serializes pending block edits", () => {
+  let state = createPersistedGeneratedState();
+  const savedPose = state.appliedBlocks.find((block) => block.id === "pose").en;
+  state = reduceState(state, {
+    type: "UPDATE_BLOCK",
+    id: "pose",
+    language: "en",
+    value: "pending pose that must not be saved",
+  });
+
+  const payload = buildVersionPayload(state);
+  assert.equal(payload.baseVersion, 1);
+  assert.equal(
+    payload.blocks.find((block) => block.id === "pose").en,
+    savedPose
+  );
+  assert.equal("dirtyBlockIds" in payload.metadata, false);
+});
+
+test("server save response is authoritative and does not clear newer work", () => {
+  let state = createGeneratedState();
+  const savedRevision = state.workingRevision;
+  const payload = buildVersionPayload(state);
+  state = reduceState(state, {
+    type: "UPDATE_BLOCK",
+    id: "pose",
+    language: "en",
+    value: "newer in-flight edit",
+  });
+  state = reduceState(state, { type: "APPLY_CHANGES" });
+  state = reduceState(state, {
+    type: "PROJECT_SAVED",
+    savedRevision,
+    item: {
+      id: "version-7",
+      version: 7,
+      ...payload,
+      createdAt: "2026-07-16T10:00:00+00:00",
+    },
+  });
+
+  assert.equal(state.version, 7);
+  assert.equal(state.versionHistory.at(-1).version, 7);
+  assert.equal(state.hasUnsavedChanges, true);
+  assert.match(state.output.positiveEn, /newer in-flight edit/);
+});
+
+test("editing project metadata during a save remains visibly unsaved", () => {
+  let state = createPersistedGeneratedState();
+  const savedProjectRevision = state.projectRevision;
+  state = reduceState(state, { type: "PROJECT_SAVE_STARTED" });
+  state = reduceState(state, {
+    type: "SET_PROJECT_NAME",
+    value: "Name typed while saving",
+  });
+  assert.equal(state.saveStatus, "saving");
+
+  state = reduceState(state, {
+    type: "PROJECT_HEADER_SAVED",
+    savedProjectRevision,
+    updatedAt: "2026-07-16T10:00:00+00:00",
+  });
+  assert.equal(state.hasUnsavedProjectChanges, true);
+  assert.equal(state.saveStatus, "idle");
+  assert.match(state.toast, /当前修改仍待保存/);
+});
+
+test("late first-create response preserves a newer project name", () => {
+  let state = createInitialState();
+  state = reduceState(state, { type: "SET_PROJECT_NAME", value: "A" });
+  const savedProjectRevision = state.projectRevision;
+  state = reduceState(state, { type: "SET_PROJECT_NAME", value: "B" });
+
+  state = reduceState(state, {
+    type: "PROJECT_CREATED",
+    item: {
+      id: "project-new",
+      name: "A",
+      status: "draft",
+      updatedAt: "2026-07-16T09:00:00.000001+00:00",
+    },
+    savedProjectRevision,
+  });
+
+  assert.equal(state.projectId, "project-new");
+  assert.equal(state.projectUpdatedAt, "2026-07-16T09:00:00.000001+00:00");
+  assert.equal(state.projectName, "B");
+  assert.equal(state.hasUnsavedProjectChanges, true);
+});
+
+test("project browser exposes four states and guards duplicate or stale requests", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const source = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  const css = fs.readFileSync(path.join(__dirname, "..", "styles.css"), "utf8");
+
+  assert.match(html, /id=["']recentProjectList["']/);
+  assert.match(html, /id=["']recentProjectStatus["']/);
+  assert.match(html, /id=["']projectNameInput["']/);
+  assert.match(html, /id=["']projectSaveStatus["']/);
+  assert.match(source, /if \(saveInFlight\) return saveInFlight/);
+  assert.match(source, /作品正在保存，请等待完成后再切换/);
+  assert.match(source, /window\.confirm\("当前作品有未保存内容/);
+  assert.match(source, /requestId !== projectOpenRequestId/);
+  assert.match(source, /requestId !== projectListRequestId/);
+  assert.match(source, /state\.workingRevision !== openingWorkingRevision/);
+  assert.match(source, /state\.projectRevision !== openingProjectRevision/);
+  assert.match(source, /advanceWorkspaceSession\(\)/);
+  assert.match(source, /isCurrentWorkspaceRequest\(request\)/);
+  assert.match(source, /addEventListener\("beforeunload"/);
+  assert.match(source, /仍有未应用的结构块修改/);
+  assert.match(css, /\.recent-project-list/);
+  assert.match(css, /\.project-save-panel/);
 });
 
 test("imports a reference into prompt expansion without mutating the library", () => {
@@ -156,7 +589,8 @@ test("applies real image analysis returned by the backend", () => {
   assert.equal(state.analyzers.joycaption.status, "error");
   assert.match(state.analyzers.joycaption.error, /显存不足/);
   assert.equal(state.blocks[0].source, "Florence + 本地 LLM");
-  assert.equal(state.version, 1);
+  assert.equal(state.version, 0);
+  assert.equal(state.hasUnsavedChanges, true);
 });
 
 test("failed image analysis never applies a fixed demo result", () => {
@@ -289,7 +723,8 @@ test("applies a real bilingual expansion result from the backend", () => {
   assert.match(state.output.positiveEn, /1girl/);
   assert.match(state.output.positiveZh, /女性角色/);
   assert.equal(state.blocks.length, 10);
-  assert.equal(state.version, 1);
+  assert.equal(state.version, 0);
+  assert.equal(state.hasUnsavedChanges, true);
   assert.equal(state.textGenerating, false);
   assert.match(getCombinedPrompt(state), /rain/);
 });
@@ -392,7 +827,8 @@ test("applies a verified decomposition through the existing editor state", () =>
   });
 
   assert.equal(state.textDecomposing, false);
-  assert.equal(state.version, 1);
+  assert.equal(state.version, 0);
+  assert.equal(state.hasUnsavedChanges, true);
   assert.equal(state.blocks.length, 2);
   assert.equal(state.output.positiveEn, "1girl, raining");
   assert.equal(state.generationProgress.status, "success");
@@ -696,10 +1132,10 @@ test("editing a block stays pending until changes are applied", () => {
 
   assert.equal(state.output.positiveEn, originalOutput);
   assert.deepEqual(state.dirtyBlockIds, ["pose"]);
-  assert.equal(state.version, 1);
+  assert.equal(state.version, 0);
 });
 
-test("applying block edits recompiles output and creates a new version", () => {
+test("applying block edits recompiles output and marks the next server version pending", () => {
   let state = createGeneratedState();
   state = reduceState(state, {
     type: "UPDATE_BLOCK",
@@ -709,10 +1145,12 @@ test("applying block edits recompiles output and creates a new version", () => {
   });
   state = reduceState(state, { type: "APPLY_CHANGES" });
 
-  assert.equal(state.version, 2);
+  assert.equal(state.version, 0);
   assert.equal(state.dirtyBlockIds.length, 0);
   assert.match(state.output.positiveEn, /tying her shoelaces/);
-  assert.equal(state.versionHistory.length, 2);
+  assert.equal(state.versionHistory.length, 0);
+  assert.equal(state.hasUnsavedChanges, true);
+  assert.match(state.toast, /保存后生成 V1/);
 });
 
 test("discarding pending edits restores the last applied blocks", () => {
@@ -756,7 +1194,7 @@ test("applies a model-generated block variant as a pending edit", () => {
   assert.equal(state.blocks.find((block) => block.id === "scene").en, originalScene);
   assert.equal(state.output.positiveEn, originalOutput);
   assert.deepEqual(state.dirtyBlockIds, ["pose"]);
-  assert.equal(state.version, 1);
+  assert.equal(state.version, 0);
 });
 
 test("does not apply a variant to a locked structured block", () => {
@@ -819,7 +1257,8 @@ test("pending translation updates only placeholders without creating a version",
   );
   assert.match(state.output.positiveZh, /初音未来/);
   assert.equal(state.version, originalVersion);
-  assert.equal(state.versionHistory.at(-1).version, originalVersion);
+  assert.equal(state.versionHistory.length, 0);
+  assert.equal(state.hasUnsavedChanges, true);
 });
 
 test("pending translation failure preserves the current prompt", () => {
@@ -981,8 +1420,9 @@ test("long-running requests are cancellable via AbortController", () => {
   assert.match(html, /id=["']cancelGenerationBtn["']/);
   assert.match(html, /id=["']cancelAnalysisBtn["']/);
   assert.match(app, /new AbortController\(\)/);
-  assert.match(app, /signal: activeTextAbort\.signal/);
-  assert.match(app, /signal: activeVisionAbort\.signal/);
+  assert.match(app, /const workspaceRequestAborts = new Set\(\)/);
+  assert.match(app, /signal: request\.controller\.signal/);
+  assert.match(app, /for \(const controller of workspaceRequestAborts\) controller\.abort\(\)/);
   assert.match(app, /isAbortError/);
   assert.match(app, /已取消图片分析/);
 });
@@ -1008,11 +1448,60 @@ test("editing a block produces a live preview without touching the version", () 
   assert.equal(state.output.positiveEn, originalOutput);
   assert.ok(state.previewOutput);
   assert.match(state.previewOutput.positiveEn, /kneeling in shallow water/);
-  assert.equal(state.version, 1);
+  assert.equal(state.version, 0);
 
   state = reduceState(state, { type: "APPLY_CHANGES" });
   assert.equal(state.previewOutput, null);
   assert.match(state.output.positiveEn, /kneeling in shallow water/);
+});
+
+test("every pending block mutation advances the workspace revision guard", () => {
+  let state = createGeneratedState();
+  const initialRevision = state.workingRevision;
+
+  state = reduceState(state, {
+    type: "UPDATE_BLOCK",
+    id: "pose",
+    language: "en",
+    value: "first pending edit",
+  });
+  assert.equal(state.workingRevision, initialRevision + 1);
+
+  state = reduceState(state, {
+    type: "UPDATE_BLOCK",
+    id: "pose",
+    language: "en",
+    value: "second pending edit",
+  });
+  assert.equal(state.workingRevision, initialRevision + 2);
+  assert.deepEqual(state.dirtyBlockIds, ["pose"]);
+});
+
+test("async workspace results expire after either content revision changes", () => {
+  let state = createGeneratedState();
+  const request = {
+    sessionId: 7,
+    workingRevision: state.workingRevision,
+    projectRevision: state.projectRevision,
+  };
+  assert.equal(isWorkspaceRequestCurrent(request, 7, state), true);
+
+  state = reduceState(state, {
+    type: "UPDATE_BLOCK",
+    id: "pose",
+    language: "en",
+    value: "user edit after request start",
+  });
+  assert.equal(isWorkspaceRequestCurrent(request, 7, state), false);
+
+  const draftRequest = {
+    sessionId: 7,
+    workingRevision: state.workingRevision,
+    projectRevision: state.projectRevision,
+  };
+  state = reduceState(state, { type: "SET_DRAFT", value: "newer draft" });
+  assert.equal(isWorkspaceRequestCurrent(draftRequest, 7, state), false);
+  assert.equal(isWorkspaceRequestCurrent(draftRequest, 8, state), false);
 });
 
 test("combined prompt uses the live preview while edits are pending", () => {
@@ -1256,8 +1745,18 @@ test("project metadata excludes API keys and unrecognized settings", () => {
   });
   assert.equal(settings.apiTextKey, "api-secret");
 
+  const state = createInitialState();
+  state.settings = settings;
+  const payload = buildProjectPayload(state);
+  assert.deepEqual(payload.metadata.settings, {
+    textProvider: "api",
+    localTextUrl: "http://127.0.0.1:8080/v1",
+    apiTextModel: "model-name",
+    autoCombine: true,
+  });
+
   const source = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
-  assert.match(source, /settings: app\.projectSettingsMetadata\(state\.settings\)/);
+  assert.match(source, /settings: projectSettingsMetadata\(state\.settings\)/);
   assert.doesNotMatch(source, /settings: state\.settings/);
 });
 
@@ -1352,8 +1851,8 @@ test("a block variant can be compared then kept or reverted", () => {
   assert.deepEqual(state.dirtyBlockIds, ["pose"]);
 });
 
-test("restoring an old version creates a new version with the old content", () => {
-  let state = createGeneratedState();
+test("restoring an old version stays pending until the server creates a new version", () => {
+  let state = createPersistedGeneratedState();
   const v1Pose = state.blocks.find((block) => block.id === "pose").en;
   state = reduceState(state, {
     type: "UPDATE_BLOCK",
@@ -1362,13 +1861,98 @@ test("restoring an old version creates a new version with the old content", () =
     value: "changed pose",
   });
   state = reduceState(state, { type: "APPLY_CHANGES" });
+  assert.equal(state.version, 1);
+  assert.equal(state.versionHistory.length, 1);
+  state = applyServerSave(state, 2);
   assert.equal(state.version, 2);
 
   state = reduceState(state, { type: "RESTORE_VERSION", version: 1 });
-  assert.equal(state.version, 3);
+  assert.equal(state.version, 2);
   assert.equal(state.blocks.find((block) => block.id === "pose").en, v1Pose);
+  assert.equal(state.versionHistory.length, 2);
+  assert.equal(state.restoreFromVersion, 1);
+  assert.equal(state.hasUnsavedChanges, true);
+  assert.equal(buildVersionPayload(state).baseVersion, 2);
+  assert.equal(buildVersionPayload(state).metadata.restoredFromVersion, 1);
+
+  state = applyServerSave(state, 3);
+  assert.equal(state.version, 3);
   assert.equal(state.versionHistory.length, 3);
   assert.equal(state.versionHistory[2].restoredFrom, 1);
+  assert.equal(state.restoreFromVersion, null);
+  assert.equal(state.hasUnsavedChanges, false);
+});
+
+test("restoring history also restores its version metadata without mixing revisions", () => {
+  let state = createGeneratedState();
+  state.view = "image";
+  state.textMode = "expand";
+  state.draftInput = "v1 draft";
+  state.randomSeed = 111;
+  state.outputChecks = { marker: "v1" };
+  state.imageName = "v1.png";
+  state = reduceState(state, {
+    type: "PROJECT_CREATED",
+    item: { id: "project-test", name: "History", status: "draft" },
+  });
+  state = applyServerSave(state, 1);
+
+  state.view = "text";
+  state.textMode = "random";
+  state.draftInput = "v2 draft";
+  state.randomSeed = 222;
+  state.outputChecks = { marker: "v2" };
+  state.imageName = "v2.png";
+  state = reduceState(state, {
+    type: "UPDATE_BLOCK",
+    id: "pose",
+    language: "en",
+    value: "v2 pose",
+  });
+  state = reduceState(state, { type: "APPLY_CHANGES" });
+  state = applyServerSave(state, 2);
+
+  state = reduceState(state, { type: "RESTORE_VERSION", version: 1 });
+  const payload = buildVersionPayload(state);
+  assert.equal(state.draftInput, "v1 draft");
+  assert.equal(state.textMode, "expand");
+  assert.equal(state.randomSeed, 111);
+  assert.deepEqual(state.outputChecks, { marker: "v1" });
+  assert.equal(state.imageName, "v1.png");
+  assert.equal(state.view, "image");
+  assert.equal(state.imageLoaded, false);
+  assert.equal(state.analysisComplete, true);
+  assert.equal(payload.metadata.draftInput, "v1 draft");
+  assert.equal(payload.metadata.randomSeed, 111);
+  assert.equal(payload.source, "image");
+  assert.equal(payload.metadata.restoredFromVersion, 1);
+});
+
+test("history restore requires explicit confirmation before discarding pending edits", () => {
+  let state = createPersistedGeneratedState();
+  state = reduceState(state, {
+    type: "UPDATE_BLOCK",
+    id: "pose",
+    language: "en",
+    value: "do not discard silently",
+  });
+
+  const blocked = reduceState(state, { type: "RESTORE_VERSION", version: 1 });
+  assert.equal(
+    blocked.blocks.find((block) => block.id === "pose").en,
+    "do not discard silently"
+  );
+  assert.match(blocked.toast, /确认放弃/);
+
+  const restored = reduceState(state, {
+    type: "RESTORE_VERSION",
+    version: 1,
+    confirmed: true,
+  });
+  assert.notEqual(
+    restored.blocks.find((block) => block.id === "pose").en,
+    "do not discard silently"
+  );
 });
 
 test("editor exposes version timeline, variant compare and shortcuts", () => {
@@ -1495,4 +2079,116 @@ test("editor exposes recipe, matrix and tag suggest features", () => {
   assert.match(app, /data-pick-matrix/);
   assert.match(app, /function updateTagSuggest/);
   assert.match(dataJs, /promptTagDictionary/);
+});
+
+test("workspace commit preallocates stable ids and carries the complete recipe inputs", () => {
+  const state = createGeneratedState();
+  state.projectName = "Atomic save";
+  state.generationParameters.steps = 36;
+  state.manualParameterKeys = ["steps"];
+  const payload = buildWorkspaceCommitPayload(state, {
+    operationId: "save-fixed",
+    projectId: "project-fixed",
+    versionId: "version-fixed",
+  });
+
+  assert.equal(payload.operationId, "save-fixed");
+  assert.equal(payload.createProject, true);
+  assert.equal(payload.project.id, "project-fixed");
+  assert.equal(payload.version.id, "version-fixed");
+  assert.equal(payload.version.baseVersion, 0);
+  assert.equal(
+    payload.version.metadata.parameterLayers.manual_override.steps,
+    36
+  );
+  assert.equal(payload.project.metadata.workspaceBaseVersion, 1);
+  assert.equal("baseUpdatedAt" in payload.project, false);
+});
+
+test("client ids are safe and deterministic with an injected uuid", () => {
+  assert.equal(
+    createClientId("save", () => "A0B1-C2D3-E4F5"),
+    "save-a0b1-c2d3-e4f5"
+  );
+  assert.match(createClientId("version", () => "unsafe / value"), /^[A-Za-z0-9._~-]+$/);
+});
+
+test("generation parameter edits are versioned manual overrides", () => {
+  let state = createInitialState();
+  state = reduceState(state, {
+    type: "SET_GENERATION_PARAMETER",
+    key: "cfg",
+    value: "6.25",
+  });
+  const payload = buildVersionPayload(state);
+
+  assert.equal(state.generationParameters.cfg, 6.25);
+  assert.equal(state.hasUnsavedChanges, true);
+  assert.deepEqual(state.manualParameterKeys, ["cfg"]);
+  assert.equal(payload.metadata.parameterLayers.manual_override.cfg, 6.25);
+});
+
+test("deterministic random plans map clothing into the dedicated outfit block", () => {
+  let state = createGeneratedState();
+  const outfit = {
+    id: "outfit",
+    label: "服装与配饰",
+    en: "old outfit",
+    zh: "旧服装",
+    locked: false,
+    weight: 100,
+  };
+  state.appliedBlocks.push(outfit);
+  state.blocks = structuredClone(state.appliedBlocks);
+  state = reduceState(state, {
+    type: "APPLY_RANDOM_PLAN",
+    item: {
+      librarySeed: "00112233445566778899aabbccddeeff",
+      catalog: { version: "v1-test" },
+      items: [
+        {
+          text: "armored bodysuit",
+          categoryId: "clothing_outfit",
+          locked: true,
+          binding: { blockId: "appearance" },
+        },
+      ],
+    },
+  });
+  const appliedOutfit = state.appliedBlocks.find((block) => block.id === "outfit");
+
+  assert.equal(appliedOutfit.en, "armored bodysuit");
+  assert.match(appliedOutfit.zh, /^待本地 LLM 翻译：/);
+  assert.equal(appliedOutfit.locked, true);
+  assert.equal(state.randomSeed, "00112233445566778899aabbccddeeff");
+});
+
+test("workbench visibly exposes profile parameters wordlist and minimal edit flow", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const appSource = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+
+  assert.match(html, /Anima_1\.1/);
+  assert.match(html, /RECIPE V1 · 13 BLOCKS/);
+  assert.match(html, /data-generation-param="steps"/);
+  assert.match(html, /data-action="wordlist-plan"/);
+  assert.match(html, /data-action="preview-edit"/);
+  assert.match(html, /data-action="undo-recipe"/);
+  assert.doesNotMatch(html, /<select id="targetModel"/);
+  assert.match(
+    appSource,
+    /renderOutput\(\);\s+renderRecipeConsole\(\);\s+renderDrawer\(\);/
+  );
+});
+
+test("workbench exposes logical backup export and isolated restore controls", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const appSource = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+
+  assert.match(html, /data-action="export-all"/);
+  assert.match(html, /data-action="export-project"/);
+  assert.match(html, /id="backupFileInput"/);
+  assert.match(html, /校验并隔离恢复/);
+  assert.match(appSource, /\/api\/backups\/inspect/);
+  assert.match(appSource, /\/api\/backups\/stage-restore\?conflict=rename/);
+  assert.match(appSource, /activated/);
 });

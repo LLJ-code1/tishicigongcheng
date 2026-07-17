@@ -9,8 +9,11 @@ import math
 import os
 import socket
 import sqlite3
+import tempfile
 import threading
 import time
+import uuid
+from copy import deepcopy
 from io import BytesIO
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -20,7 +23,21 @@ from urllib.request import Request, urlopen
 
 from PIL import Image, UnidentifiedImageError
 
+import db as prompt_db
+from backup import (
+    BackupConflictError,
+    BackupValidationError,
+    MAX_ARCHIVE_BYTES as MAX_BACKUP_ARCHIVE_BYTES,
+    export_database,
+    export_project,
+    inspect_backup,
+    restore_backup,
+)
 from db import (
+    IdempotencyConflictError,
+    ProjectConflictError,
+    VersionConflictError,
+    commit_workspace,
     create_project,
     create_prompt_version,
     delete_favorite,
@@ -30,13 +47,53 @@ from db import (
     list_favorites,
     list_projects,
     put_settings,
+    recovery_directory,
+    update_project,
     upsert_favorite,
+    validate_idempotency_key,
 )
 from local_llm import (
     LocalLlmError,
     local_llm_status,
     start_local_llm,
     stop_local_llm,
+)
+from edit_engine import (
+    EditEngineError,
+    apply_edit_preview,
+    create_undo_version,
+    preview_edit,
+    recipe_hash as edit_recipe_hash,
+)
+from model_profiles import (
+    DEFAULT_PROFILE_ID,
+    candidate_resolution_presets,
+    compile_positive_prefix,
+    list_model_profiles,
+    load_model_profile,
+    model_reference,
+    profile_default_parameters,
+    validated_resolution_presets,
+)
+from random_sampler import (
+    CatalogBoundaryError,
+    LockedConflictError,
+    PlanRequestError,
+    RandomSamplerError,
+    SamplingExhaustedError,
+    generate_library_seed,
+    load_catalog,
+    resolve_random_plan,
+)
+from recipe import (
+    REQUIRED_PARAMETER_KEYS,
+    build_recipe,
+    inflate_workbench_blocks,
+    normalize_recipe,
+    project_blocks_to_workbench,
+    project_recipe_to_prompt_version,
+    recipe_hash,
+    resolve_parameters,
 )
 from prompt_engine import (
     PromptEngineError,
@@ -70,6 +127,8 @@ MAX_IMAGE_PIXELS = 50_000_000
 REQUEST_BODY_TIMEOUT_SECONDS = 2.0
 VISION_REQUEST_BODY_TIMEOUT_SECONDS = 30.0
 CONNECTION_TIMEOUT_SECONDS = 5.0
+BACKUP_UPLOAD_TIMEOUT_SECONDS = 30.0
+BACKUP_STAGE_LOCK = threading.Lock()
 PUBLIC_STATIC_FILES = {
     "/",
     "/index.html",
@@ -715,6 +774,298 @@ def process_vision_analyze_request(
     return engine(image_bytes, filename, analyzer_ids, settings)
 
 
+def model_profile_api_item(profile_id: str = DEFAULT_PROFILE_ID) -> dict:
+    profile = load_model_profile(profile_id)
+    return {
+        **profile,
+        "modelReference": model_reference(profile),
+        "defaultParameters": profile_default_parameters(profile),
+        "validatedResolutionPresets": validated_resolution_presets(profile),
+        "candidateResolutionPresets": candidate_resolution_presets(profile),
+        "compiledPositivePrefix": compile_positive_prefix(profile),
+        "generationReady": bool(validated_resolution_presets(profile)),
+    }
+
+
+def process_recipe_resolve_request(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("配方请求必须是对象")
+    allowed = {
+        "profileId",
+        "prompts",
+        "blocks",
+        "loras",
+        "parameterLayers",
+        "randomPlan",
+        "instructionHistory",
+        "imageRefs",
+        "sourceRefs",
+        "metadata",
+    }
+    unknown = sorted(set(payload) - allowed)
+    if unknown:
+        raise ValueError("配方请求包含不允许的字段：" + ", ".join(unknown))
+    profile_id = payload.get("profileId", DEFAULT_PROFILE_ID)
+    profile = load_model_profile(profile_id)
+    layers = payload.get("parameterLayers", {})
+    if not isinstance(layers, dict):
+        raise ValueError("parameterLayers 必须是对象")
+    allowed_layers = {
+        "model_default",
+        "lora_requirement",
+        "task_preset",
+        "manual_override",
+    }
+    unknown_layers = sorted(set(layers) - allowed_layers)
+    if unknown_layers:
+        raise ValueError(
+            "parameterLayers 包含不允许的层：" + ", ".join(unknown_layers)
+        )
+    task_preset = deepcopy(layers.get("task_preset") or {})
+    all_layers = [
+        profile_default_parameters(profile),
+        layers.get("lora_requirement") or {},
+        task_preset,
+        layers.get("manual_override") or {},
+    ]
+    if not any("resolution" in layer for layer in all_layers):
+        task_preset["resolution"] = {"width": 1024, "height": 1024}
+    if not any("generationSeed" in layer for layer in all_layers):
+        task_preset["generationSeed"] = 0
+    parameters = resolve_parameters(
+        model_default=profile_default_parameters(profile),
+        lora_requirement=layers.get("lora_requirement") or {},
+        task_preset=task_preset,
+        manual_override=layers.get("manual_override") or {},
+        required_keys=REQUIRED_PARAMETER_KEYS,
+    )
+    metadata = deepcopy(payload.get("metadata") or {})
+    if not isinstance(metadata, dict):
+        raise ValueError("metadata 必须是对象")
+    validated_sizes = validated_resolution_presets(profile)
+    metadata.update(
+        {
+            "profileRevision": profile["schemaVersion"],
+            "parameterPrecedence": [
+                "manual_override",
+                "task_preset",
+                "lora_requirement",
+                "model_default",
+            ],
+            "resolutionValidation": (
+                "locally_validated" if validated_sizes else "unverified"
+            ),
+            "generationReady": bool(validated_sizes),
+        }
+    )
+    recipe_value = build_recipe(
+        model=model_reference(profile),
+        prompts=payload.get("prompts"),
+        blocks=inflate_workbench_blocks(payload.get("blocks")),
+        parameters=parameters,
+        loras=payload.get("loras") or [],
+        random_plan=payload.get("randomPlan"),
+        instruction_history=payload.get("instructionHistory") or [],
+        image_refs=payload.get("imageRefs") or [],
+        source_refs=payload.get("sourceRefs") or [],
+        metadata=metadata,
+    )
+    return {
+        "recipe": recipe_value,
+        "recipeHash": recipe_hash(recipe_value),
+        "profile": model_profile_api_item(profile_id),
+    }
+
+
+def enrich_prompt_version_recipe(version_payload: dict) -> dict:
+    if not isinstance(version_payload, dict):
+        raise ValueError("version 必须是对象")
+    original = deepcopy(version_payload)
+    metadata = deepcopy(original.get("metadata") or {})
+    if not isinstance(metadata, dict):
+        raise ValueError("version.metadata 必须是对象")
+    if "recipe" in metadata:
+        normalized = normalize_recipe(metadata["recipe"])
+    else:
+        resolved = process_recipe_resolve_request(
+            {
+                "profileId": metadata.get("modelProfileId", DEFAULT_PROFILE_ID),
+                "prompts": {
+                    "positiveEn": original.get("positiveEn", ""),
+                    "positiveZh": original.get("positiveZh", ""),
+                    "negativeEn": original.get("negativeEn", ""),
+                    "negativeZh": original.get("negativeZh", ""),
+                },
+                "blocks": original.get("blocks", []),
+                "loras": metadata.get("loras", []),
+                "parameterLayers": metadata.get("parameterLayers", {}),
+                "randomPlan": metadata.get("randomPlan"),
+                "instructionHistory": metadata.get("instructionHistory", []),
+                "imageRefs": metadata.get("imageRefs", []),
+                "sourceRefs": metadata.get("sourceRefs", []),
+                "metadata": {
+                    "textMode": metadata.get("textMode", ""),
+                    "draftInput": metadata.get("draftInput", ""),
+                },
+            }
+        )
+        normalized = resolved["recipe"]
+    passthrough_metadata = {
+        key: value
+        for key, value in metadata.items()
+        if key not in {"recipe", "recipeHash", "recipeSchemaVersion"}
+    }
+    projected = project_recipe_to_prompt_version(
+        normalized,
+        source=original.get("source", "manual"),
+        base_version=original.get("baseVersion"),
+        metadata=passthrough_metadata,
+        block_projection="workbench-thirteen",
+    )
+    if "id" in original:
+        projected["id"] = original["id"]
+    return projected
+
+
+def enrich_workspace_commit_payload(payload: dict) -> dict:
+    enriched = deepcopy(payload)
+    if isinstance(enriched, dict) and enriched.get("version") is not None:
+        enriched["version"] = enrich_prompt_version_recipe(enriched["version"])
+    return enriched
+
+
+def random_catalog_api_item() -> dict:
+    catalog = load_catalog(experimental=True)
+    categories = []
+    for category in catalog.categories:
+        categories.append(
+            {
+                "id": category.category_id,
+                "sourceFile": category.source_file,
+                "primaryBlock": category.primary_block,
+                "allowedBlocks": list(category.allowed_blocks),
+                "entryCount": len(category.entries),
+                "entries": [
+                    {
+                        "entryId": entry.entry_id,
+                        "text": entry.text,
+                        "primaryBlock": entry.primary_block,
+                        "allowedBlocks": list(entry.allowed_blocks),
+                    }
+                    for entry in category.entries
+                ],
+            }
+        )
+    return {
+        "schemaVersion": catalog.schema_version,
+        "version": catalog.version,
+        "contentSha256": catalog.content_sha256,
+        "samplerVersion": catalog.sampler_version,
+        "mappingVersion": catalog.mapping_version,
+        "profile": catalog.profile,
+        "runtimeReady": catalog.runtime_ready,
+        "semanticReviewRequired": catalog.semantic_review_required,
+        "experimental": True,
+        "categories": categories,
+    }
+
+
+def process_random_plan_request(
+    payload: dict,
+    *,
+    experimental_enabled: bool,
+) -> dict:
+    if not experimental_enabled:
+        raise CatalogBoundaryError(
+            "词库尚未完成人工语义审核；需由服务端显式开启实验模式"
+        )
+    if not isinstance(payload, dict):
+        raise PlanRequestError("随机计划请求必须是对象")
+    catalog = load_catalog(experimental=True)
+    request = deepcopy(payload)
+    if "librarySeed" not in request:
+        request["librarySeed"] = generate_library_seed()
+    request.setdefault("catalogVersion", catalog.version)
+    request.setdefault("catalogContentSha256", catalog.content_sha256)
+    request.setdefault("samplerVersion", catalog.sampler_version)
+    request.setdefault("mappingVersion", catalog.mapping_version)
+    request.setdefault("profile", catalog.profile)
+    return resolve_random_plan(request, catalog=catalog)
+
+
+def process_edit_preview_request(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        raise EditEngineError("编辑预览请求必须是对象")
+    allowed = {"instruction", "recipe", "baseRecipeHash"}
+    unknown = sorted(set(payload) - allowed)
+    if unknown:
+        raise EditEngineError("编辑预览包含不允许的字段：" + ", ".join(unknown))
+    normalized = normalize_recipe(payload.get("recipe"))
+    return preview_edit(
+        payload.get("instruction"),
+        normalized,
+        payload.get("baseRecipeHash"),
+    )
+
+
+def process_edit_apply_request(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        raise EditEngineError("编辑确认请求必须是对象")
+    allowed = {"recipe", "preview", "parentVersion", "newVersion"}
+    unknown = sorted(set(payload) - allowed)
+    if unknown:
+        raise EditEngineError("编辑确认包含不允许的字段：" + ", ".join(unknown))
+    normalized = normalize_recipe(payload.get("recipe"))
+    result = apply_edit_preview(
+        normalized,
+        payload.get("preview"),
+        payload.get("parentVersion"),
+        payload.get("newVersion"),
+    )
+    history = [*result["recipe"].get("instructionHistory", []), result["change"]]
+    result["recipe"] = normalize_recipe(
+        {**result["recipe"], "instructionHistory": history}
+    )
+    result["recipeHash"] = recipe_hash(result["recipe"])
+    result["workbenchBlocks"] = project_blocks_to_workbench(
+        result["recipe"]["blocks"]
+    )
+    return result
+
+
+def process_edit_undo_request(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        raise EditEngineError("撤销请求必须是对象")
+    allowed = {
+        "currentRecipe",
+        "parentRecipe",
+        "currentVersion",
+        "parentVersion",
+        "newVersion",
+    }
+    unknown = sorted(set(payload) - allowed)
+    if unknown:
+        raise EditEngineError("撤销请求包含不允许的字段：" + ", ".join(unknown))
+    current = normalize_recipe(payload.get("currentRecipe"))
+    parent = normalize_recipe(payload.get("parentRecipe"))
+    result = create_undo_version(
+        current,
+        parent,
+        payload.get("currentVersion"),
+        payload.get("parentVersion"),
+        payload.get("newVersion"),
+    )
+    history = [*result["recipe"].get("instructionHistory", []), result["change"]]
+    result["recipe"] = normalize_recipe(
+        {**result["recipe"], "instructionHistory": history}
+    )
+    result["recipeHash"] = recipe_hash(result["recipe"])
+    result["workbenchBlocks"] = project_blocks_to_workbench(
+        result["recipe"]["blocks"]
+    )
+    return result
+
+
 class PromptStudioHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         self._response_started = False
@@ -801,12 +1152,39 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_bytes(
+        self,
+        body: bytes,
+        *,
+        content_type: str,
+        filename: str | None = None,
+        status: int = 200,
+    ) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        if filename:
+            self.send_header(
+                "Content-Disposition",
+                f'attachment; filename="{filename}"',
+            )
+        self.end_headers()
+        self.wfile.write(body)
+
     def _validate_host_and_target(self) -> None:
         host_headers = self.headers.get_all("Host", [])
         if len(host_headers) != 1 or not is_allowed_host(host_headers[0]):
             raise RequestValidationError("请求 Host 不在本地允许列表中", status=421)
         if not self.path.startswith("/") or self.path.startswith("//"):
             raise RequestValidationError("请求目标格式无效")
+        # ``urlparse(...).params`` only reports parameters attached to the
+        # final path segment.  Reject literal path parameters in every segment
+        # before routing, while leaving an encoded ``%3B`` available as ID
+        # data and allowing semicolons in the query string.
+        raw_path = self.path.partition("?")[0]
+        if ";" in raw_path:
+            raise RequestValidationError("请求目标不接受路径参数")
 
     def _validate_content_length(self, *, required: bool, max_bytes: int) -> int:
         transfer_encoding = self.headers.get_all("Transfer-Encoding", [])
@@ -844,30 +1222,52 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         ):
             raise RequestValidationError("写操作必须来自当前本地页面", status=403)
 
+        path = urlparse(self.path).path
+        backup_upload = path in {
+            "/api/backups/inspect",
+            "/api/backups/stage-restore",
+        }
         content_type_headers = self.headers.get_all("Content-Type", [])
         if len(content_type_headers) != 1:
             raise RequestValidationError(
-                "写操作必须使用 application/json",
+                (
+                    "备份上传必须声明 application/zip、application/json 或 application/octet-stream"
+                    if backup_upload
+                    else "写操作必须使用 application/json"
+                ),
                 status=415,
             )
         media_type, *parameters = [
             item.strip().lower() for item in content_type_headers[0].split(";")
         ]
-        if media_type != "application/json" or any(
+        invalid_charset = any(
             parameter.startswith("charset=")
             and parameter.split("=", 1)[1].strip('"') not in {"utf-8", "utf8"}
             for parameter in parameters
-        ):
+        )
+        allowed_media_types = (
+            {"application/zip", "application/json", "application/octet-stream"}
+            if backup_upload
+            else {"application/json"}
+        )
+        if media_type not in allowed_media_types or invalid_charset:
             raise RequestValidationError(
-                "写操作必须使用 UTF-8 application/json",
+                (
+                    "备份上传格式不受支持"
+                    if backup_upload
+                    else "写操作必须使用 UTF-8 application/json"
+                ),
                 status=415,
             )
 
-        path = urlparse(self.path).path
         max_bytes = (
-            MAX_VISION_JSON_BODY_BYTES
-            if path == "/api/vision/analyze"
-            else MAX_JSON_BODY_BYTES
+            MAX_BACKUP_ARCHIVE_BYTES
+            if backup_upload
+            else (
+                MAX_VISION_JSON_BODY_BYTES
+                if path == "/api/vision/analyze"
+                else MAX_JSON_BODY_BYTES
+            )
         )
         self._validated_content_length = self._validate_content_length(
             required=self.command in {"POST", "PUT"},
@@ -886,6 +1286,77 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             self._send_json_if_possible({"error": str(error)}, error.status)
         except json.JSONDecodeError:
             self._send_json_if_possible({"error": "请求 JSON 无法解析"}, 400)
+        except VersionConflictError as error:
+            self._send_json_if_possible(
+                {
+                    "error": str(error),
+                    "code": "version_conflict",
+                    "expectedVersion": error.expected,
+                    "currentVersion": error.actual,
+                },
+                409,
+            )
+        except ProjectConflictError as error:
+            self._send_json_if_possible(
+                {
+                    "error": str(error),
+                    "code": "project_conflict",
+                    "expected": error.expected,
+                    "actual": error.actual,
+                    "expectedUpdatedAt": error.expected,
+                    "actualUpdatedAt": error.actual,
+                },
+                409,
+            )
+        except IdempotencyConflictError as error:
+            self._send_json_if_possible(
+                {
+                    "error": str(error),
+                    "code": "idempotency_conflict",
+                    "operation": error.operation,
+                },
+                409,
+            )
+        except BackupConflictError as error:
+            self._send_json_if_possible(
+                {
+                    "error": str(error),
+                    "code": "backup_conflict",
+                    "conflicts": list(error.conflicts),
+                },
+                409,
+            )
+        except BackupValidationError as error:
+            self._send_json_if_possible(
+                {"error": str(error), "code": "invalid_backup"},
+                400,
+            )
+        except EditEngineError as error:
+            self._send_json_if_possible(
+                {"error": str(error), "code": error.code},
+                error.status,
+            )
+        except LockedConflictError as error:
+            detail = error.as_dict()
+            self._send_json_if_possible(
+                {"error": detail.pop("message"), **detail},
+                409,
+            )
+        except CatalogBoundaryError as error:
+            self._send_json_if_possible(
+                {"error": str(error), "code": error.code},
+                409,
+            )
+        except SamplingExhaustedError as error:
+            self._send_json_if_possible(
+                {"error": str(error), "code": error.code, "trace": error.trace},
+                422,
+            )
+        except RandomSamplerError as error:
+            self._send_json_if_possible(
+                {"error": str(error), "code": error.code},
+                400,
+            )
         except ValueError as error:
             self._send_json_if_possible({"error": str(error)}, 400)
         except sqlite3.IntegrityError:
@@ -902,6 +1373,51 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             self.send_json(payload, status=status)
         except OSError:
             self.close_connection = True
+
+    def read_idempotency_key(self) -> str | None:
+        values = self.headers.get_all("Idempotency-Key") or []
+        if len(values) > 1:
+            raise RequestValidationError(
+                "Idempotency-Key 请求头不能重复",
+                status=400,
+            )
+        try:
+            return validate_idempotency_key(values[0] if values else None)
+        except ValueError as error:
+            raise RequestValidationError(str(error), status=400) from error
+
+    def read_binary(self, *, max_bytes: int = MAX_BACKUP_ARCHIVE_BYTES) -> bytes:
+        length = self._validated_content_length
+        if length is None:
+            length = self._validate_content_length(
+                required=True,
+                max_bytes=max_bytes,
+            )
+        if length == 0:
+            raise RequestValidationError("备份文件不能为空")
+        previous_timeout = self.connection.gettimeout()
+        deadline = time.monotonic() + BACKUP_UPLOAD_TIMEOUT_SECONDS
+        chunks: list[bytes] = []
+        remaining = length
+        try:
+            while remaining:
+                time_left = deadline - time.monotonic()
+                if time_left <= 0:
+                    raise RequestValidationError("备份文件读取超过总时限")
+                self.connection.settimeout(time_left)
+                chunk = self.rfile.read1(remaining)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+        except (TimeoutError, OSError) as error:
+            raise RequestValidationError("备份文件读取超时或不完整") from error
+        finally:
+            self.connection.settimeout(previous_timeout)
+        body = b"".join(chunks)
+        if len(body) != length:
+            raise RequestValidationError("备份文件长度与 Content-Length 不一致")
+        return body
 
     def read_json(self) -> dict:
         length = self._validated_content_length
@@ -988,6 +1504,16 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             return self.handle_favorites_get(parsed.query)
         if parsed.path == "/api/settings":
             return self.handle_settings_get()
+        if parsed.path == "/api/model-profiles":
+            return self.handle_model_profiles_get("")
+        if parsed.path.startswith("/api/model-profiles/"):
+            return self.handle_model_profiles_get(
+                unquote(parsed.path.rsplit("/", 1)[-1])
+            )
+        if parsed.path == "/api/text/random-catalog":
+            return self.handle_random_catalog_get()
+        if parsed.path == "/api/backups/export":
+            return self.handle_backup_export(parsed.query)
         if parsed.path == "/api/local-llm/status":
             return self.send_json({"item": local_llm_status()})
         if parsed.path == "/api/vision/status":
@@ -1020,6 +1546,16 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             return self.handle_text_expand()
         if parsed.path == "/api/text/random":
             return self.handle_text_random()
+        if parsed.path == "/api/text/random-plan":
+            return self.handle_random_plan()
+        if parsed.path == "/api/recipe/resolve":
+            return self.handle_recipe_resolve()
+        if parsed.path == "/api/text/edit-preview":
+            return self.handle_edit_preview()
+        if parsed.path == "/api/text/edit-apply":
+            return self.handle_edit_apply()
+        if parsed.path == "/api/text/edit-undo":
+            return self.handle_edit_undo()
         if parsed.path == "/api/text/decompose":
             return self.handle_text_decompose()
         if parsed.path == "/api/text/regenerate-block":
@@ -1036,6 +1572,12 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             return self.handle_local_llm_start()
         if parsed.path == "/api/local-llm/stop":
             return self.handle_local_llm_stop()
+        if parsed.path == "/api/workspace/commit":
+            return self.handle_workspace_commit()
+        if parsed.path == "/api/backups/inspect":
+            return self.handle_backup_inspect(parsed.query)
+        if parsed.path == "/api/backups/stage-restore":
+            return self.handle_backup_stage_restore(parsed.query)
         if parsed.path == "/api/projects":
             return self.handle_project_create()
         version_parts = parsed.path.split("/")
@@ -1066,6 +1608,14 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         ):
             template_id = unquote(parsed.path.rsplit("/", 1)[-1])
             return self.handle_prompt_template_put(template_id)
+        if (
+            len(template_parts) == 4
+            and template_parts[1:3] == ["api", "projects"]
+            and template_parts[3]
+            and not parsed.params
+        ):
+            project_id = unquote(template_parts[3])
+            return self.handle_project_update(project_id)
         if parsed.path == "/api/settings":
             return self.handle_settings_put()
         return self.send_json({"error": "未找到 API"}, status=404)
@@ -1087,7 +1637,6 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         return self.send_json({"error": "未找到 API"}, status=404)
 
     def handle_projects_get(self, path: str) -> None:
-        init_db()
         if path == "/api/projects":
             return self.send_json({"items": list_projects()})
         prefix = "/api/projects/"
@@ -1134,18 +1683,207 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         self.send_json({"item": item})
 
     def handle_project_create(self) -> None:
-        init_db()
         try:
             payload = self.read_json()
         except json.JSONDecodeError:
             return self.send_bad_json()
         except ValueError as error:
             return self.send_json({"error": str(error)}, status=400)
-        project = create_project(payload)
+        project = create_project(
+            payload,
+            idempotency_key=self.read_idempotency_key(),
+        )
         self.send_json({"item": project}, status=201)
 
+    def handle_workspace_commit(self) -> None:
+        try:
+            payload = self.read_json()
+        except json.JSONDecodeError:
+            return self.send_bad_json()
+        except ValueError as error:
+            return self.send_json({"error": str(error)}, status=400)
+        payload = enrich_workspace_commit_payload(payload)
+        result = commit_workspace(
+            payload,
+            idempotency_key=self.read_idempotency_key(),
+        )
+        status = 201 if result.get("createdProject") or result.get("version") else 200
+        self.send_json({"item": result}, status=status)
+
+    @staticmethod
+    def _backup_query(query: str, allowed: set[str]) -> dict[str, str]:
+        values = parse_qs(query, keep_blank_values=True)
+        unknown = sorted(set(values) - allowed)
+        if unknown:
+            raise RequestValidationError(
+                "备份请求包含不允许的查询参数：" + ", ".join(unknown)
+            )
+        result: dict[str, str] = {}
+        for key, items in values.items():
+            if len(items) != 1:
+                raise RequestValidationError(f"备份查询参数 {key} 不能重复")
+            result[key] = items[0]
+        return result
+
+    def handle_backup_export(self, query: str) -> None:
+        options = self._backup_query(query, {"scope", "projectId"})
+        scope = options.get("scope", "full")
+        project_id = options.get("projectId")
+        if scope not in {"full", "project"}:
+            raise RequestValidationError("备份 scope 必须是 full 或 project")
+        if scope == "project" and not project_id:
+            raise RequestValidationError("项目备份必须提供 projectId")
+        if scope == "full" and project_id is not None:
+            raise RequestValidationError("完整备份不能提供 projectId")
+        timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        filename = f"prompt-studio-{scope}-{timestamp}.zip"
+        with tempfile.TemporaryDirectory(prefix="prompt-studio-export-") as directory:
+            destination = Path(directory) / filename
+            if scope == "project":
+                export_project(
+                    destination,
+                    project_id,
+                    db_path=prompt_db.DEFAULT_DB_PATH,
+                    archive_format="zip",
+                )
+            else:
+                export_database(
+                    destination,
+                    db_path=prompt_db.DEFAULT_DB_PATH,
+                    archive_format="zip",
+                )
+            body = destination.read_bytes()
+        self.send_bytes(
+            body,
+            content_type="application/zip",
+            filename=filename,
+        )
+
+    def _uploaded_backup_file(self, directory: str) -> Path:
+        body = self.read_binary()
+        source = Path(directory) / "uploaded.backup"
+        source.write_bytes(body)
+        return source
+
+    def handle_backup_inspect(self, query: str) -> None:
+        self._backup_query(query, set())
+        with tempfile.TemporaryDirectory(prefix="prompt-studio-inspect-") as directory:
+            report = inspect_backup(self._uploaded_backup_file(directory))
+        self.send_json({"item": report})
+
+    @staticmethod
+    def _clone_current_database(target: Path) -> None:
+        source_connection = sqlite3.connect(
+            f"{prompt_db.DEFAULT_DB_PATH.resolve().as_uri()}?mode=ro",
+            uri=True,
+        )
+        target_connection = sqlite3.connect(target)
+        try:
+            source_connection.execute("PRAGMA query_only = ON")
+            source_connection.backup(target_connection)
+        finally:
+            target_connection.close()
+            source_connection.close()
+
+    def handle_backup_stage_restore(self, query: str) -> None:
+        options = self._backup_query(query, {"conflict"})
+        conflict = options.get("conflict", "reject")
+        if conflict not in {"reject", "rename"}:
+            raise RequestValidationError("恢复冲突策略必须是 reject 或 rename")
+        with tempfile.TemporaryDirectory(prefix="prompt-studio-restore-") as directory:
+            source = self._uploaded_backup_file(directory)
+            inspection = inspect_backup(source)
+            target_directory = recovery_directory(prompt_db.DEFAULT_DB_PATH)
+            timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+            target = target_directory / (
+                f"restore-preview-{timestamp}-{uuid.uuid4().hex[:8]}.db"
+            )
+            with BACKUP_STAGE_LOCK:
+                target_directory.mkdir(parents=True, exist_ok=True)
+                try:
+                    if inspection["manifest"]["scope"] == "project":
+                        self._clone_current_database(target)
+                    report = restore_backup(source, target, conflict=conflict)
+                except BaseException:
+                    target.unlink(missing_ok=True)
+                    raise
+        self.send_json(
+            {
+                "item": {
+                    **report,
+                    "inspection": inspection,
+                    "stagingDatabase": str(target),
+                    "activated": False,
+                }
+            },
+            status=201,
+        )
+
+    def handle_model_profiles_get(self, profile_id: str) -> None:
+        if profile_id:
+            return self.send_json({"item": model_profile_api_item(profile_id)})
+        items = [
+            model_profile_api_item(profile["profileId"])
+            for profile in list_model_profiles()
+        ]
+        self.send_json({"items": items})
+
+    def handle_random_catalog_get(self) -> None:
+        self.send_json({"item": random_catalog_api_item()})
+
+    def handle_random_plan(self) -> None:
+        payload = self.read_json()
+        item = process_random_plan_request(
+            payload,
+            experimental_enabled=(
+                os.environ.get("PROMPT_STUDIO_EXPERIMENTAL_WORDLISTS") == "1"
+            ),
+        )
+        self.send_json({"item": item}, status=201)
+
+    def handle_recipe_resolve(self) -> None:
+        item = process_recipe_resolve_request(self.read_json())
+        self.send_json({"item": item})
+
+    def handle_edit_preview(self) -> None:
+        item = process_edit_preview_request(self.read_json())
+        self.send_json({"item": item})
+
+    def handle_edit_apply(self) -> None:
+        item = process_edit_apply_request(self.read_json())
+        self.send_json({"item": item})
+
+    def handle_edit_undo(self) -> None:
+        item = process_edit_undo_request(self.read_json())
+        self.send_json({"item": item})
+
+    def handle_project_update(self, project_id: str) -> None:
+        if not project_id or "\\" in project_id:
+            return self.send_json({"error": "作品 ID 无效"}, status=400)
+        try:
+            payload = self.read_json()
+        except json.JSONDecodeError:
+            return self.send_bad_json()
+        except ValueError as error:
+            return self.send_json({"error": str(error)}, status=400)
+        if "baseUpdatedAt" not in payload:
+            return self.send_json(
+                {
+                    "error": "更新作品必须提供 baseUpdatedAt 并发基线",
+                    "code": "project_precondition_required",
+                },
+                status=428,
+            )
+        project = update_project(
+            project_id,
+            payload,
+            idempotency_key=self.read_idempotency_key(),
+        )
+        if not project:
+            return self.send_json({"error": "作品不存在"}, status=404)
+        self.send_json({"item": project})
+
     def handle_text_expand(self) -> None:
-        init_db()
         try:
             payload = self.read_json()
             item = process_text_expand_request(payload)
@@ -1161,7 +1899,6 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         self.send_json({"item": item})
 
     def handle_text_random(self) -> None:
-        init_db()
         try:
             payload = self.read_json()
             item = process_text_random_request(payload)
@@ -1177,7 +1914,6 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         self.send_json({"item": item})
 
     def handle_text_decompose(self) -> None:
-        init_db()
         try:
             payload = self.read_json()
             item = process_text_decompose_request(payload)
@@ -1193,7 +1929,6 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         self.send_json({"item": item})
 
     def handle_text_provider_test(self) -> None:
-        init_db()
         try:
             payload = self.read_json()
             item = process_text_provider_test(payload)
@@ -1209,7 +1944,6 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         self.send_json({"item": item})
 
     def handle_text_regenerate_block(self) -> None:
-        init_db()
         try:
             payload = self.read_json()
             item = process_text_regenerate_block_request(payload)
@@ -1225,7 +1959,6 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         self.send_json({"item": item})
 
     def handle_text_regenerate_blocks(self) -> None:
-        init_db()
         try:
             payload = self.read_json()
             item = process_text_regenerate_blocks_request(payload)
@@ -1241,7 +1974,6 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         self.send_json({"item": item})
 
     def handle_text_translate_pending(self) -> None:
-        init_db()
         try:
             payload = self.read_json()
             item = process_text_translate_pending_request(payload)
@@ -1257,7 +1989,6 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         self.send_json({"item": item})
 
     def handle_vision_analyze(self) -> None:
-        init_db()
         try:
             payload = self.read_json()
             item = process_vision_analyze_request(payload)
@@ -1303,7 +2034,6 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         self.send_json({"item": item})
 
     def handle_version_create(self, project_id: str) -> None:
-        init_db()
         if not get_project(project_id):
             return self.send_json({"error": "作品不存在"}, status=404)
         try:
@@ -1312,18 +2042,28 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             return self.send_bad_json()
         except ValueError as error:
             return self.send_json({"error": str(error)}, status=400)
-        version = create_prompt_version(project_id, payload)
+        if "baseUpdatedAt" not in payload:
+            return self.send_json(
+                {
+                    "error": "创建提示词版本必须提供 baseUpdatedAt 并发基线",
+                    "code": "project_precondition_required",
+                },
+                status=428,
+            )
+        version = create_prompt_version(
+            project_id,
+            payload,
+            idempotency_key=self.read_idempotency_key(),
+        )
         self.send_json({"item": version}, status=201)
 
     def handle_favorites_get(self, raw_query: str) -> None:
-        init_db()
         query = parse_qs(raw_query)
         favorite_type = query.get("type", [""])[0].strip()
         term = query.get("q", [""])[0].strip()
         self.send_json({"items": list_favorites(favorite_type, term)})
 
     def handle_favorite_upsert(self) -> None:
-        init_db()
         try:
             payload = self.read_json()
             item = upsert_favorite(payload)
@@ -1334,17 +2074,14 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         self.send_json({"item": item}, status=201)
 
     def handle_favorite_delete(self, favorite_id: str) -> None:
-        init_db()
         if not favorite_id:
             return self.send_json({"error": "收藏 ID 无效"}, status=400)
         self.send_json({"deleted": delete_favorite(favorite_id)})
 
     def handle_settings_get(self) -> None:
-        init_db()
         self.send_json({"settings": redact_settings(get_settings())})
 
     def handle_settings_put(self) -> None:
-        init_db()
         try:
             payload = self.read_json()
         except json.JSONDecodeError:

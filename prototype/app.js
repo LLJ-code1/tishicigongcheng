@@ -15,7 +15,10 @@
   const RANDOM_VARIANT_BLOCKS = new Set([
     "subject",
     "appearance",
+    "outfit",
+    "expression",
     "pose",
+    "interaction",
     "scene",
     "composition",
     "lighting",
@@ -180,14 +183,60 @@
     );
   }
 
+  function idleGenerationProgress() {
+    return {
+      status: "idle",
+      task: "",
+      title: "等待任务",
+      detail: "点击“仅拆解”或“拓展并结构化”后，这里会显示当前进度。",
+      provider: "",
+      startedAt: 0,
+      elapsedSeconds: 0,
+      finishedAt: 0,
+    };
+  }
+
   function createInitialState() {
     return {
       view: "home",
       projectId: null,
       projectName: "未命名作品",
+      projectStatus: "draft",
+      projects: [],
+      projectsStatus: "idle",
+      projectsError: "",
+      openingProjectId: "",
+      openError: "",
+      saveStatus: "idle",
+      saveError: "",
+      lastSavedAt: "",
+      projectUpdatedAt: "",
+      hasUnsavedChanges: false,
+      hasUnsavedProjectChanges: false,
+      restoreFromVersion: null,
+      workingRevision: 0,
+      projectRevision: 0,
       textMode: "expand",
       draftInput: "",
       randomSeed: null,
+      modelProfileId: "anima-1.1-v1",
+      generationParameters: {
+        sampler: "Euler",
+        scheduler: "Normal",
+        steps: 30,
+        cfg: 5.5,
+        resolution: { width: 1024, height: 1024 },
+        generationSeed: 0,
+        denoiseStrength: null,
+      },
+      manualParameterKeys: [],
+      randomPlan: null,
+      randomCatalog: null,
+      randomCatalogStatus: "idle",
+      instructionHistory: [],
+      pendingEditPreview: null,
+      pendingChange: null,
+      recipeHash: "",
       references: clone(data.referenceEntries || []),
       resources: clone(data.quickPicks || {
         characters: [],
@@ -224,16 +273,7 @@
       translatingPending: false,
       selectedVariantBlockIds: [],
       batchRegenerating: false,
-      generationProgress: {
-        status: "idle",
-        task: "",
-        title: "等待任务",
-        detail: "点击“仅拆解”或“拓展并结构化”后，这里会显示当前进度。",
-        provider: "",
-        startedAt: 0,
-        elapsedSeconds: 0,
-        finishedAt: 0,
-      },
+      generationProgress: idleGenerationProgress(),
       regeneratingBlockId: "",
       settings: {
         textProvider: "local",
@@ -257,6 +297,376 @@
       imageLoaded: false,
       analysisNotice: "尚未开始分析",
     };
+  }
+
+  function emptyOutput() {
+    return {
+      positiveEn: "",
+      positiveZh: "",
+      negativeEn: "",
+      negativeZh: "",
+      relationEn: "",
+      relationZh: "",
+    };
+  }
+
+  function resetAnalyzerWorkspaceResults(analyzers) {
+    const next = clone(analyzers || {});
+    Object.values(next).forEach((model) => {
+      model.status = model.available === false ? "unavailable" : "idle";
+      model.raw = "";
+      model.error = "";
+    });
+    return next;
+  }
+
+  function safeObject(value) {
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? value
+      : {};
+  }
+
+  function persistedVersionSnapshot(item) {
+    const metadata = safeObject(item?.metadata);
+    const version = Number(item?.version);
+    if (!Number.isSafeInteger(version) || version < 1) return null;
+    return {
+      id: typeof item.id === "string" ? item.id : "",
+      version,
+      source: typeof item.source === "string" ? item.source : "manual",
+      output: {
+        positiveEn: typeof item.positiveEn === "string" ? item.positiveEn : "",
+        positiveZh: typeof item.positiveZh === "string" ? item.positiveZh : "",
+        negativeEn: typeof item.negativeEn === "string" ? item.negativeEn : "",
+        negativeZh: typeof item.negativeZh === "string" ? item.negativeZh : "",
+        relationEn:
+          typeof metadata.relationEn === "string" ? metadata.relationEn : "",
+        relationZh:
+          typeof metadata.relationZh === "string" ? metadata.relationZh : "",
+      },
+      blocks: normalizeBlocks(Array.isArray(item.blocks) ? item.blocks : []),
+      metadata: clone(metadata),
+      restoredFrom:
+        Number.isSafeInteger(Number(metadata.restoredFromVersion)) &&
+        Number(metadata.restoredFromVersion) > 0
+          ? Number(metadata.restoredFromVersion)
+          : null,
+      createdAt: typeof item.createdAt === "string" ? item.createdAt : "",
+    };
+  }
+
+  function hydrateProjectState(state, project) {
+    const next = clone(state);
+    next.analyzers = resetAnalyzerWorkspaceResults(next.analyzers);
+    const metadata = safeObject(project?.metadata);
+    const history = (Array.isArray(project?.versions) ? project.versions : [])
+      .map(persistedVersionSnapshot)
+      .filter(Boolean)
+      .sort((left, right) => left.version - right.version);
+    const latest = history.at(-1) || null;
+    const latestMetadata = safeObject(latest?.metadata);
+    const latestRecipe = safeObject(latestMetadata.recipe);
+    const latestParameters = safeObject(latestRecipe.parameters);
+    const projectWorkspaceVersion = Number(metadata.workspaceBaseVersion);
+    const projectMetadataIsCurrent =
+      !latest ||
+      (Number.isSafeInteger(projectWorkspaceVersion) &&
+        projectWorkspaceVersion === latest.version);
+
+    next.projectId = typeof project?.id === "string" ? project.id : null;
+    next.projectName =
+      typeof project?.name === "string" && project.name.trim()
+        ? project.name
+        : "未命名作品";
+    next.projectStatus =
+      typeof project?.status === "string" ? project.status : "draft";
+    next.projectUpdatedAt =
+      typeof project?.updatedAt === "string" ? project.updatedAt : "";
+    next.view = projectMetadataIsCurrent
+      ? project?.mode === "image"
+        ? "image"
+        : "text"
+      : latest?.source === "image"
+        ? "image"
+        : "text";
+    next.textMode =
+      projectMetadataIsCurrent && typeof metadata.textMode === "string"
+        ? metadata.textMode
+        : typeof latestMetadata.textMode === "string"
+          ? latestMetadata.textMode
+          : "expand";
+    next.draftInput =
+      projectMetadataIsCurrent && typeof metadata.draftInput === "string"
+        ? metadata.draftInput
+        : typeof latestMetadata.draftInput === "string"
+          ? latestMetadata.draftInput
+          : "";
+    next.randomSeed = latestMetadata.randomSeed ?? null;
+    next.modelProfileId =
+      typeof latestRecipe.model?.profileId === "string"
+        ? latestRecipe.model.profileId
+        : "anima-1.1-v1";
+    for (const key of Object.keys(next.generationParameters)) {
+      if (latestParameters[key] && "value" in latestParameters[key]) {
+        next.generationParameters[key] = clone(latestParameters[key].value);
+      }
+    }
+    next.manualParameterKeys = Object.entries(latestParameters)
+      .filter(([, item]) => item?.source === "manual_override")
+      .map(([key]) => key);
+    next.randomPlan = latestRecipe.randomPlan
+      ? clone(latestRecipe.randomPlan)
+      : null;
+    next.instructionHistory = Array.isArray(latestRecipe.instructionHistory)
+      ? clone(latestRecipe.instructionHistory)
+      : [];
+    next.recipeHash =
+      typeof latestMetadata.recipeHash === "string"
+        ? latestMetadata.recipeHash
+        : "";
+    next.pendingEditPreview = null;
+    next.pendingChange = null;
+    next.imageName =
+      projectMetadataIsCurrent && typeof metadata.imageName === "string"
+        ? metadata.imageName
+        : typeof latestMetadata.imageName === "string"
+          ? latestMetadata.imageName
+          : "";
+    next.imageMimeType = "";
+    next.imageSize = 0;
+    next.imageLoaded = false;
+    next.versionHistory = history;
+    next.version = latest?.version || 0;
+    next.output = latest ? clone(latest.output) : emptyOutput();
+    next.blocks = latest ? clone(latest.blocks) : [];
+    next.appliedBlocks = latest ? clone(latest.blocks) : [];
+    next.outputChecks = clone(safeObject(latestMetadata.outputChecks));
+    next.dirtyBlockIds = [];
+    next.previewOutput = null;
+    next.selectedVariantBlockIds = [];
+    next.batchRegenerating = false;
+    next.textGenerating = false;
+    next.textDecomposing = false;
+    next.translatingPending = false;
+    next.regeneratingBlockId = "";
+    next.generationProgress = idleGenerationProgress();
+    next.restoreFromVersion = null;
+    next.hasUnsavedChanges = false;
+    next.hasUnsavedProjectChanges = false;
+    next.workingRevision = 0;
+    next.projectRevision = 0;
+    next.saveStatus = "idle";
+    next.saveError = "";
+    next.lastSavedAt = latest?.createdAt || project?.updatedAt || "";
+    next.openingProjectId = "";
+    next.openError = "";
+    next.rawMergedResult = latest?.output.positiveEn || "";
+    next.activeRawResult = "merged";
+    next.analysisQueue = [];
+    next.analysisComplete = Boolean(
+      next.view === "image" && latest?.source === "image"
+    );
+    next.analysisNotice = latest
+      ? next.analysisComplete
+        ? "已恢复图片解析结果；原始图片需重新载入"
+        : "已恢复项目最新版本"
+      : "项目尚未保存提示词版本";
+    next.toast = `已打开作品：${next.projectName}`;
+    return next;
+  }
+
+  function createNewProjectState(state) {
+    const next = createInitialState();
+    for (const key of [
+      "settings",
+      "references",
+      "resources",
+      "projects",
+    ]) {
+      next[key] = clone(state[key]);
+    }
+    next.analyzers = resetAnalyzerWorkspaceResults(state.analyzers);
+    next.projectsStatus = state.projectsStatus;
+    next.projectsError = state.projectsError;
+    return next;
+  }
+
+  function buildProjectPayload(state) {
+    const payload = {
+      name: String(state.projectName || "").trim() || "未命名作品",
+      mode: state.view === "image" ? "image" : "text",
+      status: state.projectStatus || "draft",
+      metadata: {
+        textMode: state.textMode,
+        draftInput: state.draftInput,
+        settings: projectSettingsMetadata(state.settings),
+        imageName: state.imageName,
+        workspaceBaseVersion: Number.isSafeInteger(state.version)
+          ? state.version
+          : 0,
+      },
+    };
+    if (
+      state.projectId &&
+      typeof state.projectUpdatedAt === "string" &&
+      state.projectUpdatedAt
+    ) {
+      payload.baseUpdatedAt = state.projectUpdatedAt;
+    }
+    return payload;
+  }
+
+  function buildVersionPayload(state) {
+    const manualOverride = {};
+    for (const key of Array.isArray(state.manualParameterKeys)
+      ? state.manualParameterKeys
+      : []) {
+      if (key in safeObject(state.generationParameters)) {
+        manualOverride[key] = clone(state.generationParameters[key]);
+      }
+    }
+    const metadata = {
+      textMode: state.textMode,
+      draftInput: state.draftInput,
+      relationEn: state.output.relationEn || "",
+      relationZh: state.output.relationZh || "",
+      randomSeed: state.randomSeed,
+      outputChecks: safeObject(state.outputChecks),
+      imageName: state.imageName || "",
+      modelProfileId: state.modelProfileId || "anima-1.1-v1",
+      parameterLayers: {
+        model_default: {},
+        lora_requirement: {},
+        task_preset: {
+          resolution: clone(
+            state.generationParameters?.resolution || {
+              width: 1024,
+              height: 1024,
+            }
+          ),
+          generationSeed: Number.isSafeInteger(
+            Number(state.generationParameters?.generationSeed)
+          )
+            ? Number(state.generationParameters.generationSeed)
+            : 0,
+        },
+        manual_override: manualOverride,
+      },
+      randomPlan: state.randomPlan ? clone(state.randomPlan) : null,
+      instructionHistory: Array.isArray(state.instructionHistory)
+        ? clone(state.instructionHistory)
+        : [],
+      change: state.pendingChange ? clone(state.pendingChange) : null,
+      parentVersion: state.pendingChange
+        ? Number.isSafeInteger(state.version)
+          ? state.version
+          : 0
+        : null,
+      imageRefs: state.imageName
+        ? [{ name: state.imageName, status: "local_reference_not_embedded" }]
+        : [],
+    };
+    if (Number.isSafeInteger(state.restoreFromVersion)) {
+      metadata.restoredFromVersion = state.restoreFromVersion;
+    }
+    const payload = {
+      baseVersion: Number.isSafeInteger(state.version) ? state.version : 0,
+      source: state.view === "image" ? "image" : state.textMode || "manual",
+      positiveEn: state.output.positiveEn || "",
+      positiveZh: state.output.positiveZh || "",
+      negativeEn: state.output.negativeEn || "",
+      negativeZh: state.output.negativeZh || "",
+      blocks: normalizeBlocks(state.appliedBlocks),
+      metadata,
+    };
+    if (
+      state.projectId &&
+      typeof state.projectUpdatedAt === "string" &&
+      state.projectUpdatedAt
+    ) {
+      payload.baseUpdatedAt = state.projectUpdatedAt;
+    }
+    return payload;
+  }
+
+  function createClientId(prefix, randomUuid) {
+    const source =
+      typeof randomUuid === "function"
+        ? randomUuid()
+        : typeof globalThis !== "undefined" &&
+            globalThis.crypto &&
+            typeof globalThis.crypto.randomUUID === "function"
+          ? globalThis.crypto.randomUUID()
+          : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    const safe = String(source || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9._~-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 96);
+    return `${prefix}-${safe || "local"}`.slice(0, 128);
+  }
+
+  function buildWorkspaceCommitPayload(state, ids = {}) {
+    const operationId = ids.operationId || createClientId("save");
+    const projectId = state.projectId || ids.projectId || createClientId("project");
+    const creatingProject = !state.projectId;
+    const project = {
+      ...buildProjectPayload(state),
+      id: projectId,
+    };
+    if (creatingProject) delete project.baseUpdatedAt;
+    const shouldCreateVersion = Boolean(state.hasUnsavedChanges);
+    const nextVersion = shouldCreateVersion
+      ? (Number.isSafeInteger(state.version) ? state.version : 0) + 1
+      : Number.isSafeInteger(state.version)
+        ? state.version
+        : 0;
+    project.metadata = {
+      ...safeObject(project.metadata),
+      workspaceBaseVersion: nextVersion,
+    };
+    let version = null;
+    if (shouldCreateVersion) {
+      version = {
+        ...buildVersionPayload(state),
+        id: ids.versionId || createClientId("version"),
+      };
+      delete version.baseUpdatedAt;
+    }
+    return {
+      operationId,
+      createProject: creatingProject,
+      project,
+      version,
+    };
+  }
+
+  function shouldConfirmWorkspaceDiscard(state) {
+    const namedOrStartedProject = Boolean(
+      state.projectId ||
+        String(state.projectName || "").trim() !== "未命名作品" ||
+        String(state.draftInput || "").trim() ||
+        state.imageName
+    );
+    return Boolean(
+      state.dirtyBlockIds?.length ||
+        state.hasUnsavedChanges ||
+        (state.hasUnsavedProjectChanges && namedOrStartedProject)
+    );
+  }
+
+  function markWorkspaceChanged(next) {
+    next.hasUnsavedChanges = true;
+    next.workingRevision = Number(next.workingRevision || 0) + 1;
+    if (next.saveStatus !== "saving") next.saveStatus = "idle";
+    next.saveError = "";
+  }
+
+  function markProjectChanged(next) {
+    next.hasUnsavedProjectChanges = true;
+    next.projectRevision = Number(next.projectRevision || 0) + 1;
+    if (next.saveStatus !== "saving") next.saveStatus = "idle";
+    next.saveError = "";
   }
 
   function selectedAnalyzerIds(analyzers) {
@@ -404,20 +814,18 @@
     next.dirtyBlockIds = [];
     next.selectedVariantBlockIds = [];
     next.batchRegenerating = false;
-    next.version = 1;
-    next.versionHistory = [
-      {
-        version: 1,
-        output: clone(output),
-        blocks: clone(normalizedBlocks),
-      },
-    ];
+    next.previewOutput = null;
+    next.restoreFromVersion = null;
+    markWorkspaceChanged(next);
   }
 
   function markDirty(next, blockId) {
     if (!next.dirtyBlockIds.includes(blockId)) {
       next.dirtyBlockIds.push(blockId);
     }
+    // Pending block edits are not persisted until APPLY_CHANGES, but they still
+    // invalidate any project-open request that captured an older workspace.
+    next.workingRevision = Number(next.workingRevision || 0) + 1;
   }
 
   function findResource(resources, id) {
@@ -674,17 +1082,250 @@
     next.appliedBlocks = normalizeBlocks(next.appliedBlocks);
 
     switch (action.type) {
+      case "NEW_PROJECT":
+        return createNewProjectState(next);
+      case "PROJECTS_LOADING":
+        next.projectsStatus = "loading";
+        next.projectsError = "";
+        return next;
+      case "PROJECTS_LOADED":
+        next.projects = Array.isArray(action.items) ? clone(action.items) : [];
+        next.projectsStatus = "ready";
+        next.projectsError = "";
+        return next;
+      case "PROJECTS_FAILED":
+        next.projectsStatus = "error";
+        next.projectsError = action.error || "项目列表加载失败";
+        return next;
+      case "PROJECT_OPENING":
+        next.openingProjectId = action.id || "";
+        next.openError = "";
+        return next;
+      case "PROJECT_OPENED":
+        return hydrateProjectState(next, action.item || {});
+      case "PROJECT_OPEN_FAILED":
+        next.openingProjectId = "";
+        next.openError = action.error || "项目打开失败";
+        next.toast = next.openError;
+        return next;
+      case "WORKSPACE_REQUESTS_CANCELLED":
+        next.textGenerating = false;
+        next.textDecomposing = false;
+        next.translatingPending = false;
+        next.regeneratingBlockId = "";
+        next.batchRegenerating = false;
+        next.analysisQueue = [];
+        next.generationProgress = idleGenerationProgress();
+        Object.values(next.analyzers).forEach((model) => {
+          model.status = model.available === false
+            ? "unavailable"
+            : model.raw
+              ? "ready"
+              : "idle";
+        });
+        return next;
+      case "PROJECT_CREATED":
+        next.projectId = action.item?.id || next.projectId;
+        next.projectUpdatedAt =
+          action.item?.updatedAt || next.projectUpdatedAt;
+        if (action.savedProjectRevision === next.projectRevision) {
+          next.projectName = action.item?.name || next.projectName;
+          next.projectStatus = action.item?.status || next.projectStatus;
+          next.hasUnsavedProjectChanges = false;
+        }
+        return next;
+      case "PROJECT_SAVE_STARTED":
+        next.saveStatus = "saving";
+        next.saveError = "";
+        return next;
+      case "PROJECT_HEADER_SAVED":
+        next.projectUpdatedAt = action.updatedAt || next.projectUpdatedAt;
+        if (action.savedProjectRevision === next.projectRevision) {
+          next.hasUnsavedProjectChanges = false;
+        }
+        next.saveStatus =
+          next.hasUnsavedProjectChanges || next.hasUnsavedChanges
+            ? "idle"
+            : "saved";
+        next.saveError = "";
+        next.lastSavedAt = action.updatedAt || next.lastSavedAt;
+        next.toast = next.hasUnsavedProjectChanges || next.hasUnsavedChanges
+          ? "较早的项目信息已保存，当前修改仍待保存"
+          : action.version
+            ? `作品已保存为 V${action.version}`
+            : `作品信息已保存：${next.projectName || "未命名作品"}`;
+        return next;
+      case "PROJECT_SAVED": {
+        const snapshot = persistedVersionSnapshot(action.item);
+        if (!snapshot) {
+          next.saveStatus = "error";
+          next.saveError = "服务端没有返回有效版本";
+          next.toast = next.saveError;
+          return next;
+        }
+        next.versionHistory = next.versionHistory
+          .filter((entry) => entry.version !== snapshot.version)
+          .concat(snapshot)
+          .sort((left, right) => left.version - right.version);
+        next.version = snapshot.version;
+        next.projectUpdatedAt =
+          action.item?.projectUpdatedAt || next.projectUpdatedAt;
+        next.lastSavedAt = snapshot.createdAt || action.savedAt || "";
+        next.saveStatus = "saved";
+        next.saveError = "";
+        if (action.savedRevision === next.workingRevision) {
+          next.hasUnsavedChanges = false;
+          next.restoreFromVersion = null;
+          next.pendingChange = null;
+        }
+        if (action.savedProjectRevision === next.projectRevision) {
+          next.hasUnsavedProjectChanges = false;
+        }
+        if (next.hasUnsavedChanges || next.hasUnsavedProjectChanges) {
+          next.saveStatus = "idle";
+        }
+        next.toast = next.hasUnsavedChanges || next.hasUnsavedProjectChanges
+          ? `V${snapshot.version} 已保存，当前还有更新待保存`
+          : `作品已保存为 V${snapshot.version}`;
+        return next;
+      }
+      case "PROJECT_SAVE_FAILED":
+        next.saveStatus = "error";
+        next.saveError = action.error || "作品保存失败";
+        next.toast = next.saveError;
+        return next;
       case "NAVIGATE":
+        if (action.view !== "home" && action.view !== next.view) {
+          markProjectChanged(next);
+        }
         next.view = action.view;
         next.toast = "";
+        return next;
+      case "SET_PROJECT_NAME":
+        next.projectName = action.value;
+        markProjectChanged(next);
         return next;
       case "SET_TEXT_MODE":
         next.view = "text";
         next.textMode = action.mode;
+        markProjectChanged(next);
         return next;
       case "SET_DRAFT":
         next.draftInput = action.value;
+        markProjectChanged(next);
         return next;
+      case "SET_GENERATION_PARAMETER": {
+        const key = action.key;
+        if (!(key in safeObject(next.generationParameters))) return next;
+        let value = action.value;
+        if (["steps", "cfg", "generationSeed", "denoiseStrength"].includes(key)) {
+          value = value === null || value === "" ? null : Number(value);
+          if (value !== null && !Number.isFinite(value)) return next;
+          if (key === "steps") value = Math.max(1, Math.min(1000, Math.round(value)));
+          if (key === "cfg") value = Math.max(0, Math.min(100, value));
+          if (key === "generationSeed") {
+            value = Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, Math.round(value)));
+          }
+          if (key === "denoiseStrength" && value !== null) {
+            value = Math.max(0, Math.min(1, value));
+          }
+        }
+        if (key === "resolution") {
+          if (!value || !Number.isInteger(value.width) || !Number.isInteger(value.height)) {
+            return next;
+          }
+          value = {
+            width: Math.max(64, Math.min(8192, value.width)),
+            height: Math.max(64, Math.min(8192, value.height)),
+          };
+        }
+        next.generationParameters[key] = clone(value);
+        if (!next.manualParameterKeys.includes(key)) {
+          next.manualParameterKeys.push(key);
+        }
+        markWorkspaceChanged(next);
+        next.toast = `已手动覆盖参数：${key}`;
+        return next;
+      }
+      case "RANDOM_CATALOG_LOADING":
+        next.randomCatalogStatus = "loading";
+        return next;
+      case "RANDOM_CATALOG_LOADED":
+        next.randomCatalog = clone(action.item || null);
+        next.randomCatalogStatus = "ready";
+        return next;
+      case "RANDOM_CATALOG_FAILED":
+        next.randomCatalogStatus = "error";
+        next.toast = action.error || "词库目录加载失败";
+        return next;
+      case "APPLY_RANDOM_PLAN": {
+        const plan = action.item;
+        if (!plan || !Array.isArray(plan.items)) return next;
+        const blocks = clone(
+          next.appliedBlocks.length ? next.appliedBlocks : data.promptBlocks || []
+        );
+        const grouped = new Map();
+        for (const item of plan.items) {
+          let blockId = item?.binding?.blockId;
+          if (item?.categoryId === "clothing_outfit") blockId = "outfit";
+          if (!blocks.some((block) => block.id === blockId)) continue;
+          if (!grouped.has(blockId)) grouped.set(blockId, []);
+          grouped.get(blockId).push(item);
+        }
+        for (const [blockId, items] of grouped) {
+          const block = blocks.find((entry) => entry.id === blockId);
+          const english = items.map((item) => item.text).join(", ");
+          block.en = english;
+          block.zh = `待本地 LLM 翻译：${english}`;
+          block.source = `确定性词库 ${plan.catalog?.version || ""}`.trim();
+          block.confidence = 100;
+          block.locked = items.some((item) => item.locked);
+        }
+        next.randomPlan = clone(plan);
+        next.randomSeed = plan.librarySeed;
+        initializeVersion(next, compileBlocks(blocks), blocks);
+        next.toast = `已按词库 Seed 生成 ${plan.items.length} 项；中文块可用本地 LLM 翻译`;
+        return next;
+      }
+      case "RANDOM_PLAN_FAILED":
+        next.toast = action.error || "确定性随机计划生成失败";
+        return next;
+      case "EDIT_PREVIEW_STARTED":
+        next.pendingEditPreview = { loading: true };
+        return next;
+      case "EDIT_PREVIEW_READY":
+        next.pendingEditPreview = clone(action.item || null);
+        next.toast = action.item?.ready
+          ? `已预览 ${action.item.affectedIds?.length || 0} 个受影响块`
+          : "指令仍有冲突或无法确定的内容，尚未修改";
+        return next;
+      case "EDIT_PREVIEW_FAILED":
+        next.pendingEditPreview = null;
+        next.toast = action.error || "修改预览失败";
+        return next;
+      case "DISMISS_EDIT_PREVIEW":
+        next.pendingEditPreview = null;
+        return next;
+      case "APPLY_EDIT_RESULT": {
+        if (!Array.isArray(action.item?.workbenchBlocks)) return next;
+        initializeVersion(
+          next,
+          compileBlocks(
+            action.item.workbenchBlocks,
+            next.output.relationEn,
+            next.output.relationZh
+          ),
+          action.item.workbenchBlocks
+        );
+        next.instructionHistory = clone(
+          action.item.recipe?.instructionHistory || next.instructionHistory
+        );
+        next.recipeHash = action.item.recipeHash || "";
+        next.pendingChange = clone(action.item.change || null);
+        next.pendingEditPreview = null;
+        next.toast = `中文指令已应用，将自动保存为 V${next.version + 1}`;
+        return next;
+      }
       case "IMPORT_REFERENCE": {
         const reference = next.references.find((item) => item.id === action.id);
         if (!reference) return next;
@@ -875,13 +1516,7 @@
             next.output.relationZh
           );
         }
-        if (next.versionHistory.length) {
-          const current = next.versionHistory[next.versionHistory.length - 1];
-          if (current.version === next.version) {
-            current.output = clone(next.output);
-            current.blocks = clone(next.appliedBlocks);
-          }
-        }
+        markWorkspaceChanged(next);
         next.translatingPending = false;
         next.toast = `已翻译 ${translations.size} 个结构块`;
         return next;
@@ -974,7 +1609,7 @@
         if (!next.resources[type]) next.resources[type] = [];
         next.resources[type].push(resource);
         next.resourceDialogOpen = false;
-        next.toast = `已新建资源：${resource.name}`;
+        next.toast = `已加入本次会话：${resource.name}`;
         return next;
       }
       case "ADD_RECIPE": {
@@ -983,7 +1618,7 @@
           return next;
         }
         next.resources.snippets.push(normalizeResourceWeights(recipe));
-        next.toast = `已保存配方「${recipe.name}」`;
+        next.toast = `配方「${recipe.name}」已加入会话，正在写入本机数据库`;
         return next;
       }
       case "SAVE_BLOCK_AS_RESOURCE": {
@@ -998,7 +1633,7 @@
           en: block.en,
           zh: block.zh,
         });
-        next.toast = `已保存「${block.label}」为长期资源`;
+        next.toast = `已将「${block.label}」加入本次会话资源`;
         return next;
       }
       case "APPLY_RESOURCE": {
@@ -1064,6 +1699,7 @@
         next.imageSize = Number(action.size) || 0;
         next.imageLoaded = true;
         next.view = "image";
+        markProjectChanged(next);
         next.analysisNotice = "图片已载入，可以开始分析";
         next.toast = `已载入图片：${next.imageName}`;
         return next;
@@ -1281,17 +1917,12 @@
           next.output.relationEn,
           next.output.relationZh
         );
-        next.version = Math.max(1, next.version) + 1;
         next.output = output;
         next.appliedBlocks = clone(next.blocks);
         next.dirtyBlockIds = [];
-        next.versionHistory.push({
-          version: next.version,
-          output: clone(output),
-          blocks: clone(next.blocks),
-        });
         next.previewOutput = null;
-        next.toast = `修改已应用，生成 V${next.version}`;
+        markWorkspaceChanged(next);
+        next.toast = `修改已应用，保存后生成 V${next.version + 1}`;
         return next;
       }
       case "KEEP_BLOCK_VARIANT": {
@@ -1333,23 +1964,58 @@
           (entry) => entry.version === action.version
         );
         if (!snapshot) return next;
-        if (snapshot.version === next.version && !next.dirtyBlockIds.length) {
+        if (
+          (next.dirtyBlockIds.length ||
+            next.hasUnsavedChanges ||
+            next.hasUnsavedProjectChanges) &&
+          action.confirmed !== true
+        ) {
+          next.toast = "当前有未保存修改，确认放弃后才能载入历史版本";
           return next;
         }
-        next.version = Math.max(1, next.version) + 1;
+        if (
+          snapshot.version === next.version &&
+          !next.dirtyBlockIds.length &&
+          !next.hasUnsavedChanges
+        ) {
+          return next;
+        }
         const restoredBlocks = normalizeBlocks(snapshot.blocks);
+        const restoredMetadata = safeObject(snapshot.metadata);
         next.blocks = clone(restoredBlocks);
         next.appliedBlocks = clone(restoredBlocks);
         next.output = clone(snapshot.output);
+        next.view = snapshot.source === "image" ? "image" : "text";
+        next.textMode =
+          typeof restoredMetadata.textMode === "string"
+            ? restoredMetadata.textMode
+            : "expand";
+        next.draftInput =
+          typeof restoredMetadata.draftInput === "string"
+            ? restoredMetadata.draftInput
+            : "";
+        next.randomSeed = restoredMetadata.randomSeed ?? null;
+        next.outputChecks = clone(safeObject(restoredMetadata.outputChecks));
+        next.imageName =
+          typeof restoredMetadata.imageName === "string"
+            ? restoredMetadata.imageName
+            : "";
+        next.imageMimeType = "";
+        next.imageSize = 0;
+        next.imageLoaded = false;
+        next.rawMergedResult = snapshot.output.positiveEn || "";
+        next.activeRawResult = "merged";
+        next.analysisQueue = [];
+        next.analysisComplete = snapshot.source === "image";
+        next.analysisNotice =
+          snapshot.source === "image"
+            ? "已恢复图片解析结果；原始图片需重新载入"
+            : "已恢复历史提示词版本";
         next.dirtyBlockIds = [];
         next.previewOutput = null;
-        next.versionHistory.push({
-          version: next.version,
-          output: clone(snapshot.output),
-          blocks: clone(restoredBlocks),
-          restoredFrom: snapshot.version,
-        });
-        next.toast = `已从 V${snapshot.version} 恢复，生成 V${next.version}`;
+        markWorkspaceChanged(next);
+        next.restoreFromVersion = snapshot.version;
+        next.toast = `已载入 V${snapshot.version}，保存后生成 V${next.version + 1}`;
         return next;
       }
       case "CLEAR_TOAST":
@@ -1374,8 +2040,25 @@
     ].join("\n");
   }
 
+  function isWorkspaceRequestCurrent(request, sessionId, state) {
+    return Boolean(
+      request &&
+        request.sessionId === sessionId &&
+        request.workingRevision === state.workingRevision &&
+        request.projectRevision === state.projectRevision
+    );
+  }
+
   const api = {
     createInitialState,
+    createNewProjectState,
+    hydrateProjectState,
+    persistedVersionSnapshot,
+    buildProjectPayload,
+    buildVersionPayload,
+    buildWorkspaceCommitPayload,
+    createClientId,
+    shouldConfirmWorkspaceDiscard,
     reduceState,
     getCombinedPrompt,
     isSupportedImageFile,
@@ -1393,6 +2076,7 @@
     projectSettingsMetadata,
     settingsWritePayload,
     enqueueByKey,
+    isWorkspaceRequestCurrent,
     randomVariantBlockIds: Array.from(RANDOM_VARIANT_BLOCKS),
   };
 
@@ -1431,8 +2115,17 @@
   let generationProgressTimer = null;
   let activeTextAbort = null;
   let activeVisionAbort = null;
+  const workspaceRequestAborts = new Set();
   let uploadedImageFile = null;
   let imagePreviewUrl = "";
+  let projectListRequestId = 0;
+  let projectOpenRequestId = 0;
+  let workspaceSessionId = 0;
+  let saveInFlight = null;
+  let backupInFlight = false;
+  let editPreviewRecipe = null;
+  let editPreviewPayload = null;
+  let editPreviewRevision = null;
   let promptTemplateDialog = {
     open: false,
     id: "",
@@ -1474,7 +2167,7 @@
     }
   }
 
-  async function apiJson(path, options = {}) {
+  async function legacyApiJson(path, options = {}) {
     const response = await fetch(path, {
       ...options,
       headers: {
@@ -1497,6 +2190,312 @@
       throw new Error("服务返回了无法解析的响应");
     }
     return payload;
+  }
+
+  async function apiJson(path, options = {}) {
+    let response;
+    try {
+      response = await fetch(path, {
+        ...options,
+        headers: {
+          "Content-Type": "application/json",
+          ...(options.headers || {}),
+        },
+      });
+    } catch (cause) {
+      const error = new Error(cause?.message || "网络请求失败，提交结果尚未确认");
+      error.cause = cause;
+      error.status = 0;
+      error.code = "network_error";
+      error.payload = null;
+      error.responseReceived = false;
+      throw error;
+    }
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (cause) {
+      if (response.ok) {
+        const error = new Error("服务返回了无法解析的响应，提交结果尚未确认");
+        error.cause = cause;
+        error.status = response.status;
+        error.code = "invalid_json_response";
+        error.payload = null;
+        error.responseReceived = true;
+        throw error;
+      }
+    }
+    if (!response.ok) {
+      const error = new Error(payload?.error || `HTTP ${response.status}`);
+      error.status = response.status;
+      error.code = payload?.code || "http_error";
+      error.payload = payload;
+      error.responseReceived = true;
+      throw error;
+    }
+    if (payload === null) {
+      const error = new Error("服务返回了空响应，提交结果尚未确认");
+      error.status = response.status;
+      error.code = "empty_response";
+      error.payload = null;
+      error.responseReceived = true;
+      throw error;
+    }
+    return payload;
+  }
+
+  function setBackupStatus(message, status = "idle") {
+    const element = $("#backupStatus");
+    if (element) {
+      element.textContent = message;
+      element.dataset.status = status;
+    }
+    $$('[data-backup-action]').forEach((button) => {
+      button.disabled = backupInFlight;
+    });
+  }
+
+  function backupFilename(response, fallback) {
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const match = disposition.match(/filename="([A-Za-z0-9._-]+)"/);
+    return match ? match[1] : fallback;
+  }
+
+  async function downloadBackup(scope) {
+    if (backupInFlight) return;
+    if (scope === "project" && !state.projectId) {
+      state.toast = "请先保存作品，再导出当前作品备份";
+      renderToast();
+      return;
+    }
+    backupInFlight = true;
+    setBackupStatus("正在生成经过校验的逻辑备份…", "working");
+    try {
+      const query = new URLSearchParams({ scope });
+      if (scope === "project") query.set("projectId", state.projectId);
+      const response = await fetch(`/api/backups/export?${query.toString()}`);
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.error || `HTTP ${response.status}`);
+      }
+      const blob = await response.blob();
+      const fallback = `prompt-studio-${scope}-backup.zip`;
+      const link = document.createElement("a");
+      const objectUrl = URL.createObjectURL(blob);
+      link.href = objectUrl;
+      link.download = backupFilename(response, fallback);
+      link.hidden = true;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+      const label = scope === "project" ? "当前作品" : "全库";
+      setBackupStatus(`${label}备份已生成；密钥、模型与二进制资产未打包`, "success");
+      state.toast = `${label}备份已生成`;
+    } catch (error) {
+      setBackupStatus(error.message || "备份生成失败", "error");
+      state.toast = error.message || "备份生成失败";
+    } finally {
+      backupInFlight = false;
+      setBackupStatus(
+        $("#backupStatus")?.textContent || "备份操作结束",
+        $("#backupStatus")?.dataset.status || "idle"
+      );
+      renderToast();
+    }
+  }
+
+  async function inspectAndStageBackup(file) {
+    if (!file || backupInFlight) return;
+    backupInFlight = true;
+    const contentType = file.name.toLowerCase().endsWith(".json")
+      ? "application/json"
+      : "application/zip";
+    setBackupStatus("正在校验清单、哈希和逻辑数据…", "working");
+    try {
+      const inspected = await apiJson("/api/backups/inspect", {
+        method: "POST",
+        headers: { "Content-Type": contentType },
+        body: file,
+      });
+      const counts = inspected.item?.counts || {};
+      const scope = inspected.item?.manifest?.scope === "full" ? "全库" : "单作品";
+      const summary = `${scope}备份：${counts.projects || 0} 个作品、${counts.versions || 0} 个版本`;
+      setBackupStatus(`${summary}；校验通过，等待隔离恢复确认`, "success");
+      if (
+        !window.confirm(
+          `${summary}。\n\n下一步只会恢复到隔离数据库，不会替换当前数据。是否继续？`
+        )
+      ) {
+        setBackupStatus(`${summary}；已取消恢复，当前数据未变化`, "idle");
+        return;
+      }
+      setBackupStatus("正在恢复到隔离数据库并执行完整性检查…", "working");
+      const restored = await apiJson(
+        "/api/backups/stage-restore?conflict=rename",
+        {
+          method: "POST",
+          headers: { "Content-Type": contentType },
+          body: file,
+        }
+      );
+      if (restored.item?.activated !== false) {
+        throw new Error("服务端未确认隔离恢复状态，已停止后续操作");
+      }
+      const target = restored.item?.stagingDatabase || "本机恢复目录";
+      setBackupStatus(`隔离恢复完成（未激活）：${target}`, "success");
+      state.toast = "备份已恢复到隔离库，当前项目库未被替换";
+    } catch (error) {
+      setBackupStatus(error.message || "备份校验或恢复失败", "error");
+      state.toast = error.message || "备份校验或恢复失败";
+    } finally {
+      backupInFlight = false;
+      setBackupStatus(
+        $("#backupStatus")?.textContent || "备份操作结束",
+        $("#backupStatus")?.dataset.status || "idle"
+      );
+      const input = $("#backupFileInput");
+      if (input) input.value = "";
+      renderToast();
+    }
+  }
+
+  async function loadProjects({ silent = false } = {}) {
+    const requestId = ++projectListRequestId;
+    if (!silent) dispatch({ type: "PROJECTS_LOADING" });
+    try {
+      const result = await apiJson("/api/projects");
+      if (requestId !== projectListRequestId) return;
+      dispatch({
+        type: "PROJECTS_LOADED",
+        items: Array.isArray(result.items) ? result.items : [],
+      });
+    } catch (error) {
+      if (requestId !== projectListRequestId) return;
+      dispatch({
+        type: "PROJECTS_FAILED",
+        error: error.message || "项目列表加载失败",
+      });
+    }
+  }
+
+  function canReplaceWorkspace() {
+    if (saveInFlight) {
+      state.toast = "作品正在保存，请等待完成后再切换";
+      renderToast();
+      return false;
+    }
+    if (
+      app.shouldConfirmWorkspaceDiscard(state) &&
+      !window.confirm("当前作品有未保存内容，仍要放弃并切换吗？")
+    ) {
+      state.toast = "已保留当前未保存内容";
+      renderToast();
+      return false;
+    }
+    return true;
+  }
+
+  function beginWorkspaceRequest() {
+    const request = {
+      controller: new AbortController(),
+      sessionId: workspaceSessionId,
+      workingRevision: state.workingRevision,
+      projectRevision: state.projectRevision,
+    };
+    workspaceRequestAborts.add(request.controller);
+    return request;
+  }
+
+  function finishWorkspaceRequest(request) {
+    workspaceRequestAborts.delete(request.controller);
+  }
+
+  function isCurrentWorkspaceRequest(request) {
+    return app.isWorkspaceRequestCurrent(
+      request,
+      workspaceSessionId,
+      state
+    );
+  }
+
+  function discardChangedWorkspaceResult(request, failureType, message) {
+    if (request.sessionId !== workspaceSessionId) return true;
+    if (isCurrentWorkspaceRequest(request)) return false;
+    dispatch({
+      type: failureType,
+      error: message,
+      finishedAt: Date.now(),
+    });
+    return true;
+  }
+
+  function advanceWorkspaceSession() {
+    workspaceSessionId += 1;
+    for (const controller of workspaceRequestAborts) controller.abort();
+    workspaceRequestAborts.clear();
+    activeTextAbort = null;
+    activeVisionAbort = null;
+    editPreviewRecipe = null;
+    editPreviewPayload = null;
+    editPreviewRevision = null;
+    variantMatrix = null;
+    hideTagSuggest();
+    dispatch({ type: "WORKSPACE_REQUESTS_CANCELLED" });
+    return workspaceSessionId;
+  }
+
+  function releaseImagePreview() {
+    if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl);
+    imagePreviewUrl = "";
+  }
+
+  async function openProject(projectId) {
+    if (!projectId) return;
+    if (!canReplaceWorkspace()) return;
+    const openingSessionId = advanceWorkspaceSession();
+    const requestId = ++projectOpenRequestId;
+    const openingWorkingRevision = state.workingRevision;
+    const openingProjectRevision = state.projectRevision;
+    dispatch({ type: "PROJECT_OPENING", id: projectId });
+    try {
+      const result = await apiJson(
+        `/api/projects/${encodeURIComponent(projectId)}`
+      );
+      if (requestId !== projectOpenRequestId) return;
+      if (openingSessionId !== workspaceSessionId) return;
+      if (
+        state.workingRevision !== openingWorkingRevision ||
+        state.projectRevision !== openingProjectRevision
+      ) {
+        dispatch({
+          type: "PROJECT_OPEN_FAILED",
+          error: "打开已取消，已保留加载期间产生的当前修改",
+        });
+        return;
+      }
+      // Requests started from the old workspace while this project was loading
+      // must not be allowed to write into the newly opened workspace.
+      advanceWorkspaceSession();
+      uploadedImageFile = null;
+      releaseImagePreview();
+      dispatch({ type: "PROJECT_OPENED", item: result.item || {} });
+    } catch (error) {
+      if (requestId !== projectOpenRequestId) return;
+      dispatch({
+        type: "PROJECT_OPEN_FAILED",
+        error: error.message || "项目打开失败",
+      });
+    }
+  }
+
+  function startNewProject() {
+    if (!canReplaceWorkspace()) return;
+    advanceWorkspaceSession();
+    projectOpenRequestId += 1;
+    uploadedImageFile = null;
+    releaseImagePreview();
+    dispatch({ type: "NEW_PROJECT" });
   }
 
   function isAbortError(error) {
@@ -1837,11 +2836,12 @@
     if (state.textGenerating || state.textDecomposing) return;
 
     dispatch({ type: "START_TEXT_EXPANSION", startedAt: Date.now() });
-    activeTextAbort = new AbortController();
+    const request = beginWorkspaceRequest();
+    activeTextAbort = request.controller;
     try {
       const result = await apiJson("/api/text/expand", {
         method: "POST",
-        signal: activeTextAbort.signal,
+        signal: request.controller.signal,
         body: JSON.stringify({
           input,
           provider: state.settings.textProvider,
@@ -1858,12 +2858,26 @@
           },
         }),
       });
+      if (
+        discardChangedWorkspaceResult(
+          request,
+          "TEXT_EXPANSION_FAILED",
+          "请求期间内容已修改，已丢弃旧拓展结果"
+        )
+      ) return;
       dispatch({
         type: "APPLY_TEXT_EXPANSION",
         item: result.item,
         finishedAt: Date.now(),
       });
     } catch (error) {
+      if (
+        discardChangedWorkspaceResult(
+          request,
+          "TEXT_EXPANSION_FAILED",
+          "请求期间内容已修改，已停止旧拓展任务"
+        )
+      ) return;
       dispatch({
         type: "TEXT_EXPANSION_FAILED",
         error: isAbortError(error)
@@ -1872,29 +2886,45 @@
         finishedAt: Date.now(),
       });
     } finally {
-      activeTextAbort = null;
+      finishWorkspaceRequest(request);
+      if (activeTextAbort === request.controller) activeTextAbort = null;
     }
   }
 
   async function randomizeTextPrompt() {
     if (state.textGenerating || state.textDecomposing) return;
     dispatch({ type: "START_TEXT_RANDOM", startedAt: Date.now() });
-    activeTextAbort = new AbortController();
+    const request = beginWorkspaceRequest();
+    activeTextAbort = request.controller;
     try {
       const result = await apiJson("/api/text/random", {
         method: "POST",
-        signal: activeTextAbort.signal,
+        signal: request.controller.signal,
         body: JSON.stringify({
           provider: state.settings.textProvider,
           targetModel: "anima",
         }),
       });
+      if (
+        discardChangedWorkspaceResult(
+          request,
+          "TEXT_RANDOM_FAILED",
+          "请求期间内容已修改，已丢弃旧随机结果"
+        )
+      ) return;
       dispatch({
         type: "APPLY_TEXT_RANDOM",
         item: result.item,
         finishedAt: Date.now(),
       });
     } catch (error) {
+      if (
+        discardChangedWorkspaceResult(
+          request,
+          "TEXT_RANDOM_FAILED",
+          "请求期间内容已修改，已停止旧随机任务"
+        )
+      ) return;
       dispatch({
         type: "TEXT_RANDOM_FAILED",
         error: isAbortError(error)
@@ -1903,7 +2933,8 @@
         finishedAt: Date.now(),
       });
     } finally {
-      activeTextAbort = null;
+      finishWorkspaceRequest(request);
+      if (activeTextAbort === request.controller) activeTextAbort = null;
     }
   }
 
@@ -1917,22 +2948,37 @@
     if (state.textGenerating || state.textDecomposing) return;
 
     dispatch({ type: "START_TEXT_DECOMPOSITION", startedAt: Date.now() });
-    activeTextAbort = new AbortController();
+    const request = beginWorkspaceRequest();
+    activeTextAbort = request.controller;
     try {
       const result = await apiJson("/api/text/decompose", {
         method: "POST",
-        signal: activeTextAbort.signal,
+        signal: request.controller.signal,
         body: JSON.stringify({
           input,
           provider: state.settings.textProvider,
         }),
       });
+      if (
+        discardChangedWorkspaceResult(
+          request,
+          "TEXT_DECOMPOSITION_FAILED",
+          "请求期间内容已修改，已丢弃旧拆解结果"
+        )
+      ) return;
       dispatch({
         type: "APPLY_TEXT_DECOMPOSITION",
         item: result.item,
         finishedAt: Date.now(),
       });
     } catch (error) {
+      if (
+        discardChangedWorkspaceResult(
+          request,
+          "TEXT_DECOMPOSITION_FAILED",
+          "请求期间内容已修改，已停止旧拆解任务"
+        )
+      ) return;
       dispatch({
         type: "TEXT_DECOMPOSITION_FAILED",
         error: isAbortError(error)
@@ -1941,7 +2987,8 @@
         finishedAt: Date.now(),
       });
     } finally {
-      activeTextAbort = null;
+      finishWorkspaceRequest(request);
+      if (activeTextAbort === request.controller) activeTextAbort = null;
     }
   }
 
@@ -1964,20 +3011,40 @@
       return;
     }
     dispatch({ type: "START_PENDING_TRANSLATION" });
+    const request = beginWorkspaceRequest();
     try {
       const result = await apiJson("/api/text/translate-pending", {
         method: "POST",
+        signal: request.controller.signal,
         body: JSON.stringify({ items }),
       });
+      if (
+        discardChangedWorkspaceResult(
+          request,
+          "PENDING_TRANSLATION_FAILED",
+          "请求期间结构块已修改，已丢弃旧翻译结果"
+        )
+      ) return;
       dispatch({
         type: "APPLY_PENDING_TRANSLATIONS",
         item: result.item,
       });
     } catch (error) {
+      if (
+        discardChangedWorkspaceResult(
+          request,
+          "PENDING_TRANSLATION_FAILED",
+          "请求期间结构块已修改，已停止旧翻译任务"
+        )
+      ) return;
       dispatch({
         type: "PENDING_TRANSLATION_FAILED",
-        error: error.message || "本地 LLM 翻译失败",
+        error: isAbortError(error)
+          ? "已取消本次翻译"
+          : error.message || "本地 LLM 翻译失败",
       });
+    } finally {
+      finishWorkspaceRequest(request);
     }
   }
 
@@ -1997,9 +3064,11 @@
       id: blockId,
       label: block.label,
     });
+    const request = beginWorkspaceRequest();
     try {
       const result = await apiJson("/api/text/regenerate-block", {
         method: "POST",
+        signal: request.controller.signal,
         body: JSON.stringify({
           targetBlockId: blockId,
           blocks: state.blocks,
@@ -2007,12 +3076,30 @@
           expansionLevel: state.settings.expansionLevel || "balanced",
         }),
       });
+      if (
+        discardChangedWorkspaceResult(
+          request,
+          "BLOCK_VARIANT_FAILED",
+          "请求期间结构块已修改，已丢弃旧变体结果"
+        )
+      ) return;
       dispatch({ type: "APPLY_BLOCK_VARIANT", item: result.item });
     } catch (error) {
+      if (
+        discardChangedWorkspaceResult(
+          request,
+          "BLOCK_VARIANT_FAILED",
+          "请求期间结构块已修改，已停止旧变体任务"
+        )
+      ) return;
       dispatch({
         type: "BLOCK_VARIANT_FAILED",
-        error: error.message || "随机变体生成失败",
+        error: isAbortError(error)
+          ? "已取消随机变体生成"
+          : error.message || "随机变体生成失败",
       });
+    } finally {
+      finishWorkspaceRequest(request);
     }
   }
 
@@ -2170,6 +3257,8 @@
     dispatch({ type: "ADD_RECIPE", recipe });
     try {
       await persistFavoriteResource(recipe);
+      state.toast = "配方已写入本机数据库";
+      renderToast();
     } catch {
       state.toast = "配方已保存在本次会话，但服务端持久化失败";
       renderToast();
@@ -2189,9 +3278,11 @@
       return;
     }
     dispatch({ type: "START_BLOCKS_VARIANT" });
+    const workspaceRequest = beginWorkspaceRequest();
     const request = () =>
       apiJson("/api/text/regenerate-blocks", {
         method: "POST",
+        signal: workspaceRequest.controller.signal,
         body: JSON.stringify({
           targetBlockIds,
           blocks: state.blocks,
@@ -2202,6 +3293,14 @@
     const settled = await Promise.allSettled(
       Array.from({ length: count }, request)
     );
+    finishWorkspaceRequest(workspaceRequest);
+    if (
+      discardChangedWorkspaceResult(
+        workspaceRequest,
+        "BLOCKS_VARIANT_FAILED",
+        "请求期间结构块已修改，已丢弃旧变体矩阵"
+      )
+    ) return;
     const candidates = settled
       .filter((entry) => entry.status === "fulfilled")
       .map((entry) => entry.value.item);
@@ -2273,9 +3372,11 @@
       return;
     }
     dispatch({ type: "START_BLOCKS_VARIANT" });
+    const request = beginWorkspaceRequest();
     try {
       const result = await apiJson("/api/text/regenerate-blocks", {
         method: "POST",
+        signal: request.controller.signal,
         body: JSON.stringify({
           targetBlockIds,
           blocks: state.blocks,
@@ -2283,55 +3384,549 @@
           expansionLevel: state.settings.expansionLevel || "balanced",
         }),
       });
+      if (
+        discardChangedWorkspaceResult(
+          request,
+          "BLOCKS_VARIANT_FAILED",
+          "请求期间结构块已修改，已丢弃旧联合随机结果"
+        )
+      ) return;
       dispatch({ type: "APPLY_BLOCKS_VARIANT", item: result.item });
     } catch (error) {
+      if (
+        discardChangedWorkspaceResult(
+          request,
+          "BLOCKS_VARIANT_FAILED",
+          "请求期间结构块已修改，已停止旧联合随机任务"
+        )
+      ) return;
       dispatch({
         type: "BLOCKS_VARIANT_FAILED",
-        error: error.message || "联合随机失败",
+        error: isAbortError(error)
+          ? "已取消联合随机"
+          : error.message || "联合随机失败",
+      });
+    } finally {
+      finishWorkspaceRequest(request);
+    }
+  }
+
+  function currentRecipeResolvePayload() {
+    const versionPayload = app.buildVersionPayload(state);
+    return {
+      profileId: versionPayload.metadata.modelProfileId,
+      prompts: {
+        positiveEn: versionPayload.positiveEn,
+        positiveZh: versionPayload.positiveZh,
+        negativeEn: versionPayload.negativeEn,
+        negativeZh: versionPayload.negativeZh,
+      },
+      blocks: versionPayload.blocks,
+      loras: versionPayload.metadata.loras || [],
+      parameterLayers: versionPayload.metadata.parameterLayers,
+      randomPlan: versionPayload.metadata.randomPlan,
+      instructionHistory: versionPayload.metadata.instructionHistory,
+      imageRefs: versionPayload.metadata.imageRefs,
+      sourceRefs: versionPayload.metadata.sourceRefs || [],
+      metadata: {
+        textMode: state.textMode,
+        draftInput: state.draftInput,
+      },
+    };
+  }
+
+  async function loadRandomCatalog() {
+    dispatch({ type: "RANDOM_CATALOG_LOADING" });
+    try {
+      const result = await apiJson("/api/text/random-catalog");
+      dispatch({ type: "RANDOM_CATALOG_LOADED", item: result.item });
+    } catch (error) {
+      dispatch({
+        type: "RANDOM_CATALOG_FAILED",
+        error: error.message || "词库目录加载失败",
       });
     }
   }
 
-  async function saveCurrentProject() {
-    try {
-      if (!state.projectId) {
-        const result = await apiJson("/api/projects", {
-          method: "POST",
-          body: JSON.stringify({
-            name: state.projectName || "未命名作品",
-            mode: state.view === "image" ? "image" : "text",
-            metadata: {
-              textMode: state.textMode,
-              draftInput: state.draftInput,
-              settings: app.projectSettingsMetadata(state.settings),
-              imageName: state.imageName,
-            },
-          }),
-        });
-        state.projectId = result.item?.id || state.projectId;
-      }
-      if (state.projectId && state.version) {
-        await apiJson(`/api/projects/${encodeURIComponent(state.projectId)}/versions`, {
-          method: "POST",
-          body: JSON.stringify({
-            source: state.textMode,
-            positiveEn: state.output.positiveEn,
-            positiveZh: state.output.positiveZh,
-            negativeEn: state.output.negativeEn,
-            negativeZh: state.output.negativeZh,
-            blocks: state.appliedBlocks,
-            metadata: {
-              randomSeed: state.randomSeed,
-              dirtyBlockIds: state.dirtyBlockIds,
-            },
-          }),
-        });
-      }
-      state.toast = `作品已保存：${state.projectName || "未命名作品"}`;
-    } catch {
-      state.toast = "作品暂时没有写入数据库，请确认本地后端已启动";
+  async function generateWordlistPlan() {
+    const seed = String($("#librarySeed")?.value || "").trim();
+    if (seed && !/^[0-9a-fA-F]{32}$/.test(seed)) {
+      state.toast = "词库 Seed 必须是 32 位十六进制（128 bit）";
+      renderToast();
+      return;
     }
-    renderToast();
+    const catalog = state.randomCatalog || {};
+    const payload = {
+      ...(seed ? { librarySeed: seed } : {}),
+      ...(catalog.version
+        ? {
+            catalogVersion: catalog.version,
+            catalogContentSha256: catalog.contentSha256,
+            samplerVersion: catalog.samplerVersion,
+            mappingVersion: catalog.mappingVersion,
+            profile: catalog.profile,
+          }
+        : {}),
+      lockedEntryIds: [],
+      rerollEntryIds: [],
+    };
+    try {
+      const result = await apiJson("/api/text/random-plan", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      dispatch({ type: "APPLY_RANDOM_PLAN", item: result.item });
+    } catch (error) {
+      dispatch({
+        type: "RANDOM_PLAN_FAILED",
+        error: error.message || "确定性随机计划生成失败",
+      });
+    }
+  }
+
+  async function previewChineseEdit() {
+    const instruction = String($("#editInstruction")?.value || "").trim();
+    if (!instruction) {
+      state.toast = "请输入要修改的中文指令";
+      renderToast();
+      return;
+    }
+    if (state.dirtyBlockIds.length) {
+      state.toast = "请先应用或撤销当前结构块编辑，再预览中文指令";
+      renderToast();
+      return;
+    }
+    dispatch({ type: "EDIT_PREVIEW_STARTED" });
+    editPreviewPayload = null;
+    const request = beginWorkspaceRequest();
+    try {
+      const resolved = await apiJson("/api/recipe/resolve", {
+        method: "POST",
+        signal: request.controller.signal,
+        body: JSON.stringify(currentRecipeResolvePayload()),
+      });
+      if (!app.isWorkspaceRequestCurrent(request, workspaceSessionId, state)) {
+        throw new Error("预览期间工作区已变化，请重新预览");
+      }
+      const result = await apiJson("/api/text/edit-preview", {
+        method: "POST",
+        signal: request.controller.signal,
+        body: JSON.stringify({
+          instruction,
+          recipe: resolved.item.recipe,
+          baseRecipeHash: resolved.item.recipeHash,
+        }),
+      });
+      if (!app.isWorkspaceRequestCurrent(request, workspaceSessionId, state)) {
+        throw new Error("预览期间工作区已变化，请重新预览");
+      }
+      editPreviewRecipe = resolved.item.recipe;
+      editPreviewPayload = result.item;
+      editPreviewRevision = {
+        sessionId: workspaceSessionId,
+        workingRevision: state.workingRevision,
+        projectRevision: state.projectRevision,
+      };
+      dispatch({ type: "EDIT_PREVIEW_READY", item: result.item });
+    } catch (error) {
+      dispatch({
+        type: "EDIT_PREVIEW_FAILED",
+        error: error.message || "中文修改预览失败",
+      });
+    } finally {
+      finishWorkspaceRequest(request);
+    }
+  }
+
+  async function applyChineseEdit() {
+    const preview = editPreviewPayload;
+    if (!preview?.ready || !editPreviewRecipe || !editPreviewRevision) return;
+    if (
+      editPreviewRevision.sessionId !== workspaceSessionId ||
+      editPreviewRevision.workingRevision !== state.workingRevision ||
+      editPreviewRevision.projectRevision !== state.projectRevision
+    ) {
+      state.toast = "工作区已变化，旧预览不能应用，请重新预览";
+      renderToast();
+      return;
+    }
+    try {
+      const result = await apiJson("/api/text/edit-apply", {
+        method: "POST",
+        body: JSON.stringify({
+          recipe: editPreviewRecipe,
+          preview,
+          parentVersion: state.version,
+          newVersion: state.version + 1,
+        }),
+      });
+      dispatch({ type: "APPLY_EDIT_RESULT", item: result.item });
+      editPreviewRecipe = null;
+      editPreviewPayload = null;
+      editPreviewRevision = null;
+      await saveCurrentProject();
+    } catch (error) {
+      editPreviewPayload = null;
+      dispatch({
+        type: "EDIT_PREVIEW_FAILED",
+        error: error.message || "中文修改应用失败",
+      });
+    }
+  }
+
+  async function undoLastRecipeChange() {
+    if (state.hasUnsavedChanges || state.dirtyBlockIds.length) {
+      state.toast = "请先保存或撤销当前修改，再创建撤销版本";
+      renderToast();
+      return;
+    }
+    const current = state.versionHistory.find(
+      (item) => item.version === state.version
+    );
+    const parent = [...state.versionHistory]
+      .reverse()
+      .find(
+        (item) =>
+          item.version < state.version && item.metadata?.recipe
+      );
+    if (!current?.metadata?.recipe || !parent?.metadata?.recipe) {
+      state.toast = "没有可撤销的完整配方父版本";
+      renderToast();
+      return;
+    }
+    try {
+      const result = await apiJson("/api/text/edit-undo", {
+        method: "POST",
+        body: JSON.stringify({
+          currentRecipe: current.metadata.recipe,
+          parentRecipe: parent.metadata.recipe,
+          currentVersion: current.version,
+          parentVersion: parent.version,
+          newVersion: state.version + 1,
+        }),
+      });
+      dispatch({ type: "APPLY_EDIT_RESULT", item: result.item });
+      await saveCurrentProject();
+    } catch (error) {
+      state.toast = error.message || "撤销版本创建失败";
+      renderToast();
+    }
+  }
+
+  function legacySaveCurrentProject() {
+    if (saveInFlight) return saveInFlight;
+    if (state.dirtyBlockIds.length) {
+      state.toast = "仍有未应用的结构块修改，请先应用或撤回再保存";
+      renderToast();
+      return Promise.resolve(null);
+    }
+
+    const snapshot = JSON.parse(JSON.stringify(state));
+    const savedRevision = snapshot.workingRevision;
+    const savedProjectRevision = snapshot.projectRevision;
+    const sessionId = workspaceSessionId;
+    const projectPayload = app.buildProjectPayload(snapshot);
+    const versionPayload = app.buildVersionPayload(snapshot);
+
+    saveInFlight = (async () => {
+      dispatch({ type: "PROJECT_SAVE_STARTED" });
+      try {
+        let projectId = snapshot.projectId;
+        let projectResult = null;
+        const creatingProject = !projectId;
+        if (!projectId) {
+          projectResult = await apiJson("/api/projects", {
+            method: "POST",
+            body: JSON.stringify(projectPayload),
+          });
+          if (sessionId !== workspaceSessionId) {
+            return projectResult.item?.id || null;
+          }
+          projectId = projectResult.item?.id || "";
+          if (!projectId) throw new Error("服务端没有返回作品 ID");
+          dispatch({
+            type: "PROJECT_CREATED",
+            item: projectResult.item,
+            savedProjectRevision: snapshot.hasUnsavedChanges
+              ? undefined
+              : savedProjectRevision,
+          });
+        }
+
+        if (snapshot.hasUnsavedChanges) {
+          const guardedVersionPayload = {
+            ...versionPayload,
+            baseUpdatedAt:
+              projectResult?.item?.updatedAt ||
+              versionPayload.baseUpdatedAt ||
+              snapshot.projectUpdatedAt,
+          };
+          const versionResult = await apiJson(
+            `/api/projects/${encodeURIComponent(projectId)}/versions`,
+            {
+              method: "POST",
+              body: JSON.stringify(guardedVersionPayload),
+            }
+          );
+          if (sessionId !== workspaceSessionId) return projectId;
+          const savedVersion = Number(versionResult.item?.version);
+          if (!Number.isSafeInteger(savedVersion) || savedVersion < 1) {
+            throw new Error("服务端没有返回有效版本");
+          }
+          dispatch({
+            type: "PROJECT_SAVED",
+            item: versionResult.item,
+            savedRevision,
+            savedAt: new Date().toISOString(),
+          });
+          const synchronizedProjectPayload = {
+            ...projectPayload,
+            baseUpdatedAt:
+              versionResult.item?.projectUpdatedAt ||
+              projectResult?.item?.updatedAt ||
+              snapshot.projectUpdatedAt,
+            metadata: {
+              ...projectPayload.metadata,
+              workspaceBaseVersion: savedVersion,
+            },
+          };
+          try {
+            projectResult = await apiJson(
+              `/api/projects/${encodeURIComponent(projectId)}`,
+              {
+                method: "PUT",
+                body: JSON.stringify(synchronizedProjectPayload),
+              }
+            );
+          } catch (error) {
+            throw new Error(
+              `V${savedVersion} 已保存，但项目信息同步失败：${error.message || "可再次保存重试"}`
+            );
+          }
+          if (sessionId !== workspaceSessionId) return projectId;
+          dispatch({
+            type: "PROJECT_HEADER_SAVED",
+            savedProjectRevision,
+            version: savedVersion,
+            updatedAt:
+              projectResult.item?.updatedAt || new Date().toISOString(),
+          });
+        } else {
+          if (!creatingProject) {
+            projectResult = await apiJson(
+              `/api/projects/${encodeURIComponent(projectId)}`,
+              {
+                method: "PUT",
+                body: JSON.stringify(projectPayload),
+              }
+            );
+            if (sessionId !== workspaceSessionId) return projectId;
+          }
+          dispatch({
+            type: "PROJECT_HEADER_SAVED",
+            savedProjectRevision,
+            updatedAt:
+              projectResult.item?.updatedAt || new Date().toISOString(),
+          });
+        }
+        await loadProjects({ silent: true });
+        return projectId;
+      } catch (error) {
+        if (sessionId !== workspaceSessionId) return null;
+        dispatch({
+          type: "PROJECT_SAVE_FAILED",
+          error:
+            error.message ||
+            "作品暂时没有写入数据库，请确认本地后端已启动",
+        });
+        return null;
+      } finally {
+        saveInFlight = null;
+      }
+    })();
+    return saveInFlight;
+  }
+
+  const PENDING_SAVE_STORAGE_KEY = "promptStudio.pendingSave.v1";
+
+  function readPendingSaveJournal() {
+    const raw = localStorage.getItem(PENDING_SAVE_STORAGE_KEY);
+    if (!raw) return null;
+    let journal;
+    try {
+      journal = JSON.parse(raw);
+      const request = JSON.parse(journal.requestBody);
+      if (
+        journal.schema !== 1 ||
+        !/^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(journal.operationId) ||
+        request.operationId !== journal.operationId ||
+        request.project?.id !== journal.projectId ||
+        !["pending", "committed"].includes(journal.status)
+      ) {
+        throw new Error("invalid journal");
+      }
+    } catch (cause) {
+      const error = new Error("检测到损坏的待恢复保存记录；为避免重复写入，已停止自动保存");
+      error.code = "save_journal_corrupt";
+      error.cause = cause;
+      throw error;
+    }
+    return journal;
+  }
+
+  function writePendingSaveJournal(journal) {
+    try {
+      localStorage.setItem(PENDING_SAVE_STORAGE_KEY, JSON.stringify(journal));
+    } catch (cause) {
+      const error = new Error("无法持久化保存恢复记录，已在发送请求前停止");
+      error.code = "save_journal_unavailable";
+      error.cause = cause;
+      throw error;
+    }
+  }
+
+  function removePendingSaveJournal(operationId) {
+    const current = readPendingSaveJournal();
+    if (!current || current.operationId === operationId) {
+      localStorage.removeItem(PENDING_SAVE_STORAGE_KEY);
+    }
+  }
+
+  function createPendingSaveJournal(snapshot) {
+    const operationId = app.createClientId("save");
+    const projectId = snapshot.projectId || app.createClientId("project");
+    const versionId = snapshot.hasUnsavedChanges
+      ? app.createClientId("version")
+      : "";
+    const request = app.buildWorkspaceCommitPayload(snapshot, {
+      operationId,
+      projectId,
+      versionId,
+    });
+    return {
+      schema: 1,
+      status: "pending",
+      operationId,
+      projectId,
+      originalProjectId: snapshot.projectId || "",
+      savedRevision: snapshot.workingRevision,
+      savedProjectRevision: snapshot.projectRevision,
+      originSessionId: workspaceSessionId,
+      requestBody: JSON.stringify(request),
+      committedResult: null,
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  function applyCommittedSave(journal, result, { automatic = false } = {}) {
+    const project = result?.project;
+    if (!project || project.id !== journal.projectId) {
+      throw new Error("服务返回的作品与待保存操作不匹配");
+    }
+    const blankAutomaticWorkspace =
+      automatic &&
+      !state.projectId &&
+      state.workingRevision === 0 &&
+      state.projectRevision === 0 &&
+      !state.hasUnsavedChanges &&
+      !state.hasUnsavedProjectChanges;
+    if (blankAutomaticWorkspace) {
+      dispatch({ type: "PROJECT_OPENED", item: project });
+      state.toast = `已恢复并确认上次保存：${project.name || project.id}`;
+      renderToast();
+      return;
+    }
+    const sameWorkspace =
+      workspaceSessionId === journal.originSessionId &&
+      (journal.originalProjectId
+        ? state.projectId === journal.originalProjectId
+        : !state.projectId || state.projectId === journal.projectId);
+    if (!sameWorkspace) return;
+    if (!journal.originalProjectId) {
+      dispatch({
+        type: "PROJECT_CREATED",
+        item: project,
+        savedProjectRevision: journal.savedProjectRevision,
+      });
+    }
+    if (result.version) {
+      dispatch({
+        type: "PROJECT_SAVED",
+        item: result.version,
+        savedRevision: journal.savedRevision,
+        savedProjectRevision: journal.savedProjectRevision,
+        savedAt: result.version.createdAt,
+      });
+    }
+    dispatch({
+      type: "PROJECT_HEADER_SAVED",
+      savedProjectRevision: journal.savedProjectRevision,
+      version: result.version?.version,
+      updatedAt: project.updatedAt,
+    });
+  }
+
+  function saveCurrentProject({ automatic = false } = {}) {
+    if (saveInFlight) return saveInFlight;
+    let pending;
+    try {
+      pending = readPendingSaveJournal();
+    } catch (error) {
+      dispatch({ type: "PROJECT_SAVE_FAILED", error: error.message });
+      return Promise.resolve(null);
+    }
+    if (!pending && state.dirtyBlockIds.length) {
+      state.toast = "仍有未应用的结构块修改，请先应用或撤回再保存";
+      renderToast();
+      return Promise.resolve(null);
+    }
+    if (!pending) {
+      const snapshot = JSON.parse(JSON.stringify(state));
+      pending = createPendingSaveJournal(snapshot);
+      try {
+        writePendingSaveJournal(pending);
+      } catch (error) {
+        dispatch({ type: "PROJECT_SAVE_FAILED", error: error.message });
+        return Promise.resolve(null);
+      }
+    }
+
+    const journal = pending;
+    saveInFlight = (async () => {
+      dispatch({ type: "PROJECT_SAVE_STARTED" });
+      try {
+        let result = journal.committedResult;
+        if (journal.status !== "committed" || !result) {
+          const response = await apiJson("/api/workspace/commit", {
+            method: "POST",
+            headers: { "Idempotency-Key": journal.operationId },
+            body: journal.requestBody,
+          });
+          result = response?.item;
+          if (result?.operationId !== journal.operationId) {
+            throw new Error("服务返回的保存操作编号不匹配");
+          }
+          journal.status = "committed";
+          journal.committedResult = result;
+          writePendingSaveJournal(journal);
+        }
+        applyCommittedSave(journal, result, { automatic });
+        removePendingSaveJournal(journal.operationId);
+        await loadProjects({ silent: true });
+        return journal.projectId;
+      } catch (error) {
+        dispatch({
+          type: "PROJECT_SAVE_FAILED",
+          error:
+            error.message ||
+            "作品暂时没有完成可确认写入；恢复记录已保留，可再次保存重试",
+        });
+        return null;
+      } finally {
+        saveInFlight = null;
+      }
+    })();
+    return saveInFlight;
   }
 
   function dispatch(action) {
@@ -2358,6 +3953,159 @@
     $("#workbenchArea").classList.toggle("hidden", state.view === "home");
     $("#textView").classList.toggle("hidden", state.view !== "text");
     $("#imageView").classList.toggle("hidden", state.view !== "image");
+  }
+
+  function formatProjectDate(value) {
+    const date = new Date(value || "");
+    if (Number.isNaN(date.getTime())) return "时间未知";
+    return new Intl.DateTimeFormat("zh-CN", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(date);
+  }
+
+  function renderProjects() {
+    const container = $("#recentProjectList");
+    const status = $("#recentProjectStatus");
+    if (!container || !status) return;
+
+    if (state.projectsStatus === "loading") {
+      status.textContent = "正在读取本机项目库…";
+      status.dataset.status = "loading";
+      container.innerHTML = `
+        <div class="project-list-message" role="status">
+          <span class="project-loading-dot" aria-hidden="true"></span>
+          正在加载最近项目
+        </div>`;
+      return;
+    }
+    if (state.projectsStatus === "error") {
+      status.textContent = "项目库暂时不可用";
+      status.dataset.status = "error";
+      container.innerHTML = `
+        <div class="project-list-message project-list-error" role="alert">
+          <strong>无法读取项目列表</strong>
+          <span>${escapeHtml(state.projectsError || "请确认本地后端已启动")}</span>
+          <button class="secondary-button" type="button" data-action="retry-projects">重试</button>
+        </div>`;
+      return;
+    }
+    if (state.projectsStatus !== "ready") {
+      status.textContent = "等待读取项目库";
+      status.dataset.status = "idle";
+      container.innerHTML = "";
+      return;
+    }
+
+    status.dataset.status = "ready";
+    status.textContent = state.projects.length
+      ? `${state.projects.length} 个本机项目`
+      : "尚无已保存项目";
+    if (!state.projects.length) {
+      container.innerHTML = `
+        <div class="project-list-message project-list-empty">
+          <strong>还没有项目</strong>
+          <span>完成一次生成并保存后，会出现在这里。</span>
+        </div>`;
+      return;
+    }
+
+    container.innerHTML = state.projects
+      .map((project) => {
+        const id = typeof project.id === "string" ? project.id : "";
+        const name =
+          typeof project.name === "string" && project.name.trim()
+            ? project.name
+            : "未命名作品";
+        const latestVersion = Math.max(
+          0,
+          Number(project.latestVersion) || 0
+        );
+        const versionCount = Math.max(
+          0,
+          Number(project.versionCount) || latestVersion
+        );
+        const opening = state.openingProjectId === id;
+        return `
+          <article class="project-card">
+            <button
+              class="project-card-open"
+              type="button"
+              data-open-project="${escapeHtml(id)}"
+              ${opening ? "disabled" : ""}
+            >
+              <span class="project-card-heading">
+                <strong>${escapeHtml(name)}</strong>
+                <b>${project.mode === "image" ? "图片解析" : "文生图"}</b>
+              </span>
+              <span class="project-card-meta">
+                <span>${latestVersion ? `最新 V${latestVersion}` : "空草稿"}</span>
+                <span>${versionCount} 个版本</span>
+                <span>${escapeHtml(formatProjectDate(project.updatedAt))}</span>
+              </span>
+              <span class="project-card-action">${opening ? "正在打开…" : "打开并继续 →"}</span>
+            </button>
+          </article>`;
+      })
+      .join("");
+  }
+
+  function renderProjectContext() {
+    const nameInput = $("#projectNameInput");
+    const saveButton = $("#saveDraftButton");
+    const saveStatus = $("#projectSaveStatus");
+    if (nameInput && nameInput.value !== state.projectName) {
+      nameInput.value = state.projectName;
+    }
+    if (nameInput) nameInput.disabled = state.saveStatus === "saving";
+    if (!saveButton || !saveStatus) return;
+
+    saveButton.disabled = state.saveStatus === "saving";
+    saveButton.textContent =
+      state.saveStatus === "saving"
+        ? "正在保存…"
+        : state.hasUnsavedChanges
+          ? state.version
+            ? `保存为 V${state.version + 1}`
+            : "保存首个版本"
+          : state.hasUnsavedProjectChanges
+            ? "保存项目信息"
+          : state.projectId
+            ? "保存项目信息"
+            : "保存空草稿";
+
+    let message = "尚未保存";
+    let statusName = "idle";
+    if (state.dirtyBlockIds.length) {
+      message = `${state.dirtyBlockIds.length} 项结构块修改尚未应用`;
+      statusName = "warning";
+    } else if (state.saveStatus === "saving") {
+      message = "正在写入本机数据库";
+      statusName = "saving";
+    } else if (state.saveStatus === "error") {
+      message = state.saveError || "保存失败，可重试";
+      statusName = "error";
+    } else if (state.hasUnsavedChanges) {
+      message = state.restoreFromVersion
+        ? `已载入 V${state.restoreFromVersion}，保存后生成 V${state.version + 1}`
+        : `内容已应用，保存后生成 V${state.version + 1}`;
+      statusName = "warning";
+    } else if (state.hasUnsavedProjectChanges) {
+      message = "项目名称或输入尚未保存";
+      statusName = "warning";
+    } else if (state.saveStatus === "saved" || state.version > 0) {
+      message = state.lastSavedAt
+        ? `已保存 · ${formatProjectDate(state.lastSavedAt)}`
+        : `已保存 V${state.version}`;
+      statusName = "saved";
+    } else if (state.projectId) {
+      message = "空草稿已保存";
+      statusName = "saved";
+    }
+    saveStatus.textContent = message;
+    saveStatus.dataset.status = statusName;
   }
 
   function renderTextModes() {
@@ -2900,7 +4648,7 @@
       renderToast();
       return false;
     }
-    if (imagePreviewUrl) URL.revokeObjectURL(imagePreviewUrl);
+    releaseImagePreview();
     uploadedImageFile = file;
     imagePreviewUrl = URL.createObjectURL(file);
     dispatch({
@@ -3102,16 +4850,22 @@
   function renderEditorStatus() {
     const hasVersion = state.version > 0;
     const previewing = Boolean(state.previewOutput);
-    $("#versionBadge").textContent = hasVersion
-      ? previewing
-        ? `V${state.version} · 实时预览`
-        : `V${state.version}`
-      : "尚未生成";
+    $("#versionBadge").textContent = previewing
+      ? `${hasVersion ? `V${state.version}` : "未保存"} · 实时预览`
+      : state.restoreFromVersion
+        ? `V${state.version} · 基于 V${state.restoreFromVersion} 待保存`
+        : state.hasUnsavedChanges
+          ? hasVersion
+            ? `V${state.version} · 待保存 V${state.version + 1}`
+            : "待保存 V1"
+          : hasVersion
+            ? `V${state.version}`
+            : "尚未生成";
     const pendingBar = $("#pendingBar");
     const dirtyCount = state.dirtyBlockIds.length;
     pendingBar.classList.toggle("hidden", dirtyCount === 0);
     $("#pendingSummary").textContent = dirtyCount
-      ? `已修改 ${dirtyCount} 个结构块，右侧输出为实时预览；应用后固化为 V${state.version + 1}。`
+      ? `已修改 ${dirtyCount} 个结构块，右侧输出为实时预览；应用后进入待保存状态。`
       : "";
     renderVersionTimeline();
   }
@@ -3128,21 +4882,26 @@
     container.innerHTML = history
       .slice(-8)
       .map((entry) => {
-        const isCurrent = entry.version === state.version;
+        const isCurrent =
+          entry.version === state.version && !state.hasUnsavedChanges;
+        const isRestoreSource =
+          state.hasUnsavedChanges && entry.version === state.restoreFromVersion;
         const label = entry.restoredFrom
           ? `V${entry.version}↩`
           : `V${entry.version}`;
         return `
           <button
-            class="version-chip ${isCurrent ? "active" : ""}"
+            class="version-chip ${isCurrent ? "active" : ""} ${isRestoreSource ? "restoring" : ""}"
             type="button"
             data-restore-version="${entry.version}"
             title="${
               isCurrent
                 ? "当前版本"
-                : `恢复到 V${entry.version}（会生成新版本，不丢历史）`
+                : isRestoreSource
+                  ? `当前工作区基于 V${entry.version}`
+                  : `载入 V${entry.version}，保存后生成最新版本`
             }"
-            ${isCurrent ? "disabled" : ""}
+            ${isCurrent || isRestoreSource ? "disabled" : ""}
           >${label}</button>
         `;
       })
@@ -3302,6 +5061,8 @@
   function render() {
     renderNavigation();
     renderViews();
+    renderProjects();
+    renderProjectContext();
     renderTextModes();
     renderTextProvider();
     renderReferences();
@@ -3313,6 +5074,7 @@
     renderVariantMatrix();
     renderEditorStatus();
     renderOutput();
+    renderRecipeConsole();
     renderDrawer();
     renderResourceDialog();
     renderPromptTemplateDialog();
@@ -3344,12 +5106,25 @@
       .filter((model) => model.selected && model.available !== false)
       .map((model) => model.id);
     if (!analyzerIds.length) return;
+    const request = beginWorkspaceRequest();
+    activeVisionAbort = request.controller;
     try {
       const dataBase64 = await fileToBase64(uploadedImageFile);
-      activeVisionAbort = new AbortController();
+      if (
+        discardChangedWorkspaceResult(
+          request,
+          "IMAGE_ANALYSIS_FAILED",
+          "请求期间图片或项目已修改，已停止旧图片分析"
+        )
+      ) return;
+      if (request.controller.signal.aborted) {
+        const abortError = new Error("图片分析已取消");
+        abortError.name = "AbortError";
+        throw abortError;
+      }
       const result = await apiJson("/api/vision/analyze", {
         method: "POST",
-        signal: activeVisionAbort.signal,
+        signal: request.controller.signal,
         body: JSON.stringify({
           filename: uploadedImageFile.name,
           mimeType: uploadedImageFile.type,
@@ -3357,8 +5132,22 @@
           analyzerIds,
         }),
       });
+      if (
+        discardChangedWorkspaceResult(
+          request,
+          "IMAGE_ANALYSIS_FAILED",
+          "请求期间图片或项目已修改，已丢弃旧分析结果"
+        )
+      ) return;
       dispatch({ type: "APPLY_IMAGE_ANALYSIS", item: result.item });
     } catch (error) {
+      if (
+        discardChangedWorkspaceResult(
+          request,
+          "IMAGE_ANALYSIS_FAILED",
+          "请求期间图片或项目已修改，已停止旧图片分析"
+        )
+      ) return;
       dispatch({
         type: "IMAGE_ANALYSIS_FAILED",
         error: isAbortError(error)
@@ -3366,8 +5155,83 @@
           : error.message || "图片分析失败",
       });
     } finally {
-      activeVisionAbort = null;
+      finishWorkspaceRequest(request);
+      if (activeVisionAbort === request.controller) activeVisionAbort = null;
     }
+  }
+
+  function renderRecipeConsole() {
+    const parameters = state.generationParameters || {};
+    const bindings = {
+      recipeSampler: ["sampler", parameters.sampler],
+      recipeScheduler: ["scheduler", parameters.scheduler],
+      recipeSteps: ["steps", parameters.steps],
+      recipeCfg: ["cfg", parameters.cfg],
+      generationSeed: ["generationSeed", parameters.generationSeed],
+      recipeDenoise: ["denoiseStrength", parameters.denoiseStrength ?? ""],
+    };
+    for (const [id, [key, value]] of Object.entries(bindings)) {
+      const input = $(`#${id}`);
+      if (!input) continue;
+      if (document.activeElement !== input) input.value = value ?? "";
+      const manual = state.manualParameterKeys.includes(key);
+      input.dataset.source = manual ? "manual_override" : "model_default";
+      input.title = `来源：${manual ? "手动覆盖" : key === "generationSeed" ? "任务预设" : "模型默认"}`;
+      input.closest("label")?.classList.toggle("manual-override", manual);
+    }
+    for (const [id, axis] of [["recipeWidth", "width"], ["recipeHeight", "height"]]) {
+      const input = $(`#${id}`);
+      if (input && document.activeElement !== input) {
+        input.value = parameters.resolution?.[axis] || 1024;
+      }
+      input?.closest("label")?.classList.toggle(
+        "manual-override",
+        state.manualParameterKeys.includes("resolution")
+      );
+    }
+    const seedInput = $("#librarySeed");
+    if (
+      seedInput &&
+      document.activeElement !== seedInput &&
+      state.randomPlan?.librarySeed
+    ) {
+      seedInput.value = state.randomPlan.librarySeed;
+    }
+    const status = $("#wordlistStatus");
+    if (status && state.randomCatalog) {
+      const count = (state.randomCatalog.categories || []).reduce(
+        (sum, category) => sum + Number(category.entryCount || 0),
+        0
+      );
+      status.textContent = `${count} 条 · ${state.randomCatalog.version} · ${state.randomCatalog.runtimeReady ? "可发布" : "实验"} · ${state.randomCatalog.semanticReviewRequired ? "待人工语义审核" : "已审核"}`;
+    }
+    const panel = $("#editPreviewPanel");
+    const preview = state.pendingEditPreview;
+    if (panel) {
+      panel.classList.toggle("hidden", !preview);
+      if (preview?.loading) {
+        panel.textContent = "正在解析指令并计算最小差异…";
+      } else if (preview) {
+        const conflicts = (preview.conflicts || [])
+          .map((item) => `<li>冲突：${escapeHtml(item.message || item.code)}</li>`)
+          .join("");
+        const unresolved = (preview.parse?.unresolved || [])
+          .map((item) => `<li>未解析：${escapeHtml(item.message || item.text || item.code)}</li>`)
+          .join("");
+        const diffs = (preview.diffs || [])
+          .map(
+            (item) => `<li><strong>${escapeHtml(item.label || item.id)}</strong>：${escapeHtml(item.before?.en || "（空）")} → ${escapeHtml(item.after?.en || "（空）")}</li>`
+          )
+          .join("");
+        panel.innerHTML = `
+          <strong>${preview.ready ? "可确认" : "尚不可确认"}</strong>
+          <span>影响 ${escapeHtml((preview.affectedIds || []).join("、") || "无")}；锁定 ${escapeHtml((preview.lockedIds || []).join("、") || "无")}</span>
+          <ul>${diffs}${conflicts}${unresolved}</ul>
+        `;
+      }
+    }
+    const applyButton = $('[data-action="apply-edit"]');
+    if (applyButton) applyButton.disabled = !preview?.ready;
   }
 
   async function copyText(text) {
@@ -3389,8 +5253,17 @@
     const button = event.target.closest("button");
     if (!button) return;
 
+    if (button.dataset.openProject) {
+      openProject(button.dataset.openProject);
+      return;
+    }
     if (button.dataset.nav) {
-      dispatch({ type: "NAVIGATE", view: button.dataset.nav });
+      if (button.dataset.nav === "home") startNewProject();
+      else dispatch({ type: "NAVIGATE", view: button.dataset.nav });
+      return;
+    }
+    if (button.dataset.action === "retry-projects") {
+      loadProjects();
       return;
     }
     if (button.dataset.textMode) {
@@ -3506,9 +5379,22 @@
       return;
     }
     if (button.dataset.restoreVersion) {
+      const hasUnsavedWorkspace =
+        state.dirtyBlockIds.length ||
+        state.hasUnsavedChanges ||
+        state.hasUnsavedProjectChanges;
+      if (
+        hasUnsavedWorkspace &&
+        !window.confirm("载入历史版本会放弃当前未保存修改，是否继续？")
+      ) {
+        state.toast = "已保留当前未保存修改";
+        renderToast();
+        return;
+      }
       dispatch({
         type: "RESTORE_VERSION",
         version: Number(button.dataset.restoreVersion),
+        confirmed: true,
       });
       return;
     }
@@ -3573,6 +5459,12 @@
       testTextProvider("local");
     } else if (action === "test-external-api") {
       testTextProvider("api");
+    } else if (action === "export-all") {
+      downloadBackup("full");
+    } else if (action === "export-project") {
+      downloadBackup("project");
+    } else if (action === "select-backup") {
+      $("#backupFileInput")?.click();
     } else if (action === "open-reference") {
       dispatch({ type: "SET_TEXT_MODE", mode: "reference" });
     } else if (action === "new-resource") {
@@ -3629,6 +5521,19 @@
       renderToast();
     } else if (action === "translate-pending") {
       translatePendingBlocks();
+    } else if (action === "wordlist-plan") {
+      generateWordlistPlan();
+    } else if (action === "preview-edit") {
+      previewChineseEdit();
+    } else if (action === "apply-edit") {
+      applyChineseEdit();
+    } else if (action === "dismiss-edit") {
+      editPreviewRecipe = null;
+      editPreviewPayload = null;
+      editPreviewRevision = null;
+      dispatch({ type: "DISMISS_EDIT_PREVIEW" });
+    } else if (action === "undo-recipe") {
+      undoLastRecipeChange();
     } else if (action === "copy-all") {
       copyText(app.getCombinedPrompt(state));
     } else if (action === "save-draft") {
@@ -3637,7 +5542,9 @@
   });
 
   document.addEventListener("input", (event) => {
-    if (event.target.id === "draftInput") {
+    if (event.target.id === "projectNameInput") {
+      dispatch({ type: "SET_PROJECT_NAME", value: event.target.value });
+    } else if (event.target.id === "draftInput") {
       dispatch({ type: "SET_DRAFT", value: event.target.value });
     } else if (event.target.id === "referenceSearch") {
       renderReferences();
@@ -3742,7 +5649,7 @@
       return;
     }
     if ((event.key === "s" || event.key === "S") && !event.shiftKey) {
-      if (state.view === "text" && state.version > 0) {
+      if (state.view !== "home") {
         event.preventDefault();
         saveCurrentProject();
       }
@@ -3750,6 +5657,24 @@
   });
 
   document.addEventListener("change", (event) => {
+    if (event.target.dataset.generationParam) {
+      dispatch({
+        type: "SET_GENERATION_PARAMETER",
+        key: event.target.dataset.generationParam,
+        value: event.target.value,
+      });
+      return;
+    }
+    if (event.target.dataset.resolutionAxis) {
+      const width = Number($("#recipeWidth")?.value);
+      const height = Number($("#recipeHeight")?.value);
+      dispatch({
+        type: "SET_GENERATION_PARAMETER",
+        key: "resolution",
+        value: { width, height },
+      });
+      return;
+    }
     if (event.target.dataset.mixArtist) {
       const id = event.target.dataset.mixArtist;
       if (event.target.checked) artistMix.set(id, artistMix.get(id) ?? 100);
@@ -3794,7 +5719,16 @@
       const file = event.target.files?.[0];
       if (file) loadImageFile(file);
       event.target.value = "";
+    } else if (event.target.id === "backupFileInput") {
+      const file = event.target.files?.[0];
+      if (file) inspectAndStageBackup(file);
     }
+  });
+
+  window.addEventListener("beforeunload", (event) => {
+    if (!saveInFlight && !app.shouldConfirmWorkspaceDiscard(state)) return;
+    event.preventDefault();
+    event.returnValue = "";
   });
 
   $("#expandBtn").addEventListener("click", expandTextPrompt);
@@ -3838,9 +5772,18 @@
   favoriteResources = readFavoriteResources();
   syncFavoriteResourceGroups();
   render();
+  loadProjects();
   loadSettings();
   loadLocalLlmStatus();
   loadVisionStatus();
   loadFavoriteResources();
   loadAnimaDexResources();
+  loadRandomCatalog();
+  try {
+    if (localStorage.getItem(PENDING_SAVE_STORAGE_KEY)) {
+      saveCurrentProject({ automatic: true });
+    }
+  } catch {
+    // The save path reports storage failures without sending a write request.
+  }
 })(typeof globalThis !== "undefined" ? globalThis : this);

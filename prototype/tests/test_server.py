@@ -2,12 +2,15 @@ import sys
 import tempfile
 import unittest
 import base64
+import concurrent.futures
+import hashlib
 import io
 import json
 import socket
 import sqlite3
 import threading
 import time
+import zipfile
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError
@@ -552,6 +555,7 @@ class HttpBoundaryAdversarialTests(unittest.TestCase):
         self.api_db_path = self.root / "data" / "api-test.db"
         self.db_path_patch = patch("db.DEFAULT_DB_PATH", self.api_db_path)
         self.db_path_patch.start()
+        db.init_db(self.api_db_path)
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), PromptStudioHandler)
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
@@ -1068,7 +1072,7 @@ class HttpBoundaryAdversarialTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in items], ["project-fixed"])
 
     def test_version_schema_is_server_numbered_and_blocks_are_typed(self):
-        self.json_request(
+        _, created = self.json_request(
             "/api/projects",
             {"id": "project-versions", "name": "Versions"},
         )
@@ -1083,19 +1087,42 @@ class HttpBoundaryAdversarialTests(unittest.TestCase):
             with self.subTest(payload=payload):
                 request = Request(
                     f"{self.base_url}/api/projects/project-versions/versions",
-                    data=json.dumps(payload).encode("utf-8"),
+                    data=json.dumps(
+                        {
+                            "baseUpdatedAt": created["item"]["updatedAt"],
+                            **payload,
+                        }
+                    ).encode("utf-8"),
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )
                 self.assert_http_error_json(request, 400)
 
+        missing_precondition = Request(
+            f"{self.base_url}/api/projects/project-versions/versions",
+            data=b'{"blocks":[]}',
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        missing_payload = self.assert_http_error_json(missing_precondition, 428)
+        self.assertEqual(
+            missing_payload["code"],
+            "project_precondition_required",
+        )
+
         first_status, first = self.json_request(
             "/api/projects/project-versions/versions",
-            {"blocks": [{"id": "scene", "weight": 120}]},
+            {
+                "baseUpdatedAt": created["item"]["updatedAt"],
+                "blocks": [{"id": "scene", "weight": 120}],
+            },
         )
         second_status, second = self.json_request(
             "/api/projects/project-versions/versions",
-            {"blocks": []},
+            {
+                "baseUpdatedAt": first["item"]["projectUpdatedAt"],
+                "blocks": [],
+            },
         )
         self.assertEqual((first_status, second_status), (201, 201))
         self.assertEqual(
@@ -1103,8 +1130,340 @@ class HttpBoundaryAdversarialTests(unittest.TestCase):
             [1, 2],
         )
 
+    def test_project_can_be_listed_renamed_reopened_and_continued(self):
+        created_status, created = self.json_request(
+            "/api/projects",
+            {
+                "id": "project-reopen",
+                "name": "初始名称",
+                "mode": "text",
+                "metadata": {"draftInput": "一位夜行旅人"},
+            },
+        )
+        self.assertEqual(created_status, 201)
+        self.assertEqual(created["item"]["versions"], [])
+
+        first_status, first = self.json_request(
+            "/api/projects/project-reopen/versions",
+            {
+                "baseVersion": 0,
+                "baseUpdatedAt": created["item"]["updatedAt"],
+                "positiveEn": "adult traveler, night city",
+                "positiveZh": "成年旅人，夜色城市",
+                "blocks": [{"id": "subject", "weight": 100}],
+                "metadata": {"draftInput": "一位夜行旅人"},
+            },
+        )
+        self.assertEqual(first_status, 201)
+        self.assertEqual(first["item"]["version"], 1)
+
+        with urlopen(f"{self.base_url}/api/projects") as response:
+            projects = json.loads(response.read().decode("utf-8"))["items"]
+        summary = next(item for item in projects if item["id"] == "project-reopen")
+        self.assertEqual(summary["versionCount"], 1)
+        self.assertEqual(summary["latestVersion"], 1)
+
+        update_status, updated = self.json_request(
+            "/api/projects/project-reopen",
+            {
+                "baseUpdatedAt": first["item"]["projectUpdatedAt"],
+                "name": "夜行旅人",
+                "mode": "text",
+                "status": "draft",
+                "metadata": {"draftInput": "加入雨夜"},
+            },
+            method="PUT",
+        )
+        self.assertEqual(update_status, 200)
+        self.assertEqual(updated["item"]["name"], "夜行旅人")
+        self.assertEqual(updated["item"]["metadata"]["draftInput"], "加入雨夜")
+
+        second_status, second = self.json_request(
+            "/api/projects/project-reopen/versions",
+            {
+                "baseVersion": 1,
+                "baseUpdatedAt": updated["item"]["updatedAt"],
+                "positiveEn": "adult traveler, rainy night city",
+                "positiveZh": "成年旅人，雨夜城市",
+                "blocks": [{"id": "scene", "weight": 100}],
+                "metadata": {"restoredFromVersion": 1},
+            },
+        )
+        self.assertEqual(second_status, 201)
+        self.assertEqual(second["item"]["version"], 2)
+
+        with urlopen(
+            f"{self.base_url}/api/projects/project-reopen"
+        ) as response:
+            reopened = json.loads(response.read().decode("utf-8"))["item"]
+        self.assertEqual(reopened["name"], "夜行旅人")
+        self.assertEqual(
+            [item["version"] for item in reopened["versions"]],
+            [1, 2],
+        )
+        self.assertEqual(
+            reopened["versions"][-1]["positiveEn"],
+            "adult traveler, rainy night city",
+        )
+
+    def test_stale_base_version_returns_conflict_without_writing(self):
+        _, created = self.json_request(
+            "/api/projects",
+            {"id": "project-conflict", "name": "Conflict"},
+        )
+        self.json_request(
+            "/api/projects/project-conflict/versions",
+            {
+                "baseVersion": 0,
+                "baseUpdatedAt": created["item"]["updatedAt"],
+                "positiveEn": "first",
+            },
+        )
+
+        request = Request(
+            f"{self.base_url}/api/projects/project-conflict/versions",
+            data=json.dumps(
+                {
+                    "baseVersion": 0,
+                    "baseUpdatedAt": created["item"]["updatedAt"],
+                    "positiveEn": "stale",
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        conflict = self.assert_http_error_json(request, 409)
+        self.assertEqual(conflict["code"], "version_conflict")
+        self.assertEqual(conflict["expectedVersion"], 0)
+        self.assertEqual(conflict["currentVersion"], 1)
+
+        with urlopen(
+            f"{self.base_url}/api/projects/project-conflict"
+        ) as response:
+            project = json.loads(response.read().decode("utf-8"))["item"]
+        self.assertEqual(len(project["versions"]), 1)
+        self.assertEqual(project["versions"][0]["positiveEn"], "first")
+
+    def test_project_update_rejects_unknown_fields_and_exact_path_mismatches(self):
+        _, created = self.json_request(
+            "/api/projects",
+            {"id": "project-update", "name": "Update"},
+        )
+        unknown = Request(
+            f"{self.base_url}/api/projects/project-update",
+            data=json.dumps(
+                {
+                    "baseUpdatedAt": created["item"]["updatedAt"],
+                    "createdAt": "forged",
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        self.assert_http_error_json(unknown, 400)
+
+        missing_precondition = Request(
+            f"{self.base_url}/api/projects/project-update",
+            data=b'{"name":"forged"}',
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        missing_payload = self.assert_http_error_json(missing_precondition, 428)
+        self.assertEqual(
+            missing_payload["code"],
+            "project_precondition_required",
+        )
+
+        for path, expected_status in (
+            ("/api/projects/project-update/extra", 404),
+            ("/api/projects/project-update;extra", 400),
+            ("/api/projects//", 404),
+        ):
+            with self.subTest(path=path, expected_status=expected_status):
+                request = Request(
+                    f"{self.base_url}{path}",
+                    data=b'{"name":"forged"}',
+                    headers={"Content-Type": "application/json"},
+                    method="PUT",
+                )
+                self.assert_http_error_json(request, expected_status)
+
+    def test_concurrent_project_puts_with_same_base_allow_only_one(self):
+        _, created = self.json_request(
+            "/api/projects",
+            {"id": "project-put-cas", "name": "Original"},
+        )
+        base_updated_at = created["item"]["updatedAt"]
+        barrier = threading.Barrier(2)
+
+        def update(index):
+            barrier.wait(timeout=2)
+            request = Request(
+                f"{self.base_url}/api/projects/project-put-cas",
+                data=json.dumps(
+                    {
+                        "baseUpdatedAt": base_updated_at,
+                        "name": f"Writer {index}",
+                    }
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="PUT",
+            )
+            try:
+                with urlopen(request) as response:
+                    return response.status, json.loads(response.read().decode("utf-8"))
+            except HTTPError as error:
+                return error.code, json.loads(error.read().decode("utf-8"))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(update, range(2)))
+
+        self.assertEqual(sorted(status for status, _ in results), [200, 409])
+        success = next(payload for status, payload in results if status == 200)
+        conflict = next(payload for status, payload in results if status == 409)
+        self.assertEqual(conflict["code"], "project_conflict")
+        self.assertEqual(conflict["expected"], base_updated_at)
+        self.assertEqual(conflict["expectedUpdatedAt"], base_updated_at)
+        self.assertEqual(conflict["actual"], success["item"]["updatedAt"])
+        self.assertEqual(conflict["actualUpdatedAt"], success["item"]["updatedAt"])
+
+        with urlopen(f"{self.base_url}/api/projects/project-put-cas") as response:
+            stored = json.loads(response.read().decode("utf-8"))["item"]
+        self.assertEqual(stored["name"], success["item"]["name"])
+        self.assertEqual(stored["updatedAt"], success["item"]["updatedAt"])
+
+    def test_version_response_timestamp_can_guard_followup_project_put(self):
+        _, created = self.json_request(
+            "/api/projects",
+            {"id": "project-version-put", "name": "Before"},
+        )
+        version_status, version = self.json_request(
+            "/api/projects/project-version-put/versions",
+            {
+                "baseVersion": 0,
+                "baseUpdatedAt": created["item"]["updatedAt"],
+                "positiveEn": "first",
+            },
+        )
+
+        update_status, updated = self.json_request(
+            "/api/projects/project-version-put",
+            {
+                "baseUpdatedAt": version["item"]["projectUpdatedAt"],
+                "name": "After version",
+            },
+            method="PUT",
+        )
+
+        self.assertEqual(version_status, 201)
+        self.assertEqual(update_status, 200)
+        self.assertEqual(updated["item"]["name"], "After version")
+        self.assertGreater(
+            updated["item"]["updatedAt"],
+            version["item"]["projectUpdatedAt"],
+        )
+
+    def test_header_update_invalidates_stale_version_request(self):
+        _, created = self.json_request(
+            "/api/projects",
+            {
+                "id": "project-header-before-version",
+                "metadata": {"draftInput": "original"},
+            },
+        )
+        stale_updated_at = created["item"]["updatedAt"]
+        update_status, updated = self.json_request(
+            "/api/projects/project-header-before-version",
+            {
+                "baseUpdatedAt": stale_updated_at,
+                "metadata": {"draftInput": "writer-b"},
+            },
+            method="PUT",
+        )
+        self.assertEqual(update_status, 200)
+
+        request = Request(
+            f"{self.base_url}/api/projects/project-header-before-version/versions",
+            data=json.dumps(
+                {
+                    "baseVersion": 0,
+                    "baseUpdatedAt": stale_updated_at,
+                    "positiveEn": "writer-a",
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        conflict = self.assert_http_error_json(request, 409)
+        self.assertEqual(conflict["code"], "project_conflict")
+        self.assertEqual(
+            conflict["actualUpdatedAt"],
+            updated["item"]["updatedAt"],
+        )
+
+        with urlopen(
+            f"{self.base_url}/api/projects/project-header-before-version"
+        ) as response:
+            stored = json.loads(response.read().decode("utf-8"))["item"]
+        self.assertEqual(stored["metadata"]["draftInput"], "writer-b")
+        self.assertEqual(stored["versions"], [])
+
+    def test_all_http_methods_reject_url_path_parameters_before_routing(self):
+        cases = (
+            Request(
+                f"{self.base_url}/api/projects;extra/project-1",
+                method="GET",
+            ),
+            Request(
+                f"{self.base_url}/api/projects/project-1;extra/versions",
+                method="HEAD",
+            ),
+            Request(
+                f"{self.base_url}/api/projects;extra/project-1",
+                data=b'{"id":"must-not-create"}',
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            ),
+            Request(
+                f"{self.base_url}/api/projects;extra/project-1",
+                data=b'{"autoCombine":true}',
+                headers={"Content-Type": "application/json"},
+                method="PUT",
+            ),
+            Request(
+                f"{self.base_url}/api/favorites;extra/favorite-1",
+                headers={"Content-Type": "application/json"},
+                method="DELETE",
+            ),
+        )
+        with (
+            patch("server.list_projects") as list_projects_mock,
+            patch("server.create_project") as create_project_mock,
+            patch("server.put_settings") as put_settings_mock,
+            patch("server.delete_favorite") as delete_favorite_mock,
+        ):
+            for request in cases:
+                with self.subTest(method=request.method, path=request.full_url):
+                    if request.method == "HEAD":
+                        with self.assertRaises(HTTPError) as context:
+                            urlopen(request)
+                        self.assertEqual(context.exception.code, 400)
+                        continue
+                    payload = self.assert_http_error_json(request, 400)
+                    self.assertIn("路径参数", payload["error"])
+        list_projects_mock.assert_not_called()
+        create_project_mock.assert_not_called()
+        put_settings_mock.assert_not_called()
+        delete_favorite_mock.assert_not_called()
+
+    def test_request_handlers_do_not_run_schema_migrations(self):
+        with patch("server.init_db", side_effect=AssertionError("unexpected migration")) as init:
+            with urlopen(f"{self.base_url}/api/projects") as response:
+                self.assertEqual(response.status, 200)
+        init.assert_not_called()
+
     def test_legacy_encoded_project_id_can_be_loaded_and_versioned(self):
-        project_id = "旧 项目/k-da"
+        project_id = "旧 项目/k-da;legacy"
         timestamp = db.now_iso()
         db.init_db(self.api_db_path)
         with db.database(self.api_db_path) as connection:
@@ -1122,12 +1481,15 @@ class HttpBoundaryAdversarialTests(unittest.TestCase):
             loaded = json.loads(response.read().decode("utf-8"))["item"]
         version_status, version = self.json_request(
             f"/api/projects/{encoded_id}/versions",
-            {},
+            {"baseUpdatedAt": loaded["updatedAt"]},
         )
 
         self.assertEqual(loaded["id"], project_id)
         self.assertEqual(version_status, 201)
         self.assertEqual(version["item"]["projectId"], project_id)
+
+        with urlopen(f"{self.base_url}/api/projects?q=a;b") as response:
+            self.assertEqual(response.status, 200)
 
     def test_thumbnail_proxy_preserves_encoded_slashes_in_animadex_slugs(self):
         slug = "k/da_ahri"
@@ -1169,15 +1531,15 @@ class HttpBoundaryAdversarialTests(unittest.TestCase):
         self.assertTrue(deleted["deleted"])
 
     def test_version_creation_route_requires_an_exact_path_shape(self):
-        paths = (
-            "/api/projects/project-1/extra/versions",
-            "/api/projects/project-1/versions/extra",
-            "/api/projects/project-1/versions;extra",
-            "/api/projects//versions",
+        cases = (
+            ("/api/projects/project-1/extra/versions", 404),
+            ("/api/projects/project-1/versions/extra", 404),
+            ("/api/projects/project-1/versions;extra", 400),
+            ("/api/projects//versions", 404),
         )
         with patch("server.get_project") as get_project_mock:
-            for path in paths:
-                with self.subTest(path=path):
+            for path, expected_status in cases:
+                with self.subTest(path=path, expected_status=expected_status):
                     payload = self.assert_http_error_json(
                         Request(
                             f"{self.base_url}{path}",
@@ -1185,7 +1547,7 @@ class HttpBoundaryAdversarialTests(unittest.TestCase):
                             headers={"Content-Type": "application/json"},
                             method="POST",
                         ),
-                        404,
+                        expected_status,
                     )
                     self.assertIn("error", payload)
         get_project_mock.assert_not_called()
@@ -1205,6 +1567,284 @@ class HttpBoundaryAdversarialTests(unittest.TestCase):
                 self.assertEqual(context.exception.code, 400)
                 payload = json.loads(context.exception.read().decode("utf-8"))
                 self.assertIn("error", payload)
+
+    def test_idempotency_header_replays_create_and_rejects_changed_body(self):
+        payload = {"id": "project-http-idem", "name": "Stable"}
+        request = lambda body: Request(
+            f"{self.base_url}/api/projects",
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Idempotency-Key": "http-create-1",
+            },
+            method="POST",
+        )
+        with urlopen(request(payload)) as response:
+            first = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(response.status, 201)
+        with urlopen(request({"name": "Stable", "id": "project-http-idem"})) as response:
+            replay = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(response.status, 201)
+        self.assertEqual(replay, first)
+        error = self.assert_http_error_json(
+            request({"id": "project-http-other", "name": "Changed"}), 409
+        )
+        self.assertEqual(error["code"], "idempotency_conflict")
+        self.assertEqual(len(db.list_projects(self.api_db_path)), 1)
+
+    def test_duplicate_idempotency_header_is_rejected_before_write(self):
+        body = b'{"id":"project-duplicate-header"}'
+        request = (
+            b"POST /api/projects HTTP/1.1\r\n"
+            + f"Host: 127.0.0.1:{self.httpd.server_port}\r\n".encode()
+            + b"Content-Type: application/json\r\n"
+            + b"Idempotency-Key: one\r\n"
+            + b"Idempotency-Key: two\r\n"
+            + f"Content-Length: {len(body)}\r\n\r\n".encode()
+            + body
+        )
+        status, _, response_body = self.raw_request(request)
+        self.assertEqual(status, 400)
+        self.assertIn("error", json.loads(response_body.decode("utf-8")))
+        self.assertIsNone(db.get_project("project-duplicate-header", self.api_db_path))
+
+    def test_atomic_workspace_commit_persists_complete_recipe_and_replays(self):
+        block_ids = [
+            "quality", "artist", "subject", "appearance", "outfit",
+            "expression", "pose", "interaction", "scene", "composition",
+            "lighting", "effects", "negative",
+        ]
+        payload = {
+            "operationId": "save-http-atomic",
+            "createProject": True,
+            "project": {
+                "id": "project-http-atomic",
+                "name": "Atomic Recipe",
+                "metadata": {"workspaceBaseVersion": 1},
+            },
+            "version": {
+                "id": "version-http-atomic",
+                "baseVersion": 0,
+                "positiveEn": "masterpiece, best quality, score_7",
+                "positiveZh": "杰作，最佳质量，score_7",
+                "negativeEn": "low quality",
+                "negativeZh": "低质量",
+                "blocks": [
+                    {"id": block_id, "en": "", "zh": ""}
+                    for block_id in block_ids
+                ],
+                "metadata": {},
+            },
+        }
+        request = Request(
+            f"{self.base_url}/api/workspace/commit",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Idempotency-Key": payload["operationId"],
+            },
+            method="POST",
+        )
+        with urlopen(request) as response:
+            first = json.loads(response.read().decode("utf-8"))["item"]
+            self.assertEqual(response.status, 201)
+        with urlopen(request) as response:
+            replay = json.loads(response.read().decode("utf-8"))["item"]
+        self.assertEqual(replay, first)
+        recipe = first["version"]["metadata"]["recipe"]
+        self.assertEqual(len(recipe["blocks"]), 13)
+        self.assertEqual(recipe["model"]["versionId"], 3004063)
+        self.assertNotIn("safe", recipe["prompts"]["positiveEn"].split(", "))
+
+    def test_profile_and_random_catalog_are_readable_but_runtime_is_guarded(self):
+        with urlopen(f"{self.base_url}/api/model-profiles/anima-1.1-v1") as response:
+            profile = json.loads(response.read().decode("utf-8"))["item"]
+        self.assertEqual(profile["model"]["versionId"], 3004063)
+        self.assertFalse(profile["generationReady"])
+        with urlopen(f"{self.base_url}/api/text/random-catalog") as response:
+            catalog = json.loads(response.read().decode("utf-8"))["item"]
+        self.assertFalse(catalog["runtimeReady"])
+        self.assertTrue(catalog["semanticReviewRequired"])
+        error = self.assert_http_error_json(
+            Request(
+                f"{self.base_url}/api/text/random-plan",
+                data=b"{}",
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            ),
+            409,
+        )
+        self.assertEqual(error["code"], "random_catalog_not_release_ready")
+
+    def test_backup_export_inspect_and_isolated_restore_flow(self):
+        project = db.create_project(
+            {"id": "project-backup-http", "name": "HTTP backup"},
+            self.api_db_path,
+        )
+        db.create_prompt_version(
+            project["id"],
+            {"id": "version-backup-http", "positiveEn": "1girl"},
+            self.api_db_path,
+        )
+
+        with urlopen(
+            f"{self.base_url}/api/backups/export?scope=project&projectId={project['id']}"
+        ) as response:
+            archive = response.read()
+            self.assertEqual(response.headers.get_content_type(), "application/zip")
+            self.assertIn("attachment", response.headers["Content-Disposition"])
+        self.assertTrue(zipfile.is_zipfile(io.BytesIO(archive)))
+
+        with urlopen(
+            Request(
+                f"{self.base_url}/api/backups/inspect",
+                data=archive,
+                headers={"Content-Type": "application/zip"},
+                method="POST",
+            )
+        ) as response:
+            inspection = json.loads(response.read().decode("utf-8"))["item"]
+        self.assertEqual(inspection["counts"]["projects"], 1)
+        self.assertEqual(inspection["counts"]["versions"], 1)
+
+        with urlopen(
+            Request(
+                f"{self.base_url}/api/backups/stage-restore?conflict=rename",
+                data=archive,
+                headers={"Content-Type": "application/octet-stream"},
+                method="POST",
+            )
+        ) as response:
+            self.assertEqual(response.status, 201)
+            report = json.loads(response.read().decode("utf-8"))["item"]
+        self.assertFalse(report["activated"])
+        staging = Path(report["stagingDatabase"])
+        self.assertTrue(staging.is_file())
+        self.assertEqual(staging.parent, db.recovery_directory(self.api_db_path))
+        renamed = report["renamedProjects"][0]["to"]
+        self.assertEqual(db.get_project(project["id"], staging)["name"], "HTTP backup")
+        self.assertEqual(db.get_project(renamed, staging)["name"], "HTTP backup")
+
+    def test_backup_attacks_fail_before_current_or_staging_database_changes(self):
+        project = db.create_project(
+            {"id": "project-backup-protected", "name": "Protected"},
+            self.api_db_path,
+        )
+        before = hashlib.sha256(self.api_db_path.read_bytes()).hexdigest()
+        recovery = db.recovery_directory(self.api_db_path)
+        before_staging = set(recovery.glob("restore-preview-*.db")) if recovery.exists() else set()
+
+        invalid = self.assert_http_error_json(
+            Request(
+                f"{self.base_url}/api/backups/inspect",
+                data=b"not a backup",
+                headers={"Content-Type": "application/octet-stream"},
+                method="POST",
+            ),
+            400,
+        )
+        self.assertEqual(invalid["code"], "invalid_backup")
+
+        zip_slip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_slip_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("manifest.json", b"{}")
+            archive.writestr("../projects.json", b"{}")
+        slip = self.assert_http_error_json(
+            Request(
+                f"{self.base_url}/api/backups/stage-restore?conflict=rename",
+                data=zip_slip_buffer.getvalue(),
+                headers={"Content-Type": "application/zip"},
+                method="POST",
+            ),
+            400,
+        )
+        self.assertEqual(slip["code"], "invalid_backup")
+
+        media = self.assert_http_error_json(
+            Request(
+                f"{self.base_url}/api/backups/inspect",
+                data=b"x",
+                headers={"Content-Type": "text/plain"},
+                method="POST",
+            ),
+            415,
+        )
+        self.assertIn("error", media)
+        duplicate_query = self.assert_http_error_json(
+            Request(
+                f"{self.base_url}/api/backups/export?scope=full&scope=project"
+            ),
+            400,
+        )
+        self.assertIn("error", duplicate_query)
+
+        self.assertEqual(hashlib.sha256(self.api_db_path.read_bytes()).hexdigest(), before)
+        after_staging = set(recovery.glob("restore-preview-*.db")) if recovery.exists() else set()
+        self.assertEqual(after_staging, before_staging)
+        self.assertEqual(db.get_project(project["id"], self.api_db_path)["name"], "Protected")
+
+    def test_edit_preview_hash_survives_http_browser_wire_format(self):
+        block_ids = [
+            "quality", "artist", "subject", "appearance", "outfit",
+            "expression", "pose", "interaction", "scene", "composition",
+            "lighting", "effects", "negative",
+        ]
+
+        def post(path, payload):
+            with urlopen(
+                Request(
+                    f"{self.base_url}{path}",
+                    data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+            ) as response:
+                return json.loads(response.read().decode("utf-8"))["item"]
+
+        resolved = post(
+            "/api/recipe/resolve",
+            {
+                "blocks": [
+                    {
+                        "id": block_id,
+                        "en": "blue dress" if block_id == "outfit" else "",
+                        "zh": "蓝色连衣裙" if block_id == "outfit" else "",
+                    }
+                    for block_id in block_ids
+                ],
+                "prompts": {
+                    "positiveEn": "masterpiece, best quality, score_7, blue dress",
+                    "positiveZh": "杰作，最佳质量，蓝色连衣裙",
+                    "negativeEn": "low quality",
+                    "negativeZh": "低质量",
+                },
+            },
+        )
+        preview = post(
+            "/api/text/edit-preview",
+            {
+                "instruction": "只把服装换成红色连衣裙",
+                "recipe": resolved["recipe"],
+                "baseRecipeHash": resolved["recipeHash"],
+            },
+        )
+        self.assertIs(type(preview["parse"]["confidence"]), int)
+        # Browser JSON.parse/JSON.stringify cannot preserve a distinction
+        # between 1.0 and 1, so the wire contract intentionally uses integers.
+        transported = json.loads(json.dumps(preview, ensure_ascii=False))
+        applied = post(
+            "/api/text/edit-apply",
+            {
+                "recipe": resolved["recipe"],
+                "preview": transported,
+                "parentVersion": 1,
+                "newVersion": 2,
+            },
+        )
+        outfit = next(
+            item for item in applied["workbenchBlocks"] if item["id"] == "outfit"
+        )
+        self.assertEqual(outfit["en"], "red dress")
 
 
 if __name__ == "__main__":

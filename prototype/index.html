@@ -76,6 +76,28 @@
             </button>
           </div>
 
+          <section class="recent-projects" aria-labelledby="recentProjectsTitle">
+            <div class="section-heading">
+              <div>
+                <h2 id="recentProjectsTitle">最近项目</h2>
+                <p>项目和版本只保存在本机；打开后可从最新版本继续编辑。</p>
+              </div>
+              <span
+                class="recent-project-status"
+                id="recentProjectStatus"
+                data-status="idle"
+                aria-live="polite"
+              >等待读取项目库</span>
+              <div class="backup-controls" aria-label="本地备份与恢复">
+                <span id="backupStatus" data-status="idle" aria-live="polite">备份仅包含逻辑数据，不包含密钥和模型文件</span>
+                <button class="secondary-button" type="button" data-action="export-all" data-backup-action>导出全库备份</button>
+                <button class="secondary-button" type="button" data-action="select-backup" data-backup-action>校验并隔离恢复</button>
+                <input id="backupFileInput" class="visually-hidden" type="file" accept=".zip,.json,application/zip,application/json" />
+              </div>
+            </div>
+            <div class="recent-project-list" id="recentProjectList"></div>
+          </section>
+
           <div class="home-resources">
             <div class="section-heading">
               <div>
@@ -391,7 +413,7 @@
                 </div>
               </div>
               <div class="editor-actions">
-                <button class="secondary-button" type="button" data-action="save-recipe" title="把当前十个结构块保存为可复用配方">
+                <button class="secondary-button" type="button" data-action="save-recipe" title="把当前完整十三块与参数保存为可复用配方">
                   存为配方
                 </button>
                 <button class="secondary-button" type="button" data-action="collapse-blocks">
@@ -442,7 +464,7 @@
                   撤销未应用
                 </button>
                 <button class="primary-button" type="button" data-action="apply-changes" title="Ctrl+Shift+Enter">
-                  应用修改并生成新版本
+                  应用修改（待保存）
                 </button>
               </div>
             </div>
@@ -470,11 +492,9 @@
                 >
                   本地 LLM 翻译
                 </button>
-                <select id="targetModel" aria-label="目标模型">
-                  <option>Anima 2B</option>
-                  <option>WAI-ANIMA</option>
-                  <option>通用 Danbooru</option>
-                </select>
+                <span class="model-profile-badge" id="modelProfileBadge" title="版本 ID 3004063；本地 checkpoint 尚未验证">
+                  MiaoMiao Harem · Anima_1.1
+                </span>
               </div>
             </div>
 
@@ -534,11 +554,78 @@
               ></textarea>
             </section>
 
+            <div class="project-save-panel">
+              <label for="projectNameInput">
+                <span>作品名称</span>
+                <input
+                  id="projectNameInput"
+                  type="text"
+                  maxlength="200"
+                  value="未命名作品"
+                  autocomplete="off"
+                />
+              </label>
+              <span
+                class="project-save-status"
+                id="projectSaveStatus"
+                data-status="idle"
+                aria-live="polite"
+              >尚未保存</span>
+            </div>
+
+            <section class="recipe-console" aria-label="完整配方与修改工作台">
+              <div class="recipe-console-header">
+                <div>
+                  <p class="eyebrow">RECIPE V1 · 13 BLOCKS</p>
+                  <h3>配方控制台</h3>
+                </div>
+                <span class="verification-badge warning">checkpoint / 尺寸待实机验证</span>
+              </div>
+              <p class="recipe-prefix"><strong>固定前缀</strong> masterpiece, best quality, score_7 <span>（不自动添加 safe）</span></p>
+              <div class="recipe-parameter-grid">
+                <label><span>Sampler</span><select id="recipeSampler" data-generation-param="sampler"><option>Euler</option><option>Euler a</option></select></label>
+                <label><span>Scheduler</span><select id="recipeScheduler" data-generation-param="scheduler"><option>Normal</option></select></label>
+                <label><span>Steps</span><input id="recipeSteps" data-generation-param="steps" type="number" min="1" max="1000" value="30" /></label>
+                <label><span>CFG</span><input id="recipeCfg" data-generation-param="cfg" type="number" min="0" max="100" step="0.1" value="5.5" /></label>
+                <label class="resolution-field"><span>分辨率（手动，尚无已验证预设）</span><span class="resolution-inputs"><input id="recipeWidth" data-resolution-axis="width" type="number" min="64" max="8192" step="8" value="1024" /><b>×</b><input id="recipeHeight" data-resolution-axis="height" type="number" min="64" max="8192" step="8" value="1024" /></span></label>
+                <label><span>Generation Seed</span><input id="generationSeed" data-generation-param="generationSeed" type="number" min="0" step="1" value="0" /></label>
+                <label><span>Img2Img Denoise</span><input id="recipeDenoise" data-generation-param="denoiseStrength" type="number" min="0" max="1" step="0.01" placeholder="可选" /></label>
+              </div>
+              <p class="parameter-precedence">参数优先级：手动覆盖 › 任务预设 › LoRA 要求 › 模型默认。每项来源随版本保存。</p>
+              <div class="wordlist-console">
+                <div>
+                  <strong>确定性词库计划</strong>
+                  <span id="wordlistStatus">471 条词正在等待人工语义审核；仅服务端实验开关开启时可抽样。</span>
+                </div>
+                <input id="librarySeed" maxlength="32" autocomplete="off" placeholder="32位十六进制 Seed；留空则生成" />
+                <button class="secondary-button" type="button" data-action="wordlist-plan">生成可复现计划</button>
+              </div>
+              <div class="instruction-console">
+                <label for="editInstruction"><strong>中文最小差异修改</strong><span>未点名结构块自动锁定；先预览，再确认写入新版本。</span></label>
+                <textarea id="editInstruction" rows="2" placeholder="例如：只把服装换成红色连衣裙"></textarea>
+                <div class="instruction-actions">
+                  <button class="secondary-button" type="button" data-action="preview-edit">预览影响</button>
+                  <button class="primary-button" type="button" data-action="apply-edit">确认并保存新版本</button>
+                  <button class="secondary-button" type="button" data-action="dismiss-edit">取消预览</button>
+                  <button class="secondary-button" type="button" data-action="undo-recipe">撤销为新版本</button>
+                </div>
+                <div class="edit-preview-panel hidden" id="editPreviewPanel"></div>
+              </div>
+            </section>
+
             <div class="output-footer">
               <button class="secondary-button" type="button" data-action="copy-all">
                 复制双语
               </button>
-              <button class="primary-button" type="button" data-action="save-draft">
+              <button class="secondary-button" type="button" data-action="export-project" data-backup-action>
+                导出当前作品
+              </button>
+              <button
+                class="primary-button"
+                id="saveDraftButton"
+                type="button"
+                data-action="save-draft"
+              >
                 保存为作品草稿
               </button>
             </div>
@@ -783,8 +870,11 @@
             <span>应用到结构块</span>
             <select id="resourceTarget" name="targetBlock">
               <option value="subject">人物主体</option>
-              <option value="appearance">外观与服装</option>
+              <option value="appearance">身体与外观</option>
+              <option value="outfit">服装与配饰</option>
+              <option value="expression">表情与视线</option>
               <option value="pose">动作与姿态</option>
+              <option value="interaction">互动关系</option>
               <option value="scene">场景与环境</option>
               <option value="composition">构图与镜头</option>
               <option value="lighting">光影与色彩</option>

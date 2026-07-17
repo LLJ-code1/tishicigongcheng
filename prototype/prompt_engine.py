@@ -30,6 +30,21 @@ REQUIRED_BLOCK_IDS = (
     "artist",
     "subject",
     "appearance",
+    "outfit",
+    "expression",
+    "pose",
+    "interaction",
+    "scene",
+    "composition",
+    "lighting",
+    "effects",
+    "negative",
+)
+LEGACY_BLOCK_IDS = (
+    "quality",
+    "artist",
+    "subject",
+    "appearance",
     "pose",
     "scene",
     "composition",
@@ -40,7 +55,10 @@ REQUIRED_BLOCK_IDS = (
 RANDOM_VARIANT_BLOCK_IDS = {
     "subject",
     "appearance",
+    "outfit",
+    "expression",
     "pose",
+    "interaction",
     "scene",
     "composition",
     "lighting",
@@ -61,7 +79,10 @@ BLOCK_LABELS = {
     "artist": "画师与风格",
     "subject": "主体与角色",
     "appearance": "外貌与服装",
-    "pose": "动作与表情",
+    "outfit": "服装与配饰",
+    "expression": "表情与视线",
+    "pose": "动作与姿态",
+    "interaction": "角色与物体互动",
     "scene": "场景与环境",
     "composition": "构图与镜头",
     "lighting": "光影与色彩",
@@ -74,7 +95,10 @@ DECOMPOSITION_BLOCK_IDS = (
     "artist",
     "subject",
     "appearance",
+    "outfit",
+    "expression",
     "pose",
+    "interaction",
     "scene",
     "composition",
     "lighting",
@@ -476,7 +500,16 @@ def normalize_text_expansion(payload: dict) -> dict:
         for block in raw_blocks
         if isinstance(block, dict) and isinstance(block.get("id"), str)
     }
-    if set(block_map) != set(REQUIRED_BLOCK_IDS):
+    block_ids = set(block_map)
+    if block_ids == set(LEGACY_BLOCK_IDS):
+        for block_id in ("outfit", "expression", "interaction"):
+            block_map[block_id] = {
+                "id": block_id,
+                "en": "",
+                "zh": "",
+                "confidence": 0,
+            }
+    elif block_ids != set(REQUIRED_BLOCK_IDS):
         raise PromptEngineError(
             "模型输出的结构块不完整",
             code="invalid_model_output",
@@ -914,7 +947,7 @@ def generate_random_text_prompt(
         "Anima 提示词的完整视觉蓝图。不要参考用户输入，因为本任务是全随机。"
         "主体必须是明确的成年角色或无年龄歧义的非人主体；禁止已知 IP、画师名、"
         "品牌和 LoRA。画面必须有单一清晰事件，人物、动作、环境、镜头和光线互相"
-        "支持，不能拼接互斥设定。请覆盖 subject、appearance、pose、scene、"
+        "支持，不能拼接互斥设定。请覆盖 subject、appearance、outfit、expression、pose、interaction、scene、"
         "composition、lighting、effects，每类给出具体可见事实，总计 45-60 项，"
         "并提供一段关系描述。只返回严格 JSON。"
     )
@@ -932,8 +965,11 @@ def generate_random_text_prompt(
         "outputSchema": {
             "concept": "one coherent scene concept",
             "subject": ["visible subject facts"],
-            "appearance": ["appearance and clothing facts"],
-            "pose": ["action, expression, interaction facts"],
+            "appearance": ["body and appearance facts"],
+            "outfit": ["clothing, material, footwear and accessory facts"],
+            "expression": ["facial expression and gaze facts"],
+            "pose": ["pose and body action facts"],
+            "interaction": ["subject-to-subject or subject-to-object relation facts"],
             "scene": ["environment and foreground/background facts"],
             "composition": ["shot, angle, framing, depth facts"],
             "lighting": ["lighting and color facts"],
@@ -974,7 +1010,10 @@ def generate_random_text_prompt(
     required_blueprint_lists = (
         "subject",
         "appearance",
+        "outfit",
+        "expression",
         "pose",
+        "interaction",
         "scene",
         "composition",
         "lighting",
@@ -995,7 +1034,7 @@ def generate_random_text_prompt(
         (
             "当前任务是全随机创作，不存在需要保留的用户原始提示词。"
             "必须完整采用 user 消息中的 randomBlueprint，编译为高密度创意模式结果。"
-            "十个结构块必须全部存在；除 artist 可为空外，其余正向视觉块应有具体内容。"
+            "十三个结构块必须全部存在；除 artist 可为空外，其余正向视觉块应有具体内容。"
             "英文与中文必须描述同一组事实。"
         ),
     )
@@ -1063,7 +1102,7 @@ def generate_random_text_prompt(
             raise
         repair_message = (
             f"上一次完整结果未通过校验：{first_error.message}。"
-            "重新输出完整严格 JSON。保留同一蓝图和事件，补齐十个结构块、中英文、"
+            "重新输出完整严格 JSON。保留同一蓝图和事件，补齐十三个结构块、中英文、"
             "关系描述与至少 35 个去重后的可见细节；不要解释，不要代码块。"
         )
         return parse_result(

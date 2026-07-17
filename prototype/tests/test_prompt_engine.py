@@ -39,7 +39,10 @@ REQUIRED_BLOCKS = [
     "artist",
     "subject",
     "appearance",
+    "outfit",
+    "expression",
     "pose",
+    "interaction",
     "scene",
     "composition",
     "lighting",
@@ -166,8 +169,11 @@ class PromptAssemblyTests(unittest.TestCase):
                 {
                     "concept": "astronomer leaving a mountain observatory",
                     "subject": ["adult woman", "original character"],
-                    "appearance": ["silver hair", "embroidered coat"],
-                    "pose": ["walking down steps", "holding a letter"],
+                    "appearance": ["silver hair", "blue eyes"],
+                    "outfit": ["embroidered coat", "leather boots"],
+                    "expression": ["focused gaze"],
+                    "pose": ["walking down steps"],
+                    "interaction": ["holding a letter"],
                     "scene": ["mountain observatory", "blue hour"],
                     "composition": ["low angle", "diagonal stairs"],
                     "lighting": ["lantern key light", "cool twilight"],
@@ -206,7 +212,7 @@ class PromptAssemblyTests(unittest.TestCase):
         )
         self.assertEqual(calls[1]["max_tokens"], 3000)
         self.assertEqual(calls[1]["thinking"], {"type": "disabled"})
-        self.assertEqual(len(result["blocks"]), 10)
+        self.assertEqual(len(result["blocks"]), 13)
         self.assertGreater(len(result["positiveEn"]), 350)
 
     def test_decomposition_prompt_forbids_rewriting_or_adding_content(self):

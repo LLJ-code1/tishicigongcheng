@@ -8,6 +8,9 @@
 - [验收标准](acceptance-criteria.md)：功能、数据、隐私和实际出图的完成定义。
 - [架构说明](architecture.md)：进程、数据边界和 API 速查。
 - [数据模型](data-model.md)：Prompt Studio SQLite 表结构。
+- [API 接入指南](integration-guide.md)：原子保存、完整配方、词库、中文编辑与备份协议。
+- [构建与运行手册](operator-runbook.md)：环境变量、生成产物、回归和恢复操作。
+- [可复现随机词库](random-wordlists.md)：471 条词库的当前状态、Seed、冲突和接入顺序。
 - [路线图](roadmap.md)：已落地能力和下一阶段工作。
 
 ## 接入与运行

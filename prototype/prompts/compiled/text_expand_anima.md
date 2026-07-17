@@ -50,7 +50,7 @@ AI 补充项只记录真正新增的关键设定，并按外观、动作、场�
 1. 提取用户明确的主体、数量、身份、外观、服装、动作、表情、场景、天气、构图、光影、效果和排除项。
 2. 识别形成完整画面所缺少的可见信息。
 3. 按 `expansionLevel` 补充，完成物理与空间逻辑。
-4. 编译十个结构块和中英文总提示词。
+4. 编译十三个结构块和中英文总提示词。
 
 ## 扩写强度与密度
 
@@ -141,7 +141,10 @@ AI 补充项只记录真正新增的关键设定，并按外观、动作、场�
     {"id": "artist", "en": "", "zh": "", "confidence": 100},
     {"id": "subject", "en": "", "zh": "", "confidence": 100},
     {"id": "appearance", "en": "", "zh": "", "confidence": 100},
+    {"id": "outfit", "en": "", "zh": "", "confidence": 100},
+    {"id": "expression", "en": "", "zh": "", "confidence": 100},
     {"id": "pose", "en": "", "zh": "", "confidence": 100},
+    {"id": "interaction", "en": "", "zh": "", "confidence": 100},
     {"id": "scene", "en": "", "zh": "", "confidence": 100},
     {"id": "composition", "en": "", "zh": "", "confidence": 100},
     {"id": "lighting", "en": "", "zh": "", "confidence": 100},
@@ -157,4 +160,4 @@ AI 补充项只记录真正新增的关键设定，并按外观、动作、场�
 }
 ```
 
-十个 `id` 必须使用上述字符串并保持顺序，不能用数字。`quality` 和 `negative` 可留空，由后端注入固定内容。每块 `en` 与 `zh` 必须同时为空或同时有内容；`artist` 没有明确来源时为空。`conflicts` 和 `assumptions` 必须是字符串数组。
+十三个 `id` 必须使用上述字符串并保持顺序，不能用数字。`quality` 和 `negative` 可留空，由后端注入固定内容。每块 `en` 与 `zh` 必须同时为空或同时有内容；`artist` 没有明确来源时为空。`conflicts` 和 `assumptions` 必须是字符串数组。

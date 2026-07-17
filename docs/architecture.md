@@ -23,16 +23,30 @@ AnimaDex 负责：
 - 缩略图
 - 原始英文触发词和标签
 
-Prompt Studio 负责：
+Prompt Studio 当前已持久化：
 
-- 作品
-- 提示词版本
-- 收藏
-- 我的素材
-- 参考提示词库
+- 作品及提示词版本；新版本内嵌完整 Recipe v1、十三块、参数来源、随机轨迹和中文
+  修改/撤销历史
+- 角色、画师收藏和结构块配方收藏
 - 设置
-- 中文释义缓存
-- 图片解析记录
+
+当前仅存在于前端会话内存：
+
+- “新建资源”创建的自建素材
+- 单结构块“保存为资源”的结果
+
+`resources` 表以及参考提示词库、中文释义缓存、可检索图片解析记录属于预留/目标
+能力；表或界面入口存在不代表完整持久化链路已经接通。
+
+`词库原稿/` 负责人工维护随机元素，`scripts/build_random_wordlists.py` 负责严格校验并
+生成可重建审查目录。`GET /api/text/random-catalog` 可读目录；实验开关开启时，
+`POST /api/text/random-plan` 使用 `sha256-counter-v1` 产生确定性计划并写入 Recipe。
+目录仍标记为待人工语义审核；既有 `POST /api/text/random` 继续使用文本模型生成独立
+随机蓝图。
+
+逻辑备份模块只读取 Prompt Studio 数据记录，输出带 manifest、大小和 SHA-256 的 JSON
+或 ZIP。HTTP 恢复只写 `.prompt-studio-recovery/` 隔离数据库，不替换当前库；模型、
+LoRA、图片、API Key 和内部幂等账本不进入备份。
 
 ## SQLite 覆盖库
 
@@ -42,21 +56,37 @@ Prompt Studio 负责：
 prototype/data/prompt_studio.db
 ```
 
+数据库使用 `PRAGMA user_version = 1` 和 Prompt Studio 专用
+`application_id` 标记结构。服务启动时只初始化一次：
+
+1. 空库直接创建 v1，不生成人工故障回滚副本。
+2. 未登记版本的旧库先做完整性、表、字段、索引、唯一约束和外键检查；额外的
+   trigger/view 也视为不兼容结构，在任何备份或写入前拒绝。
+3. 兼容旧库通过 SQLite backup API 写入 `.prompt-studio-recovery/`，验证人工故障
+   回滚副本后才在原库登记 v1。
+4. 未来版本、错误应用标识、残缺或损坏文件会在写入前拒绝。
+
+该人工故障回滚副本可能包含本机 API Key，已被 Git 忽略，只用于迁移故障时由用户
+手动回滚；它不可分享，也不等同于经过过滤、检查和隔离恢复的产品逻辑备份。
+
 第一阶段表：
 
 - `projects`：作品记录。
 - `prompt_versions`：作品提示词版本。
-- `resources`：用户自建素材和后续参考库资源。
-- `favorites`：角色、画师、参考提示词等收藏。
-- `settings`：用户偏好和本地路径。
+- `resources`：用户自建素材和后续参考库资源的预留表；当前前端尚未写入。
+- `favorites`：角色、画师和结构块配方等已接入收藏。
+- `settings`：用户偏好、本地路径及使用保留前缀的内部幂等账本。账本不会由设置 API
+  返回，也不会进入逻辑备份。
 
 ## API 约定
 
 读取与持久化：
 
+- `POST /api/workspace/commit`（当前工作台原子保存入口）
 - `GET /api/projects`
 - `POST /api/projects`
 - `GET /api/projects/<id>`
+- `PUT /api/projects/<id>`
 - `POST /api/projects/<id>/versions`
 - `GET /api/favorites`
 - `POST /api/favorites`
@@ -66,6 +96,27 @@ prototype/data/prompt_studio.db
 - `GET /api/prompt-templates`
 - `GET /api/prompt-templates/<id>`
 - `PUT /api/prompt-templates/<id>`
+
+完整配方与模型档案：
+
+- `GET /api/model-profiles`
+- `GET /api/model-profiles/<id>`
+- `POST /api/recipe/resolve`
+
+确定性词库与中文最小差异编辑：
+
+- `GET /api/text/random-catalog`
+- `POST /api/text/random-plan`
+- `POST /api/text/edit-preview`
+- `POST /api/text/edit-apply`
+- `POST /api/text/edit-undo`
+
+逻辑备份：
+
+- `GET /api/backups/export?scope=full`
+- `GET /api/backups/export?scope=project&projectId=<id>`
+- `POST /api/backups/inspect`
+- `POST /api/backups/stage-restore?conflict=reject|rename`
 
 文本模型：
 
@@ -110,23 +161,61 @@ Unicode 数据版本不同而产生不同去重键。
 画师混合器保留独立的 10–150 范围。未知模型状态统一降级为 `unknown`，不把服务端
 原值直接拼入 HTML class、正文或 title。
 
+## 项目保存与重开
+
+- 首页项目列表读取 `GET /api/projects` 的 `versionCount` 和 `latestVersion` 摘要；
+  空库、加载中、失败和正常列表分别呈现。
+- 打开项目时读取 `GET /api/projects/<id>` 的全部持久化版本，以服务端版本号作为唯一
+  权威。生成和本地应用修改只标记“待保存”，不提前伪造版本号。
+- 当前前端保存前先分配 `operationId`、项目 ID 和可选版本 ID，冻结完整正文，并把
+  pending journal 写入 `localStorage`。`operationId` 同时作为 `Idempotency-Key`。
+- `POST /api/workspace/commit` 在一个 `BEGIN IMMEDIATE` 中校验项目更新时间、最新版本、
+  完整 Recipe、幂等 Hash，再创建/更新项目头、追加可选版本并写入成功账本。任何一步
+  失败都会整体回滚，不存在“版本成功但项目头失败”的半保存。
+- 数据库已提交但 HTTP 响应丢失时，启动恢复或用户重试会发送相同正文和键，服务端
+  重放第一次成功响应。相同键配不同正文返回 `409 idempotency_conflict`；账本损坏或
+  引用不存在数据时失败关闭。多个相同并发请求只产生一个版本。
+- 旧 `POST /api/projects`、`PUT /api/projects/<id>` 和版本 POST 继续提供独立幂等键及
+  CAS 兼容；新前端不再用多个端点拼一次保存。
+- 从历史版本继续时只在前端载入旧内容并记录 `restoredFromVersion`，保存成功后才由
+  服务端生成新的连续版本。
+- 项目头 metadata 与最新版本基线一致时，重开尊重项目头保存的 text/image 模式和
+  草稿；项目头缺失或过期时才用最新版本来源兜底，避免“新草稿 + 旧模式”混合恢复。
+- 保存、项目打开和项目列表各自有请求去重/过期响应保护。文本生成、图片分析、翻译、
+  单块/多块再生成等工作区异步请求还会捕获会话 ID、工作区修订和项目修订；同一项目
+  中请求发出后继续编辑，也不会让迟到结果覆盖新内容，丢弃结果时会同步清理加载态。
+  切换、新建或打开失败时也会解除旧任务加载态；真正替换工作区时清除上一项目的识图
+  raw/error 和悬浮 Tag 补全 DOM 引用，但保留分析器安装状态与选择配置。
+  离开有未保存内容的工作区前需要明确确认。刷新或关闭浏览器时已通过
+  `beforeunload` 触发浏览器原生确认；站内新建/切换作品使用应用内确认。
+- 中文编辑应用和撤销只产生新的 Recipe；前端随后走同一原子保存路径，历史版本和
+  `instructionHistory` 都追加，不原地删除旧记录。
+
 ## HTTP 与数据边界
 
 - 默认只监听回环地址；请求 `Host` 只接受 `127.0.0.1`、`localhost`、`::1` 和显式
   配置值。非回环监听必须同时设置 `PROMPT_STUDIO_ALLOW_NETWORK=1` 与
   `PROMPT_STUDIO_ALLOWED_HOSTS`。
-- POST、PUT、DELETE 拒绝跨站 `Origin`/`Sec-Fetch-Site`，并要求 UTF-8
-  `application/json`。普通 JSON 请求体上限 1 MiB，图片分析 JSON 上限 30 MiB。
+- POST、PUT、DELETE 拒绝跨站 `Origin`/`Sec-Fetch-Site`。普通写接口要求 UTF-8
+  `application/json`，正文上限 1 MiB；图片分析 JSON 上限 30 MiB。备份上传接受
+  `application/zip`、`application/json` 或 `application/octet-stream`，上限 64 MiB。
 - 请求只允许唯一、非负的 `Content-Length`，拒绝 `Transfer-Encoding`；连接建立后
   请求头同时受空闲超时和固定总时限约束，请求体精确读取并使用固定总时限，慢速滴流
   不能延长 deadline。普通 JSON 正文总时限为 2 秒，30 MiB 视觉正文使用独立的 30 秒
   时限。JSON 拒绝重复键、NaN、Infinity 和非对象顶层。
 - GET 与 HEAD 共用静态白名单，只提供工作台入口、脚本、样式和 `assets/`。响应增加
   CSP、`X-Content-Type-Options`、`X-Frame-Options` 与 Referrer-Policy。
+- 路由前会拒绝 query 之前任意路径段中的字面 `;` 参数，且 GET、HEAD、POST、PUT、
+  DELETE 使用同一入口校验；URL 编码后的 `%3B` 仍可作为历史 ID 数据，query 中的
+  分号也不会被误拒绝。
 - 图片先限制 20 MiB 和 5,000 万像素，再用 Pillow 完整验证和解码 PNG、JPEG、WEBP；
   只有完整文件才进入视觉 worker。
+- 备份上传使用独立 30 秒总读取时限；检查 ZIP 路径穿越、重复/加密/非普通成员、文件
+  数量、单文件和总解压大小、压缩比、严格 JSON、manifest 和 SHA-256。无效包在当前库
+  或隔离库写入前拒绝。
 - 项目、版本和收藏在数据库层校验 ID、类型、字段长度、结构块形状与权重；版本号
-  由服务端分配。校验失败返回 400、唯一性冲突返回 409、未知错误返回固定 JSON 500。
+  由服务端分配。校验失败返回 400、缺少项目更新前置条件返回 428、唯一性或并发基线
+  冲突返回 409、未知错误返回固定 JSON 500。
 - 收藏的 AnimaDex 原始 ID 可以包含斜杠等真实 slug 字符；对外删除使用服务端生成的
   `favorite-<hash>` 路由 ID，删除会清理历史重复行。缩略图路由允许单段 URL 编码的
   斜杠 slug，同时拒绝控制字符与 `.`/`..` 路径段。
@@ -140,6 +229,8 @@ Unicode 数据版本不同而产生不同去重键。
 - 前端展示和交互仍在 `prototype/app.js`。
 - 后端 HTTP 入口仍在 `prototype/server.py`。
 - SQLite 逻辑独立在 `prototype/db.py`。
+- Recipe/模型档案、词库 sampler、中文编辑和逻辑备份分别在 `prototype/recipe.py`、
+  `model_profiles.py`、`random_sampler.py`、`edit_engine.py` 与 `backup.py`。
 - 模型调用提示词模板放在 `prototype/prompts/`，先按文生图和图生图分开。
 - 每次实现明显功能后，更新 `docs/development-log.md`。
 - 重要设计变化更新 `docs/architecture.md` 或 `docs/roadmap.md`。
@@ -147,3 +238,8 @@ Unicode 数据版本不同而产生不同去重键。
 - `data/`、源码和提示词文件不得通过静态路径下载；HTTP 与数据输入必须遵守上面的
   Host、同源、严格 JSON、分路由大小限制和完整图片验证约定。
 - 自动测试使用临时数据库和 mock provider，不依赖本机模型或外部网络。
+- GitHub Actions 已配置为在 Windows 干净环境运行 Python、Node、脚本测试以及
+  Unicode、文本提示词和随机词库生成产物一致性检查；首次线上 workflow run 仍待验证。
+
+具体请求示例见 [API 接入指南](integration-guide.md)，启动、环境变量、回归和恢复操作见
+[构建与运行手册](operator-runbook.md)。
