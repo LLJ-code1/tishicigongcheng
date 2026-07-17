@@ -1667,6 +1667,8 @@ class ExpansionCallTests(unittest.TestCase):
 
         self.assertEqual(len(calls), 2)
         self.assertIn("内容密度不足", calls[1]["messages"][-1]["content"])
+        self.assertIn("服装只留在 outfit", calls[1]["messages"][-1]["content"])
+        self.assertIn("只留在 effects", calls[1]["messages"][-1]["content"])
         self.assertNotIn(
             "assistant",
             [message["role"] for message in calls[1]["messages"]],

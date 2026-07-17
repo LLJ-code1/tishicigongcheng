@@ -1241,7 +1241,10 @@ def expand_text_prompt(
                 "稀疏 balanced 输入只补充天气或动作造成的可见状态，并使用请求中"
                 "给出的 neutralSceneScaffold；把丰富度放在环境物理反应、前中后景、"
                 "构图、主辅光与效果。"
-                "删除重复和空泛词，重新输出完整严格 JSON。"
+                "删除重复和空泛词。错误消息点名的每个重复事实必须只保留一次：服装"
+                "只留在 outfit，眼睛开合、嘴部和情绪只留在 expression，雨滴、飞溅、"
+                "涟漪、雾和粒子只留在 effects；从其他块删除，不能换成同义词。"
+                "跨块空间关系改写到 relationEn/relationZh。重新输出完整严格 JSON。"
             )
         else:
             repair_instruction = (

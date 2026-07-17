@@ -19,6 +19,7 @@ import sqlite3
 import stat
 import tempfile
 import zipfile
+import zlib
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -510,7 +511,13 @@ def _read_zip(path: Path) -> tuple[dict, dict[str, object]]:
                 members[name] = raw
     except BackupValidationError:
         raise
-    except (OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError) as error:
+    except (
+        OSError,
+        zipfile.BadZipFile,
+        zlib.error,
+        RuntimeError,
+        NotImplementedError,
+    ) as error:
         raise BackupValidationError("invalid ZIP backup") from error
 
     if MANIFEST_PATH not in members:

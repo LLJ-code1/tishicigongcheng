@@ -1148,6 +1148,9 @@ test("applying block edits recompiles output and marks the next server version p
   assert.equal(state.version, 0);
   assert.equal(state.dirtyBlockIds.length, 0);
   assert.match(state.output.positiveEn, /tying her shoelaces/);
+  assert.doesNotMatch(state.output.positiveEn, /She stands in the rainy city/);
+  assert.equal(state.output.relationEn, "");
+  assert.equal(state.output.relationZh, "");
   assert.equal(state.versionHistory.length, 0);
   assert.equal(state.hasUnsavedChanges, true);
   assert.match(state.toast, /保存后生成 V1/);

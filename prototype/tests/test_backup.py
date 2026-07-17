@@ -162,6 +162,21 @@ class LogicalBackupTests(unittest.TestCase):
 
         self.assertFalse(target.exists())
 
+    def test_corrupt_compressed_member_is_reported_as_invalid_backup(self):
+        archive = self.root / "corrupt-compressed-member.zip"
+        backup.export_project(archive, self.project["id"], db_path=self.source)
+
+        with patch.object(
+            zipfile.ZipFile,
+            "read",
+            side_effect=backup.zlib.error("corrupt compressed payload"),
+        ):
+            with self.assertRaisesRegex(
+                backup.BackupValidationError,
+                "invalid ZIP backup",
+            ):
+                backup.inspect_backup(archive)
+
     def test_zip_slip_duplicate_paths_and_compression_bomb_are_rejected(self):
         attacks = {
             "zip-slip.zip": [("manifest.json", b"{}"), ("../projects.json", b"{}")],

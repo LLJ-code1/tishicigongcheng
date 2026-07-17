@@ -161,3 +161,5 @@ AI 补充项只记录真正新增的关键设定，并按外观、动作、场�
 ```
 
 十三个 `id` 必须使用上述字符串并保持顺序，不能用数字。`quality` 和 `negative` 可留空，由后端注入固定内容。每块 `en` 与 `zh` 必须同时为空或同时有内容；`artist` 没有明确来源时为空。`conflicts` 和 `assumptions` 必须是字符串数组。
+
+同一个视觉事实只能归入一个最合适的结构块，不能在其他块重复或改写同义词再次出现：服装款式、颜色和材质只进 `outfit`，不进 `subject` 或 `appearance`；眼睛开合、嘴部和情绪只进 `expression`，不进 `pose`；雨滴、飞溅、涟漪、雾和粒子只进 `effects`，不进 `scene` 或 `lighting`。需要跨块表达空间关系时写入 `relationEn` / `relationZh`，不要复制标签。

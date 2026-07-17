@@ -798,11 +798,10 @@
 
   function refreshPreview(next) {
     next.previewOutput = next.dirtyBlockIds.length
-      ? compileBlocks(
-          next.blocks,
-          next.output.relationEn,
-          next.output.relationZh
-        )
+      // A relation narrative was generated from the previous block values. Once
+      // any block is edited it is stale and can contradict the structured source
+      // of truth, so previews are compiled from the edited blocks only.
+      ? compileBlocks(next.blocks)
       : null;
   }
 
@@ -1912,11 +1911,10 @@
         next.blocks.forEach((block) => {
           delete block.pendingVariant;
         });
-        const output = compileBlocks(
-          next.blocks,
-          next.output.relationEn,
-          next.output.relationZh
-        );
+        // Applying manual block edits invalidates the model-authored relation
+        // narrative. Persist a clean block-only prompt instead of silently
+        // appending stale prose that may reintroduce removed entities or actions.
+        const output = compileBlocks(next.blocks);
         next.output = output;
         next.appliedBlocks = clone(next.blocks);
         next.dirtyBlockIds = [];
@@ -5542,7 +5540,28 @@
   });
 
   document.addEventListener("input", (event) => {
-    if (event.target.id === "projectNameInput") {
+    if (
+      event.target.dataset.generationParam &&
+      event.target.tagName !== "SELECT"
+    ) {
+      state = app.reduceState(state, {
+        type: "SET_GENERATION_PARAMETER",
+        key: event.target.dataset.generationParam,
+        value: event.target.value,
+      });
+      renderProjectContext();
+      renderRecipeConsole();
+    } else if (event.target.dataset.resolutionAxis) {
+      const width = Number($("#recipeWidth")?.value);
+      const height = Number($("#recipeHeight")?.value);
+      state = app.reduceState(state, {
+        type: "SET_GENERATION_PARAMETER",
+        key: "resolution",
+        value: { width, height },
+      });
+      renderProjectContext();
+      renderRecipeConsole();
+    } else if (event.target.id === "projectNameInput") {
       dispatch({ type: "SET_PROJECT_NAME", value: event.target.value });
     } else if (event.target.id === "draftInput") {
       dispatch({ type: "SET_DRAFT", value: event.target.value });
@@ -5657,22 +5676,17 @@
   });
 
   document.addEventListener("change", (event) => {
-    if (event.target.dataset.generationParam) {
-      dispatch({
+    if (
+      event.target.dataset.generationParam &&
+      event.target.tagName === "SELECT"
+    ) {
+      state = app.reduceState(state, {
         type: "SET_GENERATION_PARAMETER",
         key: event.target.dataset.generationParam,
         value: event.target.value,
       });
-      return;
-    }
-    if (event.target.dataset.resolutionAxis) {
-      const width = Number($("#recipeWidth")?.value);
-      const height = Number($("#recipeHeight")?.value);
-      dispatch({
-        type: "SET_GENERATION_PARAMETER",
-        key: "resolution",
-        value: { width, height },
-      });
+      renderProjectContext();
+      renderRecipeConsole();
       return;
     }
     if (event.target.dataset.mixArtist) {
