@@ -224,6 +224,33 @@ class RandomWordlistBuildTests(unittest.TestCase):
             self.assertIn("stale", result.stderr)
             self.assertEqual(output.read_bytes(), stale)
 
+    def test_cli_check_accepts_windows_crlf_checkout_without_writing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = self.copy_source(root)
+            output = root / "generated" / "v1.json"
+            command = [
+                sys.executable,
+                str(SCRIPT),
+                "--source-dir",
+                str(source),
+                "--output",
+                str(output),
+            ]
+            subprocess.run(command, cwd=ROOT, check=True, capture_output=True)
+
+            crlf_output = output.read_bytes().replace(b"\n", b"\r\n")
+            self.assertIn(b"\r\n", crlf_output)
+            output.write_bytes(crlf_output)
+
+            subprocess.run(
+                [*command, "--check"],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+            )
+            self.assertEqual(output.read_bytes(), crlf_output)
+
     def test_committed_catalog_is_current(self):
         subprocess.run(
             [sys.executable, str(SCRIPT), "--output", str(DEFAULT_OUTPUT), "--check"],

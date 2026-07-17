@@ -352,6 +352,12 @@ def expected_catalog_bytes(source_dir: Path = DEFAULT_SOURCE_DIR) -> bytes:
     return render_catalog(build_catalog(source_dir)).encode("utf-8")
 
 
+def _normalize_checkout_newlines(value: bytes) -> bytes:
+    """Ignore only Git's Windows CRLF conversion during freshness checks."""
+
+    return value.replace(b"\r\n", b"\n")
+
+
 def generate_catalog(
     source_dir: Path = DEFAULT_SOURCE_DIR,
     output: Path = DEFAULT_OUTPUT,
@@ -367,7 +373,7 @@ def generate_catalog(
             raise CatalogValidationError(
                 f"generated random-wordlist catalog is missing: {output}"
             ) from error
-        if actual != expected:
+        if _normalize_checkout_newlines(actual) != expected:
             raise CatalogValidationError(
                 f"generated random-wordlist catalog is stale: {output}"
             )
