@@ -2131,6 +2131,85 @@ test("generation parameter edits are versioned manual overrides", () => {
   assert.equal(payload.metadata.parameterLayers.manual_override.cfg, 6.25);
 });
 
+test("model profiles apply defaults without overwriting manual parameters", () => {
+  let state = createInitialState();
+  state.generationParameters.cfg = 6.25;
+  state.manualParameterKeys = ["cfg"];
+  state = reduceState(state, {
+    type: "MODEL_PROFILES_LOADED",
+    items: [
+      {
+        profileId: "anima-1.1-v1",
+        displayName: "MiaoMiao Harem Anima_1.1",
+        defaultParameters: {
+          sampler: "Euler a",
+          scheduler: "Normal",
+          steps: 32,
+          cfg: 5.5,
+        },
+        candidateResolutionPresets: [
+          {
+            id: "square-1024x1024",
+            width: 1024,
+            height: 1024,
+            label: "1024 × 1024（候选，待验证）",
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(state.generationParameters.sampler, "Euler a");
+  assert.equal(state.generationParameters.steps, 32);
+  assert.equal(state.generationParameters.cfg, 6.25);
+  assert.equal(state.modelProfilesStatus, "ready");
+  assert.equal(state.modelProfiles.length, 1);
+});
+
+test("restoring model defaults clears parameter overrides", () => {
+  let state = createInitialState();
+  state.modelProfiles = [
+    {
+      profileId: "anima-1.1-v1",
+      defaultParameters: {
+        sampler: "Euler",
+        scheduler: "Normal",
+        steps: 30,
+        cfg: 5.5,
+      },
+    },
+  ];
+  state.generationParameters.steps = 48;
+  state.manualParameterKeys = ["steps", "cfg"];
+
+  state = reduceState(state, { type: "RESTORE_MODEL_DEFAULTS" });
+
+  assert.equal(state.generationParameters.steps, 30);
+  assert.deepEqual(state.manualParameterKeys, []);
+});
+
+test("AI edit preview state preserves multi-block reasons until confirmation", () => {
+  let state = createInitialState();
+  const preview = {
+    ready: true,
+    affectedIds: ["scene", "lighting", "effects"],
+    lockedIds: Array.from({ length: 10 }, (_, index) => `locked-${index}`),
+    diffs: [
+      {
+        id: "scene",
+        before: { zh: "古老天文台" },
+        after: { zh: "暴雨中的破碎城堡废墟" },
+        reason: "用户要求替换环境。",
+      },
+    ],
+  };
+
+  state = reduceState(state, { type: "EDIT_PREVIEW_READY", item: preview });
+
+  assert.deepEqual(state.pendingEditPreview, preview);
+  assert.equal(state.pendingEditPreview.diffs[0].reason, "用户要求替换环境。");
+});
+
 test("deterministic random plans map clothing into the dedicated outfit block", () => {
   let state = createGeneratedState();
   const outfit = {
@@ -2166,7 +2245,7 @@ test("deterministic random plans map clothing into the dedicated outfit block", 
   assert.equal(state.randomSeed, "00112233445566778899aabbccddeeff");
 });
 
-test("workbench visibly exposes profile parameters wordlist and minimal edit flow", () => {
+test("workbench visibly exposes model presets and AI local edit flow", () => {
   const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
   const appSource = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
 
@@ -2174,6 +2253,11 @@ test("workbench visibly exposes profile parameters wordlist and minimal edit flo
   assert.match(html, /RECIPE V1 · 13 BLOCKS/);
   assert.match(html, /data-generation-param="steps"/);
   assert.match(html, /data-action="wordlist-plan"/);
+  assert.match(html, /id="recipeModelProfile"/);
+  assert.match(html, /id="recipeResolutionPreset"/);
+  assert.match(html, /候选，待验证/);
+  assert.match(html, /AI 局部修改/);
+  assert.match(html, /生成修改预览/);
   assert.match(html, /data-action="preview-edit"/);
   assert.match(html, /data-action="undo-recipe"/);
   assert.doesNotMatch(html, /<select id="targetModel"/);
@@ -2181,6 +2265,9 @@ test("workbench visibly exposes profile parameters wordlist and minimal edit flo
     appSource,
     /renderOutput\(\);\s+renderRecipeConsole\(\);\s+renderDrawer\(\);/
   );
+  assert.match(appSource, /provider: state\.settings\.textProvider/);
+  assert.match(appSource, /item\.reason/);
+  assert.match(appSource, /其余.*保持不变/);
 });
 
 test("workbench exposes logical backup export and isolated restore controls", () => {

@@ -220,6 +220,8 @@
       draftInput: "",
       randomSeed: null,
       modelProfileId: "anima-1.1-v1",
+      modelProfiles: [],
+      modelProfilesStatus: "idle",
       generationParameters: {
         sampler: "Euler",
         scheduler: "Normal",
@@ -1244,6 +1246,59 @@
         }
         markWorkspaceChanged(next);
         next.toast = `已手动覆盖参数：${key}`;
+        return next;
+      }
+      case "MODEL_PROFILES_LOADING":
+        next.modelProfilesStatus = "loading";
+        return next;
+      case "MODEL_PROFILES_LOADED": {
+        next.modelProfiles = Array.isArray(action.items) ? clone(action.items) : [];
+        next.modelProfilesStatus = "ready";
+        const selected =
+          next.modelProfiles.find((item) => item.profileId === next.modelProfileId) ||
+          next.modelProfiles[0];
+        if (selected) {
+          next.modelProfileId = selected.profileId;
+          for (const [key, value] of Object.entries(
+            safeObject(selected.defaultParameters)
+          )) {
+            if (
+              key in next.generationParameters &&
+              !next.manualParameterKeys.includes(key)
+            ) {
+              next.generationParameters[key] = clone(value);
+            }
+          }
+        }
+        return next;
+      }
+      case "MODEL_PROFILES_FAILED":
+        next.modelProfilesStatus = "error";
+        next.toast = action.error || "出图模型档案加载失败";
+        return next;
+      case "SELECT_MODEL_PROFILE":
+        if (!next.modelProfiles.some((item) => item.profileId === action.profileId)) {
+          return next;
+        }
+        next.modelProfileId = action.profileId;
+        markWorkspaceChanged(next);
+        return next;
+      case "RESTORE_MODEL_DEFAULTS": {
+        const selected = next.modelProfiles.find(
+          (item) => item.profileId === next.modelProfileId
+        );
+        if (!selected) return next;
+        const defaults = safeObject(selected.defaultParameters);
+        for (const [key, value] of Object.entries(defaults)) {
+          if (key in next.generationParameters) {
+            next.generationParameters[key] = clone(value);
+          }
+        }
+        next.manualParameterKeys = next.manualParameterKeys.filter(
+          (key) => !Object.prototype.hasOwnProperty.call(defaults, key)
+        );
+        markWorkspaceChanged(next);
+        next.toast = "已恢复当前模型推荐参数";
         return next;
       }
       case "RANDOM_CATALOG_LOADING":
@@ -2727,6 +2782,19 @@
     }
   }
 
+  async function loadModelProfiles() {
+    dispatch({ type: "MODEL_PROFILES_LOADING" });
+    try {
+      const result = await apiJson("/api/model-profiles");
+      dispatch({ type: "MODEL_PROFILES_LOADED", items: result.items || [] });
+    } catch (error) {
+      dispatch({
+        type: "MODEL_PROFILES_FAILED",
+        error: error.message || "出图模型档案加载失败",
+      });
+    }
+  }
+
   async function saveSettings() {
     try {
       await apiJson("/api/settings", {
@@ -3513,6 +3581,8 @@
           instruction,
           recipe: resolved.item.recipe,
           baseRecipeHash: resolved.item.recipeHash,
+          provider: state.settings.textProvider,
+          targetModel: "anima",
         }),
       });
       if (!app.isWorkspaceRequestCurrent(request, workspaceSessionId, state)) {
@@ -3527,9 +3597,14 @@
       };
       dispatch({ type: "EDIT_PREVIEW_READY", item: result.item });
     } catch (error) {
+      const message = ["provider_not_configured", "model_unavailable"].includes(
+        error.code
+      )
+        ? `AI 修改暂不可用：${error.message}。请前往“模型与接口”完成配置或启动模型。`
+        : error.message || "AI 修改预览失败，原提示词未改变";
       dispatch({
         type: "EDIT_PREVIEW_FAILED",
-        error: error.message || "中文修改预览失败",
+        error: message,
       });
     } finally {
       finishWorkspaceRequest(request);
@@ -5160,6 +5235,33 @@
 
   function renderRecipeConsole() {
     const parameters = state.generationParameters || {};
+    const modelSelect = $("#recipeModelProfile");
+    if (modelSelect) {
+      const profiles = state.modelProfiles || [];
+      modelSelect.innerHTML = profiles.length
+        ? profiles
+            .map(
+              (profile) =>
+                `<option value="${escapeHtml(profile.profileId)}">${escapeHtml(profile.displayName)}</option>`
+            )
+            .join("")
+        : '<option value="anima-1.1-v1">MiaoMiao Harem Anima_1.1</option>';
+      modelSelect.value = state.modelProfileId;
+    }
+    const selectedProfile = (state.modelProfiles || []).find(
+      (item) => item.profileId === state.modelProfileId
+    );
+    const resolutionPreset = $("#recipeResolutionPreset");
+    if (resolutionPreset) {
+      resolutionPreset.innerHTML = [
+        '<option value="">手动分辨率（不自动选择候选）</option>',
+        ...(selectedProfile?.candidateResolutionPresets || []).map(
+          (preset) =>
+            `<option value="${preset.width}x${preset.height}">${escapeHtml(preset.label)} · 候选，待验证</option>`
+        ),
+      ].join("");
+      resolutionPreset.value = "";
+    }
     const bindings = {
       recipeSampler: ["sampler", parameters.sampler],
       recipeScheduler: ["scheduler", parameters.scheduler],
@@ -5174,7 +5276,7 @@
       if (document.activeElement !== input) input.value = value ?? "";
       const manual = state.manualParameterKeys.includes(key);
       input.dataset.source = manual ? "manual_override" : "model_default";
-      input.title = `来源：${manual ? "手动覆盖" : key === "generationSeed" ? "任务预设" : "模型默认"}`;
+      input.title = `来源：${manual ? "手动覆盖" : key === "generationSeed" ? "任务预设" : "模型推荐"}`;
       input.closest("label")?.classList.toggle("manual-override", manual);
     }
     for (const [id, axis] of [["recipeWidth", "width"], ["recipeHeight", "height"]]) {
@@ -5208,7 +5310,7 @@
     if (panel) {
       panel.classList.toggle("hidden", !preview);
       if (preview?.loading) {
-        panel.textContent = "正在解析指令并计算最小差异…";
+        panel.textContent = "AI 正在阅读完整提示词并生成必要修改…";
       } else if (preview) {
         const conflicts = (preview.conflicts || [])
           .map((item) => `<li>冲突：${escapeHtml(item.message || item.code)}</li>`)
@@ -5218,12 +5320,19 @@
           .join("");
         const diffs = (preview.diffs || [])
           .map(
-            (item) => `<li><strong>${escapeHtml(item.label || item.id)}</strong>：${escapeHtml(item.before?.en || "（空）")} → ${escapeHtml(item.after?.en || "（空）")}</li>`
+            (item) => `<li class="ai-edit-diff">
+              <strong>${escapeHtml(item.label || item.id)}</strong>
+              <span><b>修改前</b>${escapeHtml(item.before?.zh || "（空）")}</span>
+              <span><b>修改后</b>${escapeHtml(item.after?.zh || "（空）")}</span>
+              <em>${escapeHtml(item.reason || "AI 未说明原因")}</em>
+            </li>`
           )
           .join("");
+        const affectedCount = (preview.affectedIds || []).length;
+        const unchangedCount = (preview.lockedIds || []).length;
         panel.innerHTML = `
           <strong>${preview.ready ? "可确认" : "尚不可确认"}</strong>
-          <span>影响 ${escapeHtml((preview.affectedIds || []).join("、") || "无")}；锁定 ${escapeHtml((preview.lockedIds || []).join("、") || "无")}</span>
+          <span>将修改 ${affectedCount} 个结构块，其余 ${unchangedCount} 个保持不变</span>
           <ul>${diffs}${conflicts}${unresolved}</ul>
         `;
       }
@@ -5523,6 +5632,8 @@
       generateWordlistPlan();
     } else if (action === "preview-edit") {
       previewChineseEdit();
+    } else if (action === "restore-model-defaults") {
+      dispatch({ type: "RESTORE_MODEL_DEFAULTS" });
     } else if (action === "apply-edit") {
       applyChineseEdit();
     } else if (action === "dismiss-edit") {
@@ -5676,6 +5787,24 @@
   });
 
   document.addEventListener("change", (event) => {
+    if (event.target.id === "recipeModelProfile") {
+      dispatch({
+        type: "SELECT_MODEL_PROFILE",
+        profileId: event.target.value,
+      });
+      return;
+    }
+    if (event.target.id === "recipeResolutionPreset") {
+      const match = /^(\d+)x(\d+)$/.exec(event.target.value);
+      if (match) {
+        dispatch({
+          type: "SET_GENERATION_PARAMETER",
+          key: "resolution",
+          value: { width: Number(match[1]), height: Number(match[2]) },
+        });
+      }
+      return;
+    }
     if (
       event.target.dataset.generationParam &&
       event.target.tagName === "SELECT"
@@ -5788,6 +5917,7 @@
   render();
   loadProjects();
   loadSettings();
+  loadModelProfiles();
   loadLocalLlmStatus();
   loadVisionStatus();
   loadFavoriteResources();
