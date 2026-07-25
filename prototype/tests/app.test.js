@@ -914,7 +914,7 @@ test("static prototype exposes every major review surface", () => {
     assert.match(html, new RegExp(`id=["']${id}["']`));
   }
   const unicodeDataIndex = html.indexOf("unicode15-data.js?v=20260716-unicode15");
-  const appScriptIndex = html.indexOf("app.js?v=20260716-github-sync-v1");
+  const appScriptIndex = html.indexOf("app.js?v=20260725-ai-local-edit-v1");
   assert.notEqual(unicodeDataIndex, -1);
   assert.notEqual(appScriptIndex, -1);
   assert.ok(unicodeDataIndex < appScriptIndex);

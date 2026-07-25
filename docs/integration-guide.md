@@ -25,7 +25,7 @@
 | `POST` | `/api/recipe/resolve` | 合成并校验 Recipe v1、参数来源和 Hash |
 | `GET` | `/api/text/random-catalog` | 读取词库目录、版本和发布门禁状态 |
 | `POST` | `/api/text/random-plan` | 计算确定性抽样计划，不调用文本模型 |
-| `POST` | `/api/text/edit-preview` | 解析中文局部修改并返回最小差异预览 |
+| `POST` | `/api/text/edit-preview` | 调用文本模型理解中文局部修改并返回签名差异预览 |
 | `POST` | `/api/text/edit-apply` | 校验原预览并生成追加式修改记录 |
 | `POST` | `/api/text/edit-undo` | 生成追加式撤销记录，不删除历史 |
 | `GET` | `/api/backups/export` | 导出全库或单项目逻辑 ZIP |
@@ -128,19 +128,21 @@ semanticReviewRequired=true
 目录的 `mappingVersion` 仍为 `ten-block-v1`，前端通过兼容适配把服装独立映射到
 `outfit`；正式发布前需要不可变目录历史和新的十三块映射版本。
 
-## 中文局部修改
+## AI 中文局部修改
 
 调用顺序固定为：
 
-1. `edit-preview`：发送 `instruction`、当前 `recipe` 和 `baseRecipeHash`。
-2. 只在响应 `ready=true` 时让用户确认；展示 `affectedIds`、`lockedIds`、`diffs`、
-   `conflicts` 和 `unresolved`。
+1. `edit-preview`：发送 `instruction`、当前 `recipe`、`baseRecipeHash`、
+   `provider`（`local` 或 `api`）和 `targetModel`（当前为 `anima`）。
+2. 只在响应 `ready=true` 时让用户确认；展示 `affectedIds`、`lockedIds` 和
+   `diffs`。每项 diff 包含完整 `before`、`after` 和中文 `reason`。
 3. `edit-apply`：回传原 Recipe 和服务端返回的完整 `preview`，再附父/新版本号。
 4. 把返回 Recipe 通过 `workspace/commit` 保存为新版本。
 5. 撤销时调用 `edit-undo`，再把撤销结果另存为新版本。
 
-不要修改、重算或裁剪 preview；其 Hash 用于阻止旧预览、伪造差异和并发漂移。未知
-指令会明确进入 `unresolved`，锁定依赖冲突会返回不可应用状态，不会让模型重写整段。
+不要修改、重算或裁剪 preview；服务端 HMAC、Recipe Hash 和工作区修订共同阻止旧
+预览、伪造差异和并发漂移。模型不可用返回 `provider_not_configured` 或
+`model_unavailable`；非法、重复、空白或无变化的 AI 结果整份拒绝，不回退固定词典。
 
 ## 备份、校验与隔离恢复
 

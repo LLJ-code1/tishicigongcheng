@@ -114,6 +114,27 @@ class AIProposalTests(unittest.TestCase):
             propose_ai_edit("修改环境", complete_recipe(), {})
         self.assertEqual(raised.exception.code, "provider_not_configured")
 
+    def test_rejects_markdown_wrapped_model_output(self):
+        wrapped = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "```json\n"
+                        + json.dumps({"changes": valid_changes()}, ensure_ascii=False)
+                        + "\n```"
+                    }
+                }
+            ]
+        }
+        with self.assertRaises(AIEditError) as raised:
+            propose_ai_edit(
+                "修改环境",
+                complete_recipe(),
+                SETTINGS,
+                transport=lambda *_: wrapped,
+            )
+        self.assertEqual(raised.exception.code, "invalid_ai_edit_output")
+
 
 class AIPreviewLifecycleTests(unittest.TestCase):
     def setUp(self):

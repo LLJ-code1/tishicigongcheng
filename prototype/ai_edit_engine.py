@@ -16,7 +16,6 @@ from prompt_engine import (
     PromptEngineError,
     apply_provider_request_options,
     default_transport,
-    parse_model_json,
     resolve_text_provider,
     response_content,
 )
@@ -96,6 +95,34 @@ def _validate_changes(payload: dict, recipe: dict) -> list[dict]:
     return changes
 
 
+def _strict_model_json(content: str) -> dict:
+    def object_pairs(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate key")
+            value[key] = item
+        return value
+
+    try:
+        payload = json.loads(
+            content.strip(),
+            object_pairs_hook=object_pairs,
+            parse_constant=lambda _value: (_ for _ in ()).throw(
+                ValueError("invalid constant")
+            ),
+        )
+    except (json.JSONDecodeError, ValueError) as error:
+        raise AIEditError(
+            "AI 修改结果不是严格 JSON",
+            "invalid_ai_edit_output",
+            502,
+        ) from error
+    if not isinstance(payload, dict):
+        raise AIEditError("AI 修改结果必须是 JSON 对象", "invalid_ai_edit_output", 502)
+    return payload
+
+
 def propose_ai_edit(
     instruction: str,
     recipe: dict,
@@ -143,7 +170,7 @@ def propose_ai_edit(
         raw_response = (transport or default_transport)(
             config["url"], body, config["headers"], timeout
         )
-        payload = parse_model_json(response_content(raw_response))
+        payload = _strict_model_json(response_content(raw_response))
     except PromptEngineError as error:
         raise _map_prompt_error(error) from error
     return {"changes": _validate_changes(payload, normalized_recipe)}
