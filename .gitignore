@@ -15,6 +15,7 @@ __pycache__/
 prototype/data/*.db
 prototype/data/*.db-*
 .prompt-studio-recovery/
+.worktrees/
 runtime/
 .superpowers/
 
