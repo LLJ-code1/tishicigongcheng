@@ -1,5 +1,6 @@
 import concurrent.futures
 import copy
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import backup  # noqa: E402
 import db  # noqa: E402
-from edit_engine import EditEngineError  # noqa: E402
+from ai_edit_engine import AIEditError, create_ai_edit_preview  # noqa: E402
 from random_sampler import RandomSamplerError  # noqa: E402
 from recipe import project_recipe_to_prompt_version, recipe_hash  # noqa: E402
 from server import (  # noqa: E402
@@ -129,6 +130,46 @@ class FullWorkflowIntegrationTests(unittest.TestCase):
             idempotency_key=operation_id,
         ), payload
 
+    @staticmethod
+    def ai_preview(payload):
+        model_response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "changes": [
+                                    {
+                                        "blockId": "clothing",
+                                        "en": "red dress",
+                                        "zh": "红色连衣裙",
+                                        "reason": "用户只要求替换服装。",
+                                    }
+                                ]
+                            },
+                            ensure_ascii=False,
+                        )
+                    }
+                }
+            ]
+        }
+        return process_edit_preview_request(
+            payload,
+            settings_payload={
+                "localTextUrl": "http://127.0.0.1:8080/v1",
+                "localTextModel": "fake-local-model",
+            },
+            engine=lambda instruction, recipe, base_hash, settings, provider, target_model: create_ai_edit_preview(
+                instruction,
+                recipe,
+                base_hash,
+                settings,
+                provider,
+                target_model,
+                transport=lambda *_: model_response,
+            ),
+        )
+
     def test_seed_to_recipe_edit_undo_export_restore_and_reopen(self):
         recipe_v1, plan = self.initial_recipe()
         project = {
@@ -166,7 +207,7 @@ class FullWorkflowIntegrationTests(unittest.TestCase):
             "manual_override",
         )
 
-        preview = process_edit_preview_request(
+        preview = self.ai_preview(
             {
                 "instruction": "只把服装换成红色连衣裙",
                 "recipe": recipe_v1,
@@ -257,7 +298,7 @@ class FullWorkflowIntegrationTests(unittest.TestCase):
 
     def test_tampered_preview_stale_hash_and_forged_plan_are_rejected(self):
         recipe, _ = self.initial_recipe()
-        preview = process_edit_preview_request(
+        preview = self.ai_preview(
             {
                 "instruction": "只把服装换成红色连衣裙",
                 "recipe": recipe,
@@ -267,7 +308,7 @@ class FullWorkflowIntegrationTests(unittest.TestCase):
         tampered = copy.deepcopy(preview)
         tampered["diffs"][0]["after"]["en"] = "forged payload"
 
-        with self.assertRaises(EditEngineError):
+        with self.assertRaises(AIEditError):
             process_edit_apply_request(
                 {
                     "recipe": recipe,
@@ -276,8 +317,8 @@ class FullWorkflowIntegrationTests(unittest.TestCase):
                     "newVersion": 2,
                 }
             )
-        with self.assertRaises(EditEngineError):
-            process_edit_preview_request(
+        with self.assertRaises(AIEditError):
+            self.ai_preview(
                 {
                     "instruction": "把表情改成微笑",
                     "recipe": recipe,

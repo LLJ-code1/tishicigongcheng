@@ -8,7 +8,7 @@
       content="Anima Prompt Studio 本地提示词工作台交互原型"
     />
     <title>Anima Prompt Studio Prototype</title>
-    <link rel="stylesheet" href="styles.css?v=20260709-workbench-v5" />
+    <link rel="stylesheet" href="styles.css?v=20260725-ai-local-edit-v1" />
   </head>
   <body>
     <div id="app" data-target-viewport="1920x1080">
@@ -582,6 +582,21 @@
                 <span class="verification-badge warning">checkpoint / 尺寸待实机验证</span>
               </div>
               <p class="recipe-prefix"><strong>固定前缀</strong> masterpiece, best quality, score_7 <span>（不自动添加 safe）</span></p>
+              <div class="model-preset-controls">
+                <label>
+                  <span>出图模型</span>
+                  <select id="recipeModelProfile">
+                    <option value="anima-1.1-v1">MiaoMiao Harem Anima_1.1</option>
+                  </select>
+                </label>
+                <label>
+                  <span>分辨率预设</span>
+                  <select id="recipeResolutionPreset">
+                    <option value="">手动分辨率（候选，待验证）</option>
+                  </select>
+                </label>
+                <button class="secondary-button" type="button" data-action="restore-model-defaults">恢复模型推荐</button>
+              </div>
               <div class="recipe-parameter-grid">
                 <label><span>Sampler</span><select id="recipeSampler" data-generation-param="sampler"><option>Euler</option><option>Euler a</option></select></label>
                 <label><span>Scheduler</span><select id="recipeScheduler" data-generation-param="scheduler"><option>Normal</option></select></label>
@@ -601,10 +616,10 @@
                 <button class="secondary-button" type="button" data-action="wordlist-plan">生成可复现计划</button>
               </div>
               <div class="instruction-console">
-                <label for="editInstruction"><strong>中文最小差异修改</strong><span>未点名结构块自动锁定；先预览，再确认写入新版本。</span></label>
-                <textarea id="editInstruction" rows="2" placeholder="例如：只把服装换成红色连衣裙"></textarea>
+                <label for="editInstruction"><strong>AI 局部修改</strong><span>直接描述想改什么；AI 会读取完整提示词，只提出必要修改，确认后保存为新版本。</span></label>
+                <textarea id="editInstruction" rows="2" placeholder="例如：环境改成破碎城堡，下着大雨"></textarea>
                 <div class="instruction-actions">
-                  <button class="secondary-button" type="button" data-action="preview-edit">预览影响</button>
+                  <button class="secondary-button" type="button" data-action="preview-edit">生成修改预览</button>
                   <button class="primary-button" type="button" data-action="apply-edit">确认并保存新版本</button>
                   <button class="secondary-button" type="button" data-action="dismiss-edit">取消预览</button>
                   <button class="secondary-button" type="button" data-action="undo-recipe">撤销为新版本</button>
@@ -946,6 +961,6 @@
 
     <script src="unicode15-data.js?v=20260716-unicode15"></script>
     <script src="data.js?v=20260709-workbench-v5"></script>
-    <script src="app.js?v=20260716-github-sync-v1"></script>
+    <script src="app.js?v=20260725-ai-local-edit-v1"></script>
   </body>
 </html>

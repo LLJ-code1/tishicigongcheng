@@ -2826,6 +2826,31 @@ select:focus {
   gap: 10px;
 }
 
+.model-preset-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 10px;
+}
+
+.model-preset-controls label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.model-preset-controls select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 9px 10px;
+  color: var(--text);
+  background: #fff;
+}
+
 .recipe-parameter-grid label,
 .instruction-console label {
   display: grid;
@@ -2918,4 +2943,21 @@ select:focus {
 .edit-preview-panel ul {
   margin: 7px 0 0;
   padding-left: 18px;
+}
+
+.edit-preview-panel .ai-edit-diff {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 10px;
+}
+
+.edit-preview-panel .ai-edit-diff span {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 6px;
+}
+
+.edit-preview-panel .ai-edit-diff em {
+  color: var(--muted);
+  font-style: normal;
 }

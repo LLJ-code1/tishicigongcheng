@@ -103,13 +103,18 @@ prototype/data/prompt_studio.db
 - `GET /api/model-profiles/<id>`
 - `POST /api/recipe/resolve`
 
-确定性词库与中文最小差异编辑：
+确定性词库与 AI 局部编辑：
 
 - `GET /api/text/random-catalog`
 - `POST /api/text/random-plan`
 - `POST /api/text/edit-preview`
 - `POST /api/text/edit-apply`
 - `POST /api/text/edit-undo`
+
+`edit-preview` 使用已配置的 OpenAI 兼容文本服务理解完整十三块和中文指令，严格校验
+模型返回的受影响块、双语完整内容与中文原因。服务端以进程内 HMAC 签名预览；
+`edit-apply` 不重复调用非确定性模型，只合并签名覆盖的块。模型不可用或输出无效时
+失败关闭，不调用旧确定性词典兜底。
 
 逻辑备份：
 
@@ -188,7 +193,7 @@ Unicode 数据版本不同而产生不同去重键。
   raw/error 和悬浮 Tag 补全 DOM 引用，但保留分析器安装状态与选择配置。
   离开有未保存内容的工作区前需要明确确认。刷新或关闭浏览器时已通过
   `beforeunload` 触发浏览器原生确认；站内新建/切换作品使用应用内确认。
-- 中文编辑应用和撤销只产生新的 Recipe；前端随后走同一原子保存路径，历史版本和
+- AI 中文编辑应用和撤销只产生新的 Recipe；前端随后走同一原子保存路径，历史版本和
   `instructionHistory` 都追加，不原地删除旧记录。
 
 ## HTTP 与数据边界

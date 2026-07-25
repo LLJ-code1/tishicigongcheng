@@ -30,6 +30,8 @@ from server import (  # noqa: E402
     map_artist,
     map_character,
     normalize_search_result,
+    process_edit_apply_request,
+    process_edit_preview_request,
     process_text_decompose_request,
     process_text_provider_test,
     process_text_expand_request,
@@ -50,6 +52,38 @@ def make_png_bytes() -> bytes:
 
 
 class AnimaDexAdapterTests(unittest.TestCase):
+    def test_ai_edit_preview_forwards_provider_model_and_server_settings(self):
+        captured = {}
+
+        def engine(instruction, recipe, base_hash, settings, provider, target_model):
+            captured.update(
+                instruction=instruction,
+                recipe=recipe,
+                base_hash=base_hash,
+                settings=settings,
+                provider=provider,
+                target_model=target_model,
+            )
+            return {"ready": True}
+
+        result = process_edit_preview_request(
+            {
+                "instruction": "修改环境",
+                "recipe": {"sentinel": True},
+                "baseRecipeHash": "a" * 64,
+                "provider": "api",
+                "targetModel": "anima",
+            },
+            settings_payload={"apiTextUrl": "https://example.test/v1"},
+            engine=engine,
+            normalizer=lambda value: value,
+        )
+
+        self.assertEqual(result, {"ready": True})
+        self.assertEqual(captured["provider"], "api")
+        self.assertEqual(captured["target_model"], "anima")
+        self.assertEqual(captured["settings"]["apiTextUrl"], "https://example.test/v1")
+
     def test_character_maps_to_subject_and_appearance(self):
         item = map_character(
             {
@@ -1820,17 +1854,38 @@ class HttpBoundaryAdversarialTests(unittest.TestCase):
                 },
             },
         )
-        preview = post(
-            "/api/text/edit-preview",
-            {
-                "instruction": "只把服装换成红色连衣裙",
-                "recipe": resolved["recipe"],
-                "baseRecipeHash": resolved["recipeHash"],
-            },
-        )
-        self.assertIs(type(preview["parse"]["confidence"]), int)
-        # Browser JSON.parse/JSON.stringify cannot preserve a distinction
-        # between 1.0 and 1, so the wire contract intentionally uses integers.
+        model_response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "changes": [
+                                    {
+                                        "blockId": "clothing",
+                                        "en": "red dress",
+                                        "zh": "红色连衣裙",
+                                        "reason": "用户只要求替换服装。",
+                                    }
+                                ]
+                            },
+                            ensure_ascii=False,
+                        )
+                    }
+                }
+            ]
+        }
+        with patch("ai_edit_engine.default_transport", return_value=model_response):
+            preview = post(
+                "/api/text/edit-preview",
+                {
+                    "instruction": "只把服装换成红色连衣裙",
+                    "recipe": resolved["recipe"],
+                    "baseRecipeHash": resolved["recipeHash"],
+                },
+            )
+        self.assertEqual(preview["affectedIds"], ["clothing"])
+        self.assertEqual(preview["diffs"][0]["reason"], "用户只要求替换服装。")
         transported = json.loads(json.dumps(preview, ensure_ascii=False))
         applied = post(
             "/api/text/edit-apply",

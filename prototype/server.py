@@ -58,11 +58,14 @@ from local_llm import (
     start_local_llm,
     stop_local_llm,
 )
+from ai_edit_engine import (
+    AIEditError,
+    apply_ai_edit_preview,
+    create_ai_edit_preview,
+)
 from edit_engine import (
     EditEngineError,
-    apply_edit_preview,
     create_undo_version,
-    preview_edit,
     recipe_hash as edit_recipe_hash,
 )
 from model_profiles import (
@@ -993,30 +996,56 @@ def process_random_plan_request(
     return resolve_random_plan(request, catalog=catalog)
 
 
-def process_edit_preview_request(payload: dict) -> dict:
+def process_edit_preview_request(
+    payload: dict,
+    settings_payload: dict | None = None,
+    engine=create_ai_edit_preview,
+    normalizer=normalize_recipe,
+) -> dict:
     if not isinstance(payload, dict):
-        raise EditEngineError("编辑预览请求必须是对象")
-    allowed = {"instruction", "recipe", "baseRecipeHash"}
+        raise AIEditError("编辑预览请求必须是对象", "invalid_request", 400)
+    allowed = {
+        "instruction",
+        "recipe",
+        "baseRecipeHash",
+        "provider",
+        "targetModel",
+    }
     unknown = sorted(set(payload) - allowed)
     if unknown:
-        raise EditEngineError("编辑预览包含不允许的字段：" + ", ".join(unknown))
-    normalized = normalize_recipe(payload.get("recipe"))
-    return preview_edit(
+        raise AIEditError(
+            "编辑预览包含不允许的字段：" + ", ".join(unknown),
+            "invalid_request",
+            400,
+        )
+    saved_settings = (
+        settings_payload if settings_payload is not None else get_settings()
+    )
+    settings = {**DEFAULT_TEXT_SETTINGS, **saved_settings}
+    normalized = normalizer(payload.get("recipe"))
+    return engine(
         payload.get("instruction"),
         normalized,
         payload.get("baseRecipeHash"),
+        settings,
+        str(payload.get("provider") or settings.get("textProvider") or "local"),
+        str(payload.get("targetModel") or "anima"),
     )
 
 
 def process_edit_apply_request(payload: dict) -> dict:
     if not isinstance(payload, dict):
-        raise EditEngineError("编辑确认请求必须是对象")
+        raise AIEditError("编辑确认请求必须是对象", "invalid_request", 400)
     allowed = {"recipe", "preview", "parentVersion", "newVersion"}
     unknown = sorted(set(payload) - allowed)
     if unknown:
-        raise EditEngineError("编辑确认包含不允许的字段：" + ", ".join(unknown))
+        raise AIEditError(
+            "编辑确认包含不允许的字段：" + ", ".join(unknown),
+            "invalid_request",
+            400,
+        )
     normalized = normalize_recipe(payload.get("recipe"))
-    result = apply_edit_preview(
+    result = apply_ai_edit_preview(
         normalized,
         payload.get("preview"),
         payload.get("parentVersion"),
@@ -1332,6 +1361,11 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
                 400,
             )
         except EditEngineError as error:
+            self._send_json_if_possible(
+                {"error": str(error), "code": error.code},
+                error.status,
+            )
+        except AIEditError as error:
             self._send_json_if_possible(
                 {"error": str(error), "code": error.code},
                 error.status,
