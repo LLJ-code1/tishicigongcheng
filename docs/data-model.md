@@ -70,8 +70,8 @@ SQLite 文件误当工作区。首次启动对兼容的旧 v0 库先生成本地
 | `directions` | 数组 | 至多三条候选方向，每项为 `{ "id", "label", "summary" }`。 |
 | `selectedDirectionId` | 字符串或 `null` | 必须引用 `directions` 中已有的 `id`。 |
 | `brief` | 对象或 `null` | 当前草稿或已确认的创意 brief。 |
-| `selectedModelProfileId` | 字符串或 `null` | 已选择模型档案的标识；本阶段不进行模型资料研究。 |
-| `decomposition` | 对象或 `null` | 拆解草稿或确认状态的数据容器，供后续模型适配 UI 使用。 |
+| `selectedModelProfileId` | 字符串或 `null` | 已选择模型档案的标识。 |
+| `decomposition` | 对象或 `null` | 精确绑定 brief 与激活模型档案版本的十三块拆解草稿或确认结果。 |
 | `recipeStatus` | `missing`、`stale` 或 `ready` | 下游配方是否缺失、因上游改动过期，或已就绪。 |
 | `conflicts` | 数组 | 至多 100 条显式冲突；每项含 `id`、`code`、`message`、`status` 和 `itemIds`，其中 `status` 只能为 `open` 或 `resolved`。 |
 
@@ -113,10 +113,17 @@ normalizer 也会在精确阶段门禁前把其中全部条目规范为已锁定
 `id`；授权不会持久化。因此把锁降级为 `false` 本身也需要本次明确授权。`confirm_brief`
 在仍有 `openQuestions` 或 `conflicts` 中存在 `status: "open"` 时拒绝确认。
 
-`decomposition` 为 `{ "status", "blocks" }`，状态是 `draft` 或 `confirmed`；块包含
-`id`、`category`、`zh`、`en`、`source`、`locked`、`approved`、`reason` 和 `risks`。本阶段
-仅提供该规范和阶段门禁；不提供模型适配的十三块拆解预览界面。确认拆解前，每个块必须
-`approved: true`。
+`decomposition` 根包含 `status`、`briefContentSha256`、`profileVersionId`、
+`profileContentSha256` 和严格按规范顺序排列的十三个 `blocks`。块包含 `id`、`category`、
+`zh`、`en`、`source`、`locked`、`approved`、`reason`、`risks`、`semanticItems` 和
+`ruleRefs`。`zh`/`semanticItems` 是确认语义，`en`/`reason`/`ruleRefs` 是模型适配；适配
+不得改变、删除或移动锁定事实。`ruleRefs` 只能引用当前激活不可变版本中已批准 claim
+及其 evidence snapshot。确认拆解前，每个块必须 `approved: true` 且没有开放冲突。
+
+确认交接后的 Recipe `model` 同时保存 `profileVersionId` 和
+`profileContentSha256`；内置未研究档案明确保存两个 `null`。档案内容 Hash 与 checkpoint
+文件 Hash 是两种独立身份。Recipe `sourceRefs` 保存 brief 条目、图片、claim 和 evidence
+引用；重开 brief 只让当前拆解/Recipe 失效，不删除历史版本。
 
 失效规则由服务器转换统一执行：`replace_inputs` 清除方向、brief、模型、拆解和冲突，
 并将配方置为 `missing`；`select_model` 保留已确认 brief、写入新的

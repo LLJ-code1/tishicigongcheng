@@ -36,6 +36,7 @@ metadata-only `POST /api/workspace/commit`，与尚未保存的 Recipe 编辑相
 | 方法 | 路由 | 用途 |
 | --- | --- | --- |
 | `POST` | `/api/creative-intake/transition` | 由服务器规范化并应用一次创意意图状态转换 |
+| `POST` | `/api/creative-intake/decomposition-preview` | 生成精确模型版本适配的十三块草稿 |
 | `POST` | `/api/workspace/commit` | 原子保存项目头和可选完整版本 |
 | `GET` | `/api/model-profiles` | 列出模型档案 |
 | `GET` | `/api/model-profiles/<id>` | 读取单个模型档案及验证状态 |
@@ -326,6 +327,32 @@ blob URL、密钥或任意附加元数据。每张图的 `requestedUses` 独立�
 `409 idempotency_conflict`。工作台前端把未确认请求记录在
 `localStorage` 的 `promptStudio.pendingSave.v1`，启动时自动恢复。
 
+## 模型适配十三块预览
+
+只有 `model_selected` 阶段可以创建新预览；退回块允许在同一 brief 和精确模型血统下
+整体重生成。客户端只发送 canonical session 和模型目录刚返回的不可变版本身份：
+
+```http
+POST /api/creative-intake/decomposition-preview
+Content-Type: application/json
+
+{
+  "current": {"schemaVersion":1,"revision":8,"stage":"model_selected"},
+  "profileVersionId":"profile-version-7",
+  "profileContentSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+```
+
+示例中的 `current` 省略了必填的完整 brief、模型选择和其他 canonical 字段；生产请求
+不得省略。成功响应的 `item.decomposition` 含精确 brief Hash、模型版本/Hash 和严格
+十三块。每块的 `zh`/`semanticItems` 是确认语义，`en`/`reason`/`ruleRefs` 是模型适配。
+`warnings` 会保留未批准 claim 的 ID 和决定，但这些 claim 不会应用。
+
+常见错误：`stale_intake`/`profile_hash_mismatch` 返回 409，要求刷新档案并重新确认；
+`locked_fact_changed`/`unapproved_rule` 返回 422，不写入草稿；`provider_failed` 和连续
+无效输出返回 502，保留上一次合法状态。前端还会校验项目、会话、brief、模型 ID、
+版本和 Hash，丢弃迟到响应。
+
 ## Recipe 与模型档案
 
 当前内置档案 ID 为 `anima-1.1-v1`，精确模型版本 ID 为 `3004063`。档案默认
@@ -337,6 +364,11 @@ Steps 30、CFG 5.5、Euler/Euler a + Normal，并明确不注入 `safe`。
 - `recipe`：规范化 Recipe v1。
 - `recipeHash`：严格 JSON 的 SHA-256。
 - `profile`：档案、参数和验证状态。
+
+使用研究档案时，请求还必须同时提供 `profileVersionId` 与
+`profileContentSha256`。服务端从数据库重新解析该精确激活版本，不接受客户端档案正文，
+也不会在查找失败时退回另一个活动版本。返回 Recipe 的 `model` 原样保存这两个字段；
+内置未研究档案则保存两个 `null`。
 
 参数优先级固定为：
 

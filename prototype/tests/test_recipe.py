@@ -230,10 +230,41 @@ class RecipeNormalizationTests(unittest.TestCase):
         self.assertEqual(normalized["schemaVersion"], 1)
         self.assertEqual(len(normalized["blocks"]), 13)
         self.assertEqual(normalized["model"]["versionId"], 3004063)
+        self.assertIsNone(normalized["model"]["profileVersionId"])
+        self.assertIsNone(normalized["model"]["profileContentSha256"])
         self.assertEqual(normalized["parameters"]["steps"]["value"], 30)
         self.assertEqual(
             normalized["parameters"]["resolution"]["source"], "task_preset"
         )
+
+    def test_exact_profile_lineage_is_paired_normalized_and_hashed(self):
+        first = complete_recipe()
+        first["model"].update(
+            {
+                "profileVersionId": "profile-version-7",
+                "profileContentSha256": "A" * 64,
+            }
+        )
+        normalized = recipe.normalize_recipe(first)
+        self.assertEqual(
+            normalized["model"]["profileVersionId"], "profile-version-7"
+        )
+        self.assertEqual(
+            normalized["model"]["profileContentSha256"], "a" * 64
+        )
+
+        second = copy.deepcopy(first)
+        second["model"]["profileContentSha256"] = "b" + "A" * 63
+        self.assertNotEqual(recipe.recipe_hash(first), recipe.recipe_hash(second))
+
+        for missing in ("profileVersionId", "profileContentSha256"):
+            with self.subTest(missing=missing):
+                invalid = copy.deepcopy(first)
+                invalid["model"].pop(missing)
+                with self.assertRaisesRegex(
+                    recipe.RecipeValidationError, "must be present together"
+                ):
+                    recipe.normalize_recipe(invalid)
 
     def test_hash_is_stable_for_key_and_block_input_order(self):
         first = complete_recipe()

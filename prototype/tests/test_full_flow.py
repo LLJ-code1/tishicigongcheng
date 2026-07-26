@@ -12,9 +12,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import backup  # noqa: E402
 import db  # noqa: E402
+import creative_intake  # noqa: E402
 from ai_edit_engine import AIEditError, create_ai_edit_preview  # noqa: E402
 from random_sampler import RandomSamplerError  # noqa: E402
-from recipe import project_recipe_to_prompt_version, recipe_hash  # noqa: E402
+from recipe import (  # noqa: E402
+    BLOCK_DEFINITIONS,
+    normalize_recipe,
+    project_recipe_to_prompt_version,
+    recipe_hash,
+)
 from server import (  # noqa: E402
     enrich_workspace_commit_payload,
     process_edit_apply_request,
@@ -239,6 +245,141 @@ class FullWorkflowIntegrationTests(unittest.TestCase):
         reopened = db.get_project("project-intake-backup", restored_database)
 
         self.assertEqual(reopened["metadata"]["creativeIntake"], session)
+
+    def test_confirmed_decomposition_and_exact_recipe_recover_then_reopen_stales_only_current(self):
+        session = creative_intake.apply_creative_intake_transition(
+            confirmed_brief_session(),
+            {"type": "select_model", "modelProfileId": "anima-1.1-v1"},
+        )
+        blocks = []
+        for definition in BLOCK_DEFINITIONS:
+            is_identity = definition.id == "identity"
+            blocks.append(
+                {
+                    "id": definition.id,
+                    "category": definition.label,
+                    "zh": "红伞少女" if is_identity else "",
+                    "en": "girl with a red umbrella" if is_identity else "",
+                    "source": (
+                        {"type": "user", "refId": None}
+                        if is_identity
+                        else {"type": "ai", "refId": None}
+                    ),
+                    "locked": is_identity,
+                    "approved": True,
+                    "reason": "保持确认语义",
+                    "risks": [],
+                    "ruleRefs": (
+                        [
+                            {
+                                "claimId": "claim-language",
+                                "fieldPath": "prompting.language",
+                                "evidenceRefs": ["snapshot-official"],
+                            }
+                        ]
+                        if is_identity
+                        else []
+                    ),
+                    "semanticItems": (
+                        [
+                            {
+                                "id": "subject",
+                                "text": "红伞少女",
+                                "source": {"type": "user", "refId": None},
+                                "locked": True,
+                            }
+                        ]
+                        if is_identity
+                        else []
+                    ),
+                }
+            )
+        session = creative_intake.apply_creative_intake_transition(
+            session,
+            {
+                "type": "set_decomposition_draft",
+                "decomposition": {
+                    "status": "draft",
+                    "briefContentSha256": creative_intake.canonical_brief_sha256(
+                        session["brief"]
+                    ),
+                    "profileVersionId": "profile-version-7",
+                    "profileContentSha256": "a" * 64,
+                    "blocks": blocks,
+                },
+            },
+        )
+        session = creative_intake.apply_creative_intake_transition(
+            session, {"type": "confirm_decomposition"}
+        )
+
+        recipe_value, _ = self.initial_recipe()
+        recipe_value["model"].update(
+            {
+                "profileVersionId": "profile-version-7",
+                "profileContentSha256": "a" * 64,
+            }
+        )
+        recipe_value["sourceRefs"] = [
+            {"type": "brief_item", "id": "subject"},
+            {
+                "type": "model_rule",
+                "claimId": "claim-language",
+                "evidenceRefs": ["snapshot-official"],
+            },
+        ]
+        recipe_value = normalize_recipe(recipe_value)
+        version = self.version_payload(
+            recipe_value,
+            "version-decomposition-v1",
+            0,
+            "creative-director",
+        )
+        saved, _ = self.commit(
+            "save-confirmed-decomposition",
+            {
+                "id": "project-confirmed-decomposition",
+                "name": "确认拆解恢复",
+                "metadata": {
+                    "workspaceBaseVersion": 1,
+                    "creativeIntake": session,
+                },
+            },
+            version,
+            create=True,
+        )
+        reopened = db.get_project(saved["project"]["id"], self.database)
+        recovered_intake = reopened["metadata"]["creativeIntake"]
+        recovered_recipe = reopened["versions"][0]["metadata"]["recipe"]
+        self.assertEqual(recovered_intake, session)
+        self.assertEqual(
+            recovered_recipe["model"]["profileContentSha256"], "a" * 64
+        )
+        self.assertEqual(recipe_hash(recovered_recipe), recipe_hash(recipe_value))
+
+        reopened_brief = creative_intake.apply_creative_intake_transition(
+            recovered_intake, {"type": "reopen_brief"}
+        )
+        updated, _ = self.commit(
+            "reopen-confirmed-decomposition",
+            {
+                "id": reopened["id"],
+                "name": reopened["name"],
+                "metadata": {
+                    "workspaceBaseVersion": 1,
+                    "creativeIntake": reopened_brief,
+                },
+                "baseUpdatedAt": reopened["updatedAt"],
+            },
+            None,
+            create=False,
+        )
+        reopened_again = db.get_project(updated["project"]["id"], self.database)
+        current = reopened_again["metadata"]["creativeIntake"]
+        self.assertEqual(current["stage"], "brief_draft")
+        self.assertIsNone(current["decomposition"])
+        self.assertEqual(current["recipeStatus"], "stale")
+        self.assertEqual(len(reopened_again["versions"]), 1)
 
     @staticmethod
     def ai_preview(payload):

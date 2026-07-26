@@ -684,6 +684,8 @@ def _normalize_model(value: object) -> dict[str, Any]:
         model,
         {
             "profileId",
+            "profileVersionId",
+            "profileContentSha256",
             "displayName",
             "versionName",
             "versionId",
@@ -697,6 +699,40 @@ def _normalize_model(value: object) -> dict[str, Any]:
     )
     if not _SAFE_ID_PATTERN.fullmatch(profile_id):
         raise RecipeValidationError("model.profileId is invalid")
+    has_profile_version = "profileVersionId" in model
+    has_profile_hash = "profileContentSha256" in model
+    if has_profile_version != has_profile_hash:
+        raise RecipeValidationError(
+            "model.profileVersionId and model.profileContentSha256 must be present together"
+        )
+    raw_profile_version = model.get("profileVersionId")
+    raw_profile_hash = model.get("profileContentSha256")
+    if (raw_profile_version is None) != (raw_profile_hash is None):
+        raise RecipeValidationError(
+            "model.profileVersionId and model.profileContentSha256 must be present together"
+        )
+    if raw_profile_version is None:
+        profile_version_id = None
+        profile_content_sha256 = None
+    else:
+        profile_version_id = _text(
+            raw_profile_version,
+            "model.profileVersionId",
+            allow_empty=False,
+            max_length=128,
+        )
+        if not _SAFE_ID_PATTERN.fullmatch(profile_version_id):
+            raise RecipeValidationError("model.profileVersionId is invalid")
+        profile_content_sha256 = _text(
+            raw_profile_hash,
+            "model.profileContentSha256",
+            allow_empty=False,
+            max_length=64,
+        ).lower()
+        if not _SHA256_PATTERN.fullmatch(profile_content_sha256):
+            raise RecipeValidationError(
+                "model.profileContentSha256 must be SHA-256"
+            )
     checkpoint = _mapping(model.get("checkpoint"), "model.checkpoint")
     _reject_unknown_keys(
         checkpoint,
@@ -728,6 +764,8 @@ def _normalize_model(value: object) -> dict[str, Any]:
         )
     return {
         "profileId": profile_id,
+        "profileVersionId": profile_version_id,
+        "profileContentSha256": profile_content_sha256,
         "displayName": _text(
             model.get("displayName"),
             "model.displayName",

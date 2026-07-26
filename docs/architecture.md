@@ -50,8 +50,13 @@ brief 借用项通过 `source: {"type":"image","refId":"<图片 ID>"}` 追溯来
 重新附图。任何 path、base64、blob URL 或额外图片字段都在进入 canonical 状态前拒绝。
 设置中的 `creativeDirectorSkillOverride` 是内置只读 Skill 的可选覆盖层，最大
 100,000 字符；空字符串表示恢复默认。官网原始链接研究和不可变模型档案生命周期已
-接通；按模型适配的十三块拆解预览和 LoRA 档案仍由后续独立阶段消费本会话、激活的
-模型档案和转换 API。
+接通。确认 brief 选择模型后，`model_adapted_decomposition.py` 只读取当前激活的精确
+档案版本/Hash 和已批准 claim，生成语义层与模型适配层分离的十三块；逐块审核确认后
+一次投影到工作台和 Recipe。LoRA-lite 档案仍由后续独立阶段接入。
+
+拆解异步结果同时绑定项目修订、会话修订、模型 ID、档案版本和内容 Hash。更改 brief
+或模型会清除当前拆解并把 Recipe 标记为 stale；历史 Recipe 保持不可变。确认交接会把
+brief 条目、图片 ID、claim ID 和 evidence ID 写入 `sourceRefs`，不会重新生成语义。
 
 ## 官网模型研究边界
 
@@ -158,6 +163,7 @@ prototype/data/prompt_studio.db
 读取与持久化：
 
 - `POST /api/creative-intake/transition`
+- `POST /api/creative-intake/decomposition-preview`
 - `POST /api/workspace/commit`（当前工作台原子保存入口）
 - `GET /api/projects`
 - `POST /api/projects`

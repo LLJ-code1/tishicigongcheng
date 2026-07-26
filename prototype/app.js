@@ -58,6 +58,21 @@
     "quality",
     "negative",
   ]);
+  const DECOMPOSITION_TO_WORKBENCH_BLOCK = Object.freeze({
+    identity: "subject",
+    appearance: "appearance",
+    clothing: "outfit",
+    expression: "expression",
+    action: "pose",
+    interaction: "interaction",
+    scene: "scene",
+    camera: "composition",
+    lighting: "lighting",
+    style: "artist",
+    effects: "effects",
+    quality: "quality",
+    negative: "negative",
+  });
   const SAFE_DIRECTOR_IMAGE_ID = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/u;
   const SAFE_EVIDENCE_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
   const PROMPT_WHITESPACE_PATTERN =
@@ -1439,6 +1454,7 @@
       randomCatalog: null,
       randomCatalogStatus: "idle",
       instructionHistory: [],
+      sourceRefs: [],
       pendingEditPreview: null,
       pendingChange: null,
       recipeHash: "",
@@ -1554,6 +1570,7 @@
     state.recipeHash = "";
     state.randomPlan = null;
     state.instructionHistory = [];
+    state.sourceRefs = [];
     state.selectedVariantBlockIds = [];
     state.hasUnsavedChanges = false;
   }
@@ -2679,6 +2696,9 @@
     next.instructionHistory = Array.isArray(latestRecipe.instructionHistory)
       ? clone(latestRecipe.instructionHistory)
       : [];
+    next.sourceRefs = Array.isArray(latestRecipe.sourceRefs)
+      ? clone(latestRecipe.sourceRefs)
+      : [];
     next.recipeHash =
       typeof latestMetadata.recipeHash === "string"
         ? latestMetadata.recipeHash
@@ -2818,6 +2838,14 @@
       outputChecks: safeObject(state.outputChecks),
       imageName: state.imageName || "",
       modelProfileId: state.modelProfileId || "anima-1.1-v1",
+      profileVersionId:
+        state.creativeIntake?.stage === "decomposition_confirmed"
+          ? state.creativeIntake.decomposition?.profileVersionId || null
+          : null,
+      profileContentSha256:
+        state.creativeIntake?.stage === "decomposition_confirmed"
+          ? state.creativeIntake.decomposition?.profileContentSha256 || null
+          : null,
       parameterLayers: {
         model_default: {},
         lora_requirement: {},
@@ -2849,6 +2877,7 @@
       imageRefs: state.imageName
         ? [{ name: state.imageName, status: "local_reference_not_embedded" }]
         : [],
+      sourceRefs: Array.isArray(state.sourceRefs) ? clone(state.sourceRefs) : [],
     };
     if (Number.isSafeInteger(state.restoreFromVersion)) {
       metadata.restoredFromVersion = state.restoreFromVersion;
@@ -3762,6 +3791,41 @@
         markProjectChanged(next);
         return next;
         }
+      case "APPLY_CONFIRMED_DECOMPOSITION": {
+        const item = safeObject(action.item);
+        const blocks = normalizeBlocks(item.blocks);
+        if (
+          blocks.length !== DECOMPOSITION_BLOCK_IDS.length ||
+          blocks.some(
+            (block, index) =>
+              block.id !==
+              DECOMPOSITION_TO_WORKBENCH_BLOCK[DECOMPOSITION_BLOCK_IDS[index]]
+          ) ||
+          item.profileId !== next.creativeIntake?.selectedModelProfileId ||
+          item.profileVersionId !==
+            next.creativeIntake?.decomposition?.profileVersionId ||
+          item.profileContentSha256 !==
+            next.creativeIntake?.decomposition?.profileContentSha256
+        ) {
+          return next;
+        }
+        next.modelProfileId = item.profileId;
+        next.manualParameterKeys = [];
+        for (const [key, value] of Object.entries(
+          safeObject(item.defaultParameters)
+        )) {
+          if (key in next.generationParameters) {
+            next.generationParameters[key] = clone(value);
+          }
+        }
+        next.sourceRefs = Array.isArray(item.sourceRefs)
+          ? clone(item.sourceRefs)
+          : [];
+        next.view = "text";
+        initializeVersion(next, compileBlocks(blocks), blocks);
+        next.toast = "已将确认的十三块和精确模型版本带入工作台";
+        return next;
+      }
       case "SET_GENERATION_PARAMETER": {
         const key = action.key;
         if (!(key in safeObject(next.generationParameters))) return next;
@@ -4997,6 +5061,106 @@
     };
   }
 
+  async function buildConfirmedDecompositionWorkbench(intakeValue, profileValue) {
+    const intake = normalizeCreativeIntake(intakeValue);
+    const profile = safeObject(profileValue);
+    const decomposition = intake.decomposition;
+    const profileHash = String(
+      profile.profileContentSha256 || profile.contentSha256 || ""
+    ).toLowerCase();
+    const stale = () => {
+      throw new Error("confirmed decomposition handoff is stale");
+    };
+    if (
+      intake.stage !== "decomposition_confirmed" ||
+      intake.recipeStatus !== "ready" ||
+      decomposition?.status !== "confirmed" ||
+      decomposition.blocks.length !== DECOMPOSITION_BLOCK_IDS.length ||
+      decomposition.blocks.some(
+        (block, index) =>
+          block.id !== DECOMPOSITION_BLOCK_IDS[index] || !block.approved
+      ) ||
+      !intake.brief ||
+      intake.selectedModelProfileId !== profile.profileId ||
+      decomposition.profileVersionId !== profile.profileVersionId ||
+      decomposition.profileContentSha256 !== profileHash ||
+      !/^[0-9a-f]{64}$/.test(profileHash)
+    ) stale();
+    const briefHash = await sha256Hex(canonicalJson(intake.brief));
+    if (briefHash !== decomposition.briefContentSha256) stale();
+
+    const definitions = new Map(
+      (data.promptBlocks || []).map((block) => [block.id, block])
+    );
+    const blocks = decomposition.blocks.map((block) => {
+      const id = DECOMPOSITION_TO_WORKBENCH_BLOCK[block.id];
+      const definition = definitions.get(id) || {};
+      return {
+        id,
+        label: definition.label || block.category,
+        hint: definition.hint || "",
+        locked: block.locked,
+        weight: 100,
+        en: block.en,
+        zh: block.zh,
+        source: decompositionSemanticSourceLabel(block.source),
+        confidence: 100,
+        metadata: {
+          recipeBlockId: block.id,
+          semanticSource: clone(block.source),
+          semanticItems: clone(block.semanticItems),
+          reason: block.reason,
+          risks: clone(block.risks),
+          ruleRefs: clone(block.ruleRefs),
+        },
+      };
+    });
+
+    const sourceRefs = [];
+    for (const item of intake.brief.items || []) {
+      sourceRefs.push({
+        type: "brief_item",
+        id: item.id,
+        source: clone(item.source),
+      });
+    }
+    for (const image of intake.inputs.images || []) {
+      sourceRefs.push({
+        type: "image",
+        imageId: image.id,
+        requestedUses: clone(image.requestedUses || []),
+      });
+    }
+    const seenClaims = new Set();
+    const seenEvidence = new Set();
+    for (const block of decomposition.blocks) {
+      for (const rule of block.ruleRefs) {
+        if (!seenClaims.has(rule.claimId)) {
+          seenClaims.add(rule.claimId);
+          sourceRefs.push({
+            type: "model_rule",
+            claimId: rule.claimId,
+            fieldPath: rule.fieldPath,
+            evidenceRefs: clone(rule.evidenceRefs),
+          });
+        }
+        for (const evidenceId of rule.evidenceRefs) {
+          if (seenEvidence.has(evidenceId)) continue;
+          seenEvidence.add(evidenceId);
+          sourceRefs.push({ type: "model_evidence", evidenceId });
+        }
+      }
+    }
+    return {
+      blocks,
+      profileId: profile.profileId,
+      profileVersionId: decomposition.profileVersionId,
+      profileContentSha256: decomposition.profileContentSha256,
+      defaultParameters: clone(safeObject(profile.defaultParameters)),
+      sourceRefs,
+    };
+  }
+
   function normalizeDecompositionWarnings(value) {
     if (!Array.isArray(value) || value.length > 100) {
       throw new Error("Invalid decomposition warning");
@@ -5272,6 +5436,7 @@
     buildDecompositionBlockReviewAction,
     canConfirmDecomposition,
     buildDecompositionPreviewRenderModel,
+    buildConfirmedDecompositionWorkbench,
     normalizeDecompositionWarnings,
     validateDecompositionPreviewResponse,
     performDecompositionPreviewRequest,
@@ -6850,7 +7015,29 @@
       render();
       return false;
     }
-    return transitionCreativeIntake({ type: "confirm_decomposition" });
+    const accepted = await transitionCreativeIntake({
+      type: "confirm_decomposition",
+    });
+    if (!accepted) return false;
+    const profile = state.modelProfiles.find(
+      (item) => item.profileId === state.creativeIntake.selectedModelProfileId
+    );
+    try {
+      const item = await app.buildConfirmedDecompositionWorkbench(
+        state.creativeIntake,
+        profile
+      );
+      state = app.reduceState(state, {
+        type: "APPLY_CONFIRMED_DECOMPOSITION",
+        item,
+      });
+      render();
+      return true;
+    } catch (error) {
+      state.toast = error.message || "确认结果已经过期，请重新生成拆解";
+      render();
+      return false;
+    }
   }
 
   async function saveSettings() {
@@ -7539,6 +7726,13 @@
     const versionPayload = app.buildVersionPayload(state);
     return {
       profileId: versionPayload.metadata.modelProfileId,
+      ...(versionPayload.metadata.profileVersionId
+        ? {
+            profileVersionId: versionPayload.metadata.profileVersionId,
+            profileContentSha256:
+              versionPayload.metadata.profileContentSha256,
+          }
+        : {}),
       prompts: {
         positiveEn: versionPayload.positiveEn,
         positiveZh: versionPayload.positiveZh,

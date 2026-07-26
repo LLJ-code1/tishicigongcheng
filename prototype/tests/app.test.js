@@ -85,6 +85,7 @@ const {
   validateDecompositionPreviewResponse,
   normalizeDecompositionWarnings,
   buildDecompositionPreviewRenderModel,
+  buildConfirmedDecompositionWorkbench,
 } = require("../app.js");
 
 const DECOMPOSITION_BLOCK_IDS = [
@@ -123,6 +124,15 @@ function decompositionIntakeFixture() {
     })),
   };
   intake.stage = "decomposition_draft";
+  return intake;
+}
+
+function confirmedDecompositionIntakeFixture() {
+  const intake = decompositionIntakeFixture();
+  intake.stage = "decomposition_confirmed";
+  intake.recipeStatus = "ready";
+  intake.decomposition.status = "confirmed";
+  intake.decomposition.blocks.forEach((block) => { block.approved = true; });
   return intake;
 }
 const unicode15 = require("../unicode15-data.js");
@@ -6146,6 +6156,91 @@ test("decomposition preview returned markers clear on success approval and edit"
   edited.decomposition.blocks[1].reason = "manual correction";
   state = reduceState(state, { type: "CREATIVE_INTAKE_REPLACED", item: edited });
   assert.deepEqual(state.decompositionPreview.returnedBlockIds, []);
+});
+
+test("confirmed decomposition handoff preserves all blocks and exact profile lineage", async () => {
+  const intake = confirmedDecompositionIntakeFixture();
+  intake.decomposition.blocks[0].ruleRefs = [{
+    claimId: "claim-language",
+    fieldPath: "prompting.language",
+    evidenceRefs: ["snapshot-official"],
+  }];
+  const profile = {
+    profileId: "anima-1.1-v1",
+    profileVersionId: "profile-version-7",
+    profileContentSha256: "a".repeat(64),
+    defaultParameters: { steps: 28, cfg: 5 },
+  };
+
+  const projection = await buildConfirmedDecompositionWorkbench(intake, profile);
+
+  assert.deepEqual(
+    projection.blocks.map((block) => block.id),
+    [
+      "subject", "appearance", "outfit", "expression", "pose",
+      "interaction", "scene", "composition", "lighting", "artist",
+      "effects", "quality", "negative",
+    ]
+  );
+  assert.equal(projection.blocks[0].zh, "identity semantic");
+  assert.deepEqual(projection.blocks[0].metadata.semanticSource, {
+    type: "ai", refId: null,
+  });
+  assert.equal(projection.profileId, "anima-1.1-v1");
+  assert.equal(projection.profileVersionId, "profile-version-7");
+  assert.equal(projection.profileContentSha256, "a".repeat(64));
+  assert.deepEqual(projection.sourceRefs.find((item) => item.type === "model_rule"), {
+    type: "model_rule",
+    claimId: "claim-language",
+    fieldPath: "prompting.language",
+    evidenceRefs: ["snapshot-official"],
+  });
+
+  let state = createInitialState();
+  state.creativeIntake = intake;
+  state.modelProfiles = [profile];
+  const revision = state.workingRevision;
+  state = reduceState(state, {
+    type: "APPLY_CONFIRMED_DECOMPOSITION",
+    item: projection,
+  });
+  assert.equal(state.workingRevision, revision + 1);
+  assert.equal(state.modelProfileId, "anima-1.1-v1");
+  assert.equal(state.generationParameters.steps, 28);
+  assert.deepEqual(state.appliedBlocks, projection.blocks);
+
+  const version = buildVersionPayload(state);
+  assert.equal(version.metadata.profileVersionId, "profile-version-7");
+  assert.equal(version.metadata.profileContentSha256, "a".repeat(64));
+  assert.deepEqual(version.metadata.sourceRefs, projection.sourceRefs);
+});
+
+test("confirmed decomposition handoff fails closed on stale semantic or model lineage", async () => {
+  const baseIntake = confirmedDecompositionIntakeFixture();
+  const baseProfile = {
+    profileId: "anima-1.1-v1",
+    profileVersionId: "profile-version-7",
+    profileContentSha256: "a".repeat(64),
+    defaultParameters: {},
+  };
+  const cases = [
+    [(item) => { item.stage = "decomposition_draft"; }, (profile) => profile],
+    [(item) => { item.decomposition.blocks[0].approved = false; }, (profile) => profile],
+    [(item) => { item.brief.summary = "changed"; }, (profile) => profile],
+    [(item) => { item.selectedModelProfileId = "other"; }, (profile) => profile],
+    [(item) => { item.decomposition.profileVersionId = "other"; }, (profile) => profile],
+    [(item) => item, (profile) => { profile.profileContentSha256 = "b".repeat(64); return profile; }],
+  ];
+  for (const [mutateIntake, mutateProfile] of cases) {
+    const intake = structuredClone(baseIntake);
+    const profile = structuredClone(baseProfile);
+    mutateIntake(intake);
+    mutateProfile(profile);
+    await assert.rejects(
+      () => buildConfirmedDecompositionWorkbench(intake, profile),
+      /confirmed decomposition handoff is stale/
+    );
+  }
 });
 
 test("decomposition warning labels distinguish legacy notices from structured evidence", () => {

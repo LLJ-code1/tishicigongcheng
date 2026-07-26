@@ -1052,11 +1052,18 @@ def model_profile_api_item(profile_id: str = DEFAULT_PROFILE_ID) -> dict:
     }
 
 
-def process_recipe_resolve_request(payload: dict) -> dict:
+def process_recipe_resolve_request(
+    payload: dict,
+    *,
+    db_path=None,
+    snapshot_loader=model_profile_store.get_activated_profile_snapshot,
+) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("配方请求必须是对象")
     allowed = {
         "profileId",
+        "profileVersionId",
+        "profileContentSha256",
         "prompts",
         "blocks",
         "loras",
@@ -1071,7 +1078,51 @@ def process_recipe_resolve_request(payload: dict) -> dict:
     if unknown:
         raise ValueError("配方请求包含不允许的字段：" + ", ".join(unknown))
     profile_id = payload.get("profileId", DEFAULT_PROFILE_ID)
-    profile = load_model_profile(profile_id)
+    profile_version_id = payload.get("profileVersionId")
+    profile_content_sha256 = payload.get("profileContentSha256")
+    if (profile_version_id is None) != (profile_content_sha256 is None):
+        raise ValueError(
+            "profileVersionId and profileContentSha256 must be provided together"
+        )
+    if profile_version_id is None:
+        profile = load_model_profile(profile_id)
+        profile_item = model_profile_api_item(profile_id)
+        exact_lineage = {
+            "profileVersionId": None,
+            "profileContentSha256": None,
+        }
+    else:
+        snapshot = snapshot_loader(
+            profile_id,
+            profile_version_id,
+            str(profile_content_sha256).lower(),
+            db_path=db_path,
+        )
+        if (
+            snapshot.get("profileId") != profile_id
+            or snapshot.get("profileVersionId") != profile_version_id
+            or snapshot.get("profileContentSha256")
+            != str(profile_content_sha256).lower()
+        ):
+            raise ValueError("激活模型档案返回了不匹配的精确版本")
+        profile = deepcopy(snapshot["profile"])
+        if "profileId" not in profile and "id" in profile:
+            profile["profileId"] = profile.pop("id")
+        if profile.get("profileId") != profile_id:
+            raise ValueError("激活模型档案身份不匹配")
+        exact_lineage = {
+            "profileVersionId": profile_version_id,
+            "profileContentSha256": str(profile_content_sha256).lower(),
+        }
+        profile_item = {
+            **deepcopy(profile),
+            **exact_lineage,
+            "defaultParameters": profile_default_parameters(profile),
+            "validatedResolutionPresets": validated_resolution_presets(profile),
+            "candidateResolutionPresets": candidate_resolution_presets(profile),
+            "compiledPositivePrefix": compile_positive_prefix(profile),
+            "generationReady": bool(validated_resolution_presets(profile)),
+        }
     layers = payload.get("parameterLayers", {})
     if not isinstance(layers, dict):
         raise ValueError("parameterLayers 必须是对象")
@@ -1124,7 +1175,7 @@ def process_recipe_resolve_request(payload: dict) -> dict:
         }
     )
     recipe_value = build_recipe(
-        model=model_reference(profile),
+        model={**model_reference(profile), **exact_lineage},
         prompts=payload.get("prompts"),
         blocks=inflate_workbench_blocks(payload.get("blocks")),
         parameters=parameters,
@@ -1138,7 +1189,7 @@ def process_recipe_resolve_request(payload: dict) -> dict:
     return {
         "recipe": recipe_value,
         "recipeHash": recipe_hash(recipe_value),
-        "profile": model_profile_api_item(profile_id),
+        "profile": profile_item,
     }
 
 

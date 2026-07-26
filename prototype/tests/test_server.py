@@ -31,6 +31,7 @@ from server import (  # noqa: E402
     map_character,
     normalize_search_result,
     process_model_adapted_decomposition_request,
+    process_recipe_resolve_request,
     process_edit_apply_request,
     process_edit_preview_request,
     process_text_decompose_request,
@@ -48,6 +49,7 @@ import creative_director  # noqa: E402
 import creative_intake  # noqa: E402
 import model_research  # noqa: E402
 import model_profile_store  # noqa: E402
+import model_profiles  # noqa: E402
 from model_adapted_decomposition import DecompositionError  # noqa: E402
 from prompt_engine import PromptEngineError  # noqa: E402
 from recipe import BLOCK_DEFINITIONS  # noqa: E402
@@ -325,6 +327,74 @@ class ModelAdaptedDecompositionProcessorTests(unittest.TestCase):
                         snapshot_loader=loader,
                     )
                 self.assertEqual(payload, original)
+
+
+class ExactProfileRecipeResolveTests(unittest.TestCase):
+    def test_resolve_uses_only_the_requested_activated_profile_snapshot(self):
+        profile = model_profiles.load_model_profile()
+        calls = []
+
+        def snapshot_loader(profile_id, version_id, content_hash, *, db_path):
+            calls.append((profile_id, version_id, content_hash, db_path))
+            return {
+                "profileId": profile_id,
+                "profileVersionId": version_id,
+                "profileContentSha256": content_hash,
+                "profile": profile,
+                "approvedRules": [],
+                "warnings": [],
+            }
+
+        result = process_recipe_resolve_request(
+            {
+                "profileId": profile["profileId"],
+                "profileVersionId": "profile-version-7",
+                "profileContentSha256": "a" * 64,
+                "prompts": {
+                    "positiveEn": "",
+                    "positiveZh": "",
+                    "negativeEn": "",
+                    "negativeZh": "",
+                },
+                "blocks": [],
+            },
+            db_path="unit-test.db",
+            snapshot_loader=snapshot_loader,
+        )
+
+        self.assertEqual(
+            calls,
+            [
+                (
+                    profile["profileId"],
+                    "profile-version-7",
+                    "a" * 64,
+                    "unit-test.db",
+                )
+            ],
+        )
+        self.assertEqual(
+            result["recipe"]["model"]["profileVersionId"],
+            "profile-version-7",
+        )
+        self.assertEqual(
+            result["recipe"]["model"]["profileContentSha256"],
+            "a" * 64,
+        )
+
+    def test_resolve_rejects_partial_exact_profile_lineage(self):
+        for payload in (
+            {"profileVersionId": "profile-version-7"},
+            {"profileContentSha256": "a" * 64},
+        ):
+            with self.subTest(payload=payload):
+                with self.assertRaisesRegex(ValueError, "together"):
+                    process_recipe_resolve_request(
+                        payload,
+                        snapshot_loader=lambda *args, **kwargs: self.fail(
+                            "snapshot must not be loaded"
+                        ),
+                    )
 
 
 class AnimaDexAdapterTests(unittest.TestCase):
