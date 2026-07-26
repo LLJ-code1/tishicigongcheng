@@ -86,6 +86,8 @@ from model_profiles import (
     profile_default_parameters,
     validated_resolution_presets,
 )
+import model_profile_store
+import model_research
 from random_sampler import (
     CatalogBoundaryError,
     LockedConflictError,
@@ -1225,6 +1227,10 @@ def process_edit_undo_request(payload: dict) -> dict:
 
 
 class PromptStudioHandler(SimpleHTTPRequestHandler):
+    research_fetcher = staticmethod(model_research.production_fetcher)
+    research_resolver = staticmethod(model_research.default_resolver)
+    research_clock = staticmethod(prompt_db.now_iso)
+
     def __init__(self, *args, **kwargs):
         self._response_started = False
         self._validated_content_length: int | None = None
@@ -1499,6 +1505,16 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
                 {"error": str(error), "code": error.code},
                 error.status,
             )
+        except model_research.ResearchError as error:
+            self._send_json_if_possible(
+                {"error": error.message, "code": error.code},
+                400,
+            )
+        except model_profile_store.ProfileStoreError as error:
+            self._send_json_if_possible(
+                {"error": str(error), "code": error.code},
+                409 if error.code == "active_version_changed" else 400,
+            )
         except LockedConflictError as error:
             detail = error.as_dict()
             self._send_json_if_possible(
@@ -1673,6 +1689,10 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             return self.handle_model_profiles_get(
                 unquote(parsed.path.rsplit("/", 1)[-1])
             )
+        if parsed.path.startswith("/api/model-research/"):
+            return self.handle_model_research_get(
+                unquote(parsed.path.rsplit("/", 1)[-1])
+            )
         if parsed.path == "/api/text/random-catalog":
             return self.handle_random_catalog_get()
         if parsed.path == "/api/backups/export":
@@ -1741,6 +1761,19 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             return self.handle_creative_intake_transition()
         if parsed.path == "/api/creative-intake/director":
             return self.handle_creative_director()
+        if parsed.path == "/api/model-research":
+            return self.handle_model_research_create()
+        research_version_parts = parsed.path.split("/")
+        if (
+            len(research_version_parts) == 5
+            and research_version_parts[1:3] == ["api", "model-profile-versions"]
+            and research_version_parts[3]
+            and research_version_parts[4] in {"review", "activate"}
+        ):
+            version_id = unquote(research_version_parts[3])
+            if research_version_parts[4] == "review":
+                return self.handle_model_profile_review(version_id)
+            return self.handle_model_profile_activate(version_id)
         if parsed.path == "/api/backups/inspect":
             return self.handle_backup_inspect(parsed.query)
         if parsed.path == "/api/backups/stage-restore":
@@ -1785,6 +1818,13 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             return self.handle_project_update(project_id)
         if parsed.path == "/api/settings":
             return self.handle_settings_put()
+        version_parts = parsed.path.split("/")
+        if (
+            len(version_parts) == 4
+            and version_parts[1:3] == ["api", "model-profile-versions"]
+            and version_parts[3]
+        ):
+            return self.handle_model_profile_version_put(unquote(version_parts[3]))
         return self.send_json({"error": "未找到 API"}, status=404)
 
     def do_DELETE(self) -> None:
@@ -1987,13 +2027,219 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         )
 
     def handle_model_profiles_get(self, profile_id: str) -> None:
+        researched = model_profile_store.list_active_profile_versions(
+            db_path=prompt_db.DEFAULT_DB_PATH
+        )
+        researched_items = [
+            self._researched_profile_api_item(version) for version in researched
+        ]
         if profile_id:
+            for item in researched_items:
+                if item["profileId"] == profile_id:
+                    return self.send_json({"item": item})
             return self.send_json({"item": model_profile_api_item(profile_id)})
         items = [
             model_profile_api_item(profile["profileId"])
             for profile in list_model_profiles()
         ]
-        self.send_json({"items": items})
+        researched_ids = {item["profileId"] for item in researched_items}
+        self.send_json({
+            "items": researched_items + [
+                item for item in items if item["profileId"] not in researched_ids
+            ]
+        })
+
+    @staticmethod
+    def _strict_payload(payload: dict, allowed: set[str]) -> None:
+        unknown = sorted(set(payload) - allowed)
+        if unknown:
+            raise model_research.ResearchError(
+                "invalid_request",
+                "unsupported fields: " + ", ".join(unknown),
+            )
+
+    @staticmethod
+    def _researched_profile_api_item(version: dict) -> dict:
+        profile = deepcopy(version["profile"])
+        profile_id = profile.pop("id", profile.get("profileId"))
+        profile["profileId"] = profile_id
+        research = profile.get("metadata", {}).get("research", {})
+        warnings = list(research.get("warnings", []))
+        evidence = profile.get("evidence", [])
+        validated = profile.get("resolutions", {}).get("validatedPresets", [])
+        return {
+            **profile,
+            "profileVersionId": version["versionId"],
+            "profileContentSha256": version["contentSha256"],
+            "evidenceSummary": {
+                "snapshotCount": len(evidence),
+                "succeededCount": sum(
+                    item.get("fetchStatus") == "succeeded"
+                    for item in evidence if isinstance(item, dict)
+                ),
+            },
+            "warnings": warnings,
+            "generationReady": bool(validated),
+        }
+
+    def handle_model_research_create(self) -> None:
+        payload = self.read_json()
+        self._strict_payload(payload, {"sourceUrl"})
+        source_url = payload.get("sourceUrl")
+        request = model_research.ResearchRequest(source_url)
+        result = model_research.research_source(
+            request,
+            registry=model_research.default_adapter_registry(),
+            fetcher=self.research_fetcher,
+            resolver=self.research_resolver,
+            clock=self.research_clock,
+        )
+        pending = model_profile_store.create_research_run(
+            request.source_url, db_path=prompt_db.DEFAULT_DB_PATH
+        )
+        run = model_profile_store.complete_research_run(
+            pending["runId"],
+            [result.snapshot],
+            result.claims,
+            db_path=prompt_db.DEFAULT_DB_PATH,
+        )
+        profile = model_research.build_pending_profile(
+            request.source_url, [result.snapshot], result.claims
+        )
+        if result.snapshot.fetch_status == "failed":
+            profile["metadata"]["research"]["warnings"] = list(dict.fromkeys([
+                *profile["metadata"]["research"]["warnings"],
+                "retryable_fetch_failure",
+            ]))
+        draft = model_profile_store.create_profile_draft(
+            run["runId"], profile, result.claims,
+            db_path=prompt_db.DEFAULT_DB_PATH,
+        )
+        self.send_json(
+            {
+                "item": {
+                    "run": run,
+                    "snapshots": run["snapshots"],
+                    "claims": run["claims"],
+                    "draftVersion": draft,
+                    "researchStatus": profile["metadata"]["research"]["researchStatus"],
+                    "warnings": profile["metadata"]["research"]["warnings"],
+                }
+            },
+            status=201,
+        )
+
+    def handle_model_research_get(self, run_id: str) -> None:
+        if not run_id or "/" in run_id or "\\" in run_id:
+            raise model_research.ResearchError("invalid_run_id", "invalid run ID")
+        prompt_db.init_db(prompt_db.DEFAULT_DB_PATH)
+        with prompt_db.database(prompt_db.DEFAULT_DB_PATH) as connection:
+            row = prompt_db.research_run_row(connection, run_id)
+            if row is None:
+                return self.send_json(
+                    {"error": "research run not found", "code": "unknown_run"},
+                    status=404,
+                )
+            item = model_profile_store._run_result(connection, row)
+        self.send_json({"item": item})
+
+    def handle_model_profile_version_put(self, version_id: str) -> None:
+        payload = self.read_json()
+        self._strict_payload(
+            payload, {"claimDecisions", "manualFields", "reviewNote"}
+        )
+        decisions = payload.get("claimDecisions", {})
+        manual = payload.get("manualFields", {})
+        note = payload.get("reviewNote")
+        if not isinstance(decisions, dict) or not isinstance(manual, dict):
+            raise model_research.ResearchError(
+                "invalid_request", "claimDecisions and manualFields must be objects"
+            )
+        parent = model_profile_store.get_profile_version(
+            version_id, db_path=prompt_db.DEFAULT_DB_PATH
+        )
+        if parent is None:
+            raise model_profile_store.ProfileStoreError(
+                "unknown_version", "profile version does not exist"
+            )
+        if parent["lifecycleStatus"] != "draft":
+            raise model_profile_store.ProfileStoreError(
+                "not_draft", "only a draft may be revised"
+            )
+        allowed_manual = set(model_research.ALLOWED_CLAIM_PATHS) | {"displayName"}
+        if any(path not in allowed_manual for path in manual):
+            raise model_research.ResearchError(
+                "unsupported_field", "manual field is not allowlisted"
+            )
+        prompt_db.init_db(prompt_db.DEFAULT_DB_PATH)
+        with prompt_db.database(prompt_db.DEFAULT_DB_PATH) as connection:
+            claims = [
+                model_research.normalize_claim(item)
+                for item in model_profile_store._claims_by_id(
+                    connection, parent["researchRunId"]
+                ).values()
+            ]
+        projection_manual = {
+            path: value for path, value in manual.items() if path != "displayName"
+        }
+        projected, _ = model_research.apply_claim_decisions(
+            parent["profile"], claims, decisions, projection_manual
+        )
+        if "displayName" in manual:
+            display_name = manual["displayName"]
+            if (
+                not isinstance(display_name, str)
+                or not display_name.strip()
+                or len(display_name.strip()) > 256
+            ):
+                raise model_research.ResearchError(
+                    "invalid_request", "displayName is invalid"
+                )
+            projected["displayName"] = display_name.strip()
+        projected["id"] = parent["profileId"]
+        projected.pop("profileId", None)
+        item = model_profile_store.revise_profile_draft(
+            version_id, projected, decisions, note,
+            db_path=prompt_db.DEFAULT_DB_PATH,
+        )
+        self.send_json({"item": item})
+
+    def handle_model_profile_review(self, version_id: str) -> None:
+        payload = self.read_json()
+        self._strict_payload(payload, {"reviewerNote"})
+        version = model_profile_store.get_profile_version(
+            version_id, db_path=prompt_db.DEFAULT_DB_PATH
+        )
+        if version is None:
+            raise model_profile_store.ProfileStoreError(
+                "unknown_version", "profile version does not exist"
+            )
+        model = version["profile"].get("model", {})
+        if not isinstance(model.get("versionId"), int) or isinstance(
+            model.get("versionId"), bool
+        ):
+            raise model_profile_store.ProfileStoreError(
+                "unresolved_model_identity",
+                "exact model version identity must be resolved before review",
+            )
+        item = model_profile_store.review_profile_version(
+            version_id, payload.get("reviewerNote"),
+            db_path=prompt_db.DEFAULT_DB_PATH,
+        )
+        self.send_json({"item": item})
+
+    def handle_model_profile_activate(self, version_id: str) -> None:
+        payload = self.read_json()
+        self._strict_payload(payload, {"expectedActiveVersionId"})
+        if "expectedActiveVersionId" not in payload:
+            raise model_research.ResearchError(
+                "invalid_request", "expectedActiveVersionId is required"
+            )
+        item = model_profile_store.activate_profile_version(
+            version_id, payload["expectedActiveVersionId"],
+            db_path=prompt_db.DEFAULT_DB_PATH,
+        )
+        self.send_json({"item": item})
 
     def handle_random_catalog_get(self) -> None:
         self.send_json({"item": random_catalog_api_item()})

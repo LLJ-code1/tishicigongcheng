@@ -45,6 +45,7 @@ from server import (  # noqa: E402
 import db  # noqa: E402
 import creative_director  # noqa: E402
 import creative_intake  # noqa: E402
+import model_research  # noqa: E402
 from prompt_engine import PromptEngineError  # noqa: E402
 
 
@@ -630,6 +631,247 @@ class PromptStudioServerTests(unittest.TestCase):
         header, _, body = response.partition(b"\r\n\r\n")
         status = int(header.split(b" ", 2)[1])
         return status, header, body
+
+    def test_model_research_creates_persisted_draft_with_fake_fetcher(self):
+        source_url = "https://civitai.com/models/934764/example"
+        source_payload = {
+            "name": "Example",
+            "modelVersions": [{
+                "id": 3004063,
+                "name": "v1",
+                "baseModel": "Illustrious",
+                "description": "Example source record.",
+            }],
+        }
+        calls = []
+
+        def fake_fetcher(request):
+            calls.append(request.url)
+            return model_research.FetchResponse(
+                request.url,
+                200,
+                {"Content-Type": "application/json"},
+                json.dumps(source_payload).encode("utf-8"),
+            )
+
+        with (
+            patch.object(PromptStudioHandler, "research_fetcher", staticmethod(fake_fetcher), create=True),
+            patch.object(
+                PromptStudioHandler,
+                "research_resolver",
+                staticmethod(lambda host: ["93.184.216.34"]),
+                create=True,
+            ),
+            patch.object(
+                PromptStudioHandler,
+                "research_clock",
+                staticmethod(lambda: "2026-07-26T10:00:00Z"),
+                create=True,
+            ),
+        ):
+            request = Request(
+                f"{self.base_url}/api/model-research",
+                data=json.dumps({"sourceUrl": source_url}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlopen(request) as response:
+                payload = json.loads(response.read().decode("utf-8"))["item"]
+                self.assertEqual(response.status, 201)
+        self.assertEqual(calls, [source_url])
+        self.assertEqual(payload["run"]["sourceUrl"], source_url)
+        self.assertTrue(payload["snapshots"])
+        self.assertTrue(payload["claims"])
+        self.assertEqual(payload["draftVersion"]["lifecycleStatus"], "draft")
+
+    def test_model_research_review_activation_and_catalog_lifecycle(self):
+        source_url = "https://civitai.com/models/934764/example"
+        source_payload = {
+            "name": "Example",
+            "modelVersions": [{
+                "id": 3004063,
+                "name": "v1",
+                "baseModel": "Illustrious",
+                "description": "Example source record.",
+            }],
+        }
+
+        def request_json(path, payload, method="POST"):
+            request = Request(
+                f"{self.base_url}{path}",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method=method,
+            )
+            with urlopen(request) as response:
+                return response.status, json.loads(
+                    response.read().decode("utf-8")
+                )["item"]
+
+        with (
+            patch.object(
+                PromptStudioHandler,
+                "research_fetcher",
+                staticmethod(lambda request: model_research.FetchResponse(
+                    request.url, 200, {"Content-Type": "application/json"},
+                    json.dumps(source_payload).encode("utf-8"),
+                )),
+            ),
+            patch.object(
+                PromptStudioHandler,
+                "research_resolver",
+                staticmethod(lambda host: ["93.184.216.34"]),
+            ),
+            patch.object(
+                PromptStudioHandler,
+                "research_clock",
+                staticmethod(lambda: "2026-07-26T10:00:00Z"),
+            ),
+        ):
+            status, created = request_json(
+                "/api/model-research", {"sourceUrl": source_url}
+            )
+        self.assertEqual(status, 201)
+        with urlopen(
+            f"{self.base_url}/api/model-research/{created['run']['runId']}"
+        ) as response:
+            run = json.loads(response.read().decode("utf-8"))["item"]
+        self.assertEqual(run["snapshots"], created["snapshots"])
+
+        decisions = {
+            claim["claimId"]: "approved" for claim in created["claims"]
+        }
+        _, revised = request_json(
+            f"/api/model-profile-versions/{created['draftVersion']['versionId']}",
+            {
+                "claimDecisions": decisions,
+                "manualFields": {},
+                "reviewNote": "Checked claims",
+            },
+            method="PUT",
+        )
+        _, reviewed = request_json(
+            f"/api/model-profile-versions/{revised['versionId']}/review",
+            {"reviewerNote": "Checked original source"},
+        )
+        _, active = request_json(
+            f"/api/model-profile-versions/{reviewed['versionId']}/activate",
+            {"expectedActiveVersionId": None},
+        )
+        self.assertEqual(active["lifecycleStatus"], "active")
+        with (
+            patch.object(
+                PromptStudioHandler,
+                "research_fetcher",
+                staticmethod(lambda request: model_research.FetchResponse(
+                    request.url, 200, {"Content-Type": "application/json"},
+                    json.dumps(source_payload).encode("utf-8"),
+                )),
+            ),
+            patch.object(
+                PromptStudioHandler,
+                "research_resolver",
+                staticmethod(lambda host: ["93.184.216.34"]),
+            ),
+            patch.object(
+                PromptStudioHandler,
+                "research_clock",
+                staticmethod(lambda: "2026-07-26T10:01:00Z"),
+            ),
+        ):
+            _, second = request_json(
+                "/api/model-research", {"sourceUrl": source_url}
+            )
+        second_decisions = {
+            claim["claimId"]: "approved" for claim in second["claims"]
+        }
+        _, second_revised = request_json(
+            f"/api/model-profile-versions/{second['draftVersion']['versionId']}",
+            {
+                "claimDecisions": second_decisions,
+                "manualFields": {},
+                "reviewNote": "Second review",
+            },
+            method="PUT",
+        )
+        _, second_reviewed = request_json(
+            f"/api/model-profile-versions/{second_revised['versionId']}/review",
+            {"reviewerNote": "Second source review"},
+        )
+        stale = self.assert_http_error_json(
+            Request(
+                f"{self.base_url}/api/model-profile-versions/{second_reviewed['versionId']}/activate",
+                data=b'{"expectedActiveVersionId":null}',
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            ),
+            409,
+        )
+        self.assertEqual(stale["code"], "active_version_changed")
+        with urlopen(f"{self.base_url}/api/model-profiles") as response:
+            catalog = json.loads(response.read().decode("utf-8"))["items"]
+        researched = next(
+            item for item in catalog
+            if item.get("profileVersionId") == active["versionId"]
+        )
+        self.assertEqual(
+            researched["profileContentSha256"], active["contentSha256"]
+        )
+        self.assertIn("evidenceSummary", researched)
+        self.assertIn("warnings", researched)
+        self.assertIn("generationReady", researched)
+        self.assertTrue(any(item["profileId"] == "anima-1.1-v1" for item in catalog))
+
+    def test_model_research_failure_is_nonblocking_and_private_resolution_is_rejected(self):
+        source_url = "https://civitai.com/models/934764/example"
+        with (
+            patch.object(
+                PromptStudioHandler,
+                "research_fetcher",
+                staticmethod(lambda request: (_ for _ in ()).throw(TimeoutError())),
+            ),
+            patch.object(
+                PromptStudioHandler,
+                "research_resolver",
+                staticmethod(lambda host: ["93.184.216.34"]),
+            ),
+        ):
+            request = Request(
+                f"{self.base_url}/api/model-research",
+                data=json.dumps({"sourceUrl": source_url}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlopen(request) as response:
+                item = json.loads(response.read().decode("utf-8"))["item"]
+                self.assertEqual(response.status, 201)
+        self.assertEqual(item["researchStatus"], "pending_verification")
+        self.assertIn("research_fetch_failed", item["warnings"])
+
+        calls = []
+        with (
+            patch.object(
+                PromptStudioHandler,
+                "research_fetcher",
+                staticmethod(lambda request: calls.append(request)),
+            ),
+            patch.object(
+                PromptStudioHandler,
+                "research_resolver",
+                staticmethod(lambda host: ["127.0.0.1"]),
+            ),
+        ):
+            error = self.assert_http_error_json(
+                Request(
+                    f"{self.base_url}/api/model-research",
+                    data=json.dumps({"sourceUrl": source_url}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                ),
+                400,
+            )
+        self.assertEqual(error["code"], "unsafe_address")
+        self.assertEqual(calls, [])
 
     def assert_http_error_json(
         self,
