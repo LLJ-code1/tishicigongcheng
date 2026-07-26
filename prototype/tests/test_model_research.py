@@ -9,6 +9,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import model_research  # noqa: E402
+import model_profiles  # noqa: E402
 
 
 class ModelResearchContractTests(unittest.TestCase):
@@ -38,6 +39,168 @@ class ModelResearchContractTests(unittest.TestCase):
             fetch_status="succeeded",
             error_code=None,
         )
+
+    def claim(
+        self,
+        claim_id,
+        field_path,
+        value,
+        *,
+        evidence_class="original_source",
+        application_status="proposed",
+    ):
+        return model_research.EvidenceClaim(
+            claim_id=claim_id,
+            field_path=field_path,
+            value=value,
+            evidence_class=evidence_class,
+            evidence_refs=(self.snapshot.snapshot_id,)
+            if evidence_class != "ai_inference"
+            else (),
+            rationale="test evidence",
+            verification_status=(
+                "source_recorded"
+                if evidence_class in {"original_source", "supplemental_source"}
+                else "unverified"
+            ),
+            application_status=application_status,
+        )
+
+    def test_partial_fetch_builds_usable_pending_profile(self):
+        failed = dataclasses.replace(
+            self.snapshot,
+            fetch_status="failed",
+            error_code="timeout",
+            extracted_text="",
+            body_sha256="",
+        )
+        profile = model_research.build_pending_profile(
+            self.source_url,
+            [failed],
+            [],
+            manual_fields={"displayName": "My Model", "model.versionName": "v1"},
+        )
+
+        self.assertEqual(profile["validationStatus"], "pending_local_validation")
+        self.assertEqual(profile["prompting"]["positivePrefix"], [])
+        self.assertEqual(profile["parameters"]["defaults"], {})
+        self.assertEqual(profile["metadata"]["research"]["researchStatus"], "pending_verification")
+        self.assertIn("research_fetch_failed", profile["metadata"]["research"]["warnings"])
+        self.assertEqual(model_profiles.profile_default_parameters(profile), {})
+
+    def test_only_approved_claims_are_projected_and_every_claim_is_audited(self):
+        claims = [
+            self.claim("official", "parameters.defaults.steps", 28),
+            self.claim(
+                "supplemental",
+                "parameters.defaults.cfg",
+                5,
+                evidence_class="supplemental_source",
+            ),
+            self.claim(
+                "inference",
+                "parameters.defaults.sampler",
+                "Euler",
+                evidence_class="ai_inference",
+            ),
+        ]
+        empty = model_research.build_pending_profile(
+            self.source_url, [self.snapshot], []
+        )
+        profile, audit = model_research.apply_claim_decisions(
+            empty,
+            claims,
+            {"official": "approved", "supplemental": "rejected", "inference": "proposed"},
+            {},
+        )
+
+        self.assertEqual(profile["parameters"]["defaults"], {"steps": 28})
+        self.assertEqual(
+            {item["evidenceClass"] for item in audit},
+            {"original_source", "supplemental_source", "ai_inference"},
+        )
+        self.assertEqual(
+            {item["claimId"]: item["applicationStatus"] for item in audit},
+            {"official": "approved", "supplemental": "rejected", "inference": "proposed"},
+        )
+
+    def test_approved_supplemental_and_inference_fields_keep_their_evidence_labels(self):
+        claims = [
+            self.claim(
+                "supplemental-limit",
+                "metadata.limitations",
+                ["Needs more testing"],
+                evidence_class="supplemental_source",
+            ),
+            self.claim(
+                "inferred-negative",
+                "prompting.notRecommended",
+                ["overlong prose"],
+                evidence_class="ai_inference",
+            ),
+        ]
+        empty = model_research.build_pending_profile(self.source_url, [self.snapshot], [])
+        profile, audit = model_research.apply_claim_decisions(
+            empty,
+            claims,
+            {"supplemental-limit": "approved", "inferred-negative": "approved"},
+            {},
+        )
+
+        self.assertEqual(profile["metadata"]["limitations"], ["Needs more testing"])
+        self.assertEqual(profile["prompting"]["notRecommended"], ["overlong prose"])
+        self.assertEqual(
+            {item["claimId"]: item["evidenceClass"] for item in audit},
+            {
+                "supplemental-limit": "supplemental_source",
+                "inferred-negative": "ai_inference",
+            },
+        )
+
+    def test_manual_fields_are_user_supplied_and_identity_is_stable(self):
+        manual = {"displayName": "Manual Name", "model.versionId": 22}
+        first = model_research.build_pending_profile(
+            self.source_url, [self.snapshot], [], manual_fields=manual
+        )
+        second = model_research.build_pending_profile(
+            self.source_url,
+            [dataclasses.replace(self.snapshot, snapshot_id="snap-new")],
+            [],
+            manual_fields=manual,
+        )
+
+        self.assertEqual(first["profileId"], second["profileId"])
+        audit = first["metadata"]["research"]["claimAudit"]
+        self.assertTrue(audit)
+        self.assertTrue(all(item["evidenceClass"] == "user_supplied" for item in audit))
+
+    def test_candidate_dimensions_never_become_validated_and_no_local_evidence_means_pending(self):
+        candidate = self.claim(
+            "size",
+            "resolutions.candidatePresets",
+            [
+                {
+                    "id": "square",
+                    "width": 1024,
+                    "height": 1024,
+                    "label": "Square",
+                }
+            ],
+        )
+        profile = model_research.build_pending_profile(
+            self.source_url, [self.snapshot], [candidate]
+        )
+        projected, _ = model_research.apply_claim_decisions(
+            profile, [candidate], {"size": "approved"}, {}
+        )
+
+        self.assertEqual(projected["resolutions"]["validatedPresets"], [])
+        self.assertFalse(projected["resolutions"]["candidatePresets"][0]["autoRecommend"])
+        projected["validationStatus"] = "locally_validated"
+        with self.assertRaisesRegex(
+            model_profiles.ModelProfileError, "local validation evidence"
+        ):
+            model_profiles.validate_researched_model_profile(projected)
 
     def test_contract_records_are_immutable(self):
         request = model_research.ResearchRequest(source_url=self.source_url)

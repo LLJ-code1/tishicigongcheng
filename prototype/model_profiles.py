@@ -571,6 +571,181 @@ def validate_model_profile(value: object) -> dict[str, Any]:
     }
 
 
+def validate_researched_model_profile(value: object) -> dict[str, Any]:
+    """Validate a sparse, evidence-gated research draft without inventing defaults."""
+
+    profile = _mapping(value, "profile")
+    allowed = {
+        "kind", "schemaVersion", "profileId", "displayName", "validationStatus",
+        "model", "prompting", "parameters", "resolutions", "compatibility",
+        "evidence", "metadata",
+    }
+    _unknown(profile, allowed, "profile")
+    if profile.get("kind") != PROFILE_KIND or profile.get("schemaVersion") != PROFILE_SCHEMA_VERSION:
+        raise ModelProfileError("unsupported researched profile schema")
+    profile_id = _text(profile.get("profileId"), "profile.profileId", maximum=128)
+    assert isinstance(profile_id, str)
+    if not _SAFE_PROFILE_ID.fullmatch(profile_id):
+        raise ModelProfileError("profile.profileId is invalid")
+    status = _text(profile.get("validationStatus"), "profile.validationStatus", maximum=64)
+    if status not in {"pending_local_validation", "locally_validated", "deprecated"}:
+        raise ModelProfileError("profile.validationStatus is unsupported")
+
+    model = _mapping(profile.get("model"), "model")
+    _unknown(model, {"family", "branch", "versionName", "versionId", "baseModel", "checkpoint"}, "model")
+    normalized_model: dict[str, Any] = {}
+    for field in ("family", "branch", "versionName", "baseModel"):
+        raw = model.get(field)
+        normalized_model[field] = (
+            _text(raw, f"model.{field}", maximum=256) if raw is not None else None
+        )
+    version_id = model.get("versionId")
+    normalized_model["versionId"] = (
+        _integer(version_id, "model.versionId", 1, 2**63 - 1)
+        if version_id is not None
+        else None
+    )
+    normalized_model["checkpoint"] = _normalize_checkpoint(
+        model.get("checkpoint", {"filename": None, "sha256": None, "verificationStatus": "unverified"})
+    )
+
+    prompting = _mapping(profile.get("prompting"), "prompting")
+    _unknown(prompting, {"positivePrefix", "optionalEnhancements", "positiveSuffix", "negativeDefault", "notRecommended"}, "prompting")
+    normalized_prompting = {
+        key: _string_list(prompting.get(key, []), f"prompting.{key}")
+        for key in ("positivePrefix", "optionalEnhancements", "positiveSuffix", "negativeDefault", "notRecommended")
+    }
+    if any(item.casefold() == "safe" for item in normalized_prompting["positivePrefix"]):
+        raise ModelProfileError("prompting.positivePrefix must not add safe")
+
+    parameters = _mapping(profile.get("parameters"), "parameters")
+    _unknown(parameters, {"defaults", "recommendedRanges", "samplerSchedulerPairs", "verificationStatus"}, "parameters")
+    defaults = _mapping(parameters.get("defaults", {}), "parameters.defaults")
+    _unknown(defaults, {"sampler", "scheduler", "steps", "cfg"}, "parameters.defaults")
+    normalized_defaults: dict[str, Any] = {}
+    if "sampler" in defaults:
+        normalized_defaults["sampler"] = _text(defaults["sampler"], "parameters.defaults.sampler", maximum=128)
+    if "scheduler" in defaults:
+        normalized_defaults["scheduler"] = _text(defaults["scheduler"], "parameters.defaults.scheduler", maximum=128)
+    if "steps" in defaults:
+        normalized_defaults["steps"] = _integer(defaults["steps"], "parameters.defaults.steps", 1, 1_000)
+    if "cfg" in defaults:
+        normalized_defaults["cfg"] = _number(defaults["cfg"], "parameters.defaults.cfg", 0, 100)
+    ranges = _strict_json_copy(parameters.get("recommendedRanges", {}), "parameters.recommendedRanges")
+    pairs = _strict_json_copy(parameters.get("samplerSchedulerPairs", []), "parameters.samplerSchedulerPairs")
+    verification = parameters.get("verificationStatus", "unverified")
+    if verification not in {"author_reported", "locally_validated", "unverified"}:
+        raise ModelProfileError("parameters.verificationStatus is unsupported")
+
+    resolutions = _mapping(profile.get("resolutions"), "resolutions")
+    _unknown(resolutions, {"validatedPresets", "candidatePresets", "policy"}, "resolutions")
+    validated = _strict_json_copy(resolutions.get("validatedPresets", []), "resolutions.validatedPresets")
+    candidates = _strict_json_copy(resolutions.get("candidatePresets", []), "resolutions.candidatePresets")
+    if validated and status != "locally_validated":
+        raise ModelProfileError("validated presets require local validation evidence")
+    for index, candidate in enumerate(candidates):
+        item = _mapping(candidate, f"resolutions.candidatePresets[{index}]")
+        if item.get("autoRecommend") is not False:
+            raise ModelProfileError("candidate collection cannot be auto-recommended")
+        if item.get("verificationStatus") == "locally_validated":
+            raise ModelProfileError("candidate collection cannot claim local validation")
+
+    evidence = profile.get("evidence", [])
+    if not isinstance(evidence, list):
+        raise ModelProfileError("evidence must be an array")
+    normalized_evidence = _strict_json_copy(evidence, "evidence")
+    metadata = _mapping(profile.get("metadata"), "metadata")
+    _unknown(metadata, {"research", "strengths", "weaknesses", "limitations"}, "metadata")
+    research = _mapping(metadata.get("research"), "metadata.research")
+    _unknown(research, {"sourceUrl", "researchRunId", "researchStatus", "warnings", "claimAudit"}, "metadata.research")
+    if research.get("researchStatus") not in {"pending_verification", "reviewed"}:
+        raise ModelProfileError("metadata.research.researchStatus is unsupported")
+    warnings = _string_list(research.get("warnings", []), "metadata.research.warnings")
+    audit = research.get("claimAudit", [])
+    if not isinstance(audit, list):
+        raise ModelProfileError("metadata.research.claimAudit must be an array")
+    normalized_audit = []
+    seen_claim_ids: set[str] = set()
+    for index, raw_audit in enumerate(audit):
+        item = _mapping(raw_audit, f"metadata.research.claimAudit[{index}]")
+        _unknown(
+            item,
+            {"claimId", "fieldPath", "evidenceClass", "evidenceRefs", "applicationStatus"},
+            f"metadata.research.claimAudit[{index}]",
+        )
+        claim_id = _text(item.get("claimId"), f"metadata.research.claimAudit[{index}].claimId", maximum=128)
+        assert isinstance(claim_id, str)
+        if claim_id in seen_claim_ids:
+            raise ModelProfileError("metadata.research.claimAudit contains duplicate claimId")
+        seen_claim_ids.add(claim_id)
+        evidence_class = item.get("evidenceClass")
+        if evidence_class not in {
+            "original_source", "supplemental_source", "ai_inference",
+            "local_validation", "user_supplied",
+        }:
+            raise ModelProfileError(f"metadata.research.claimAudit[{index}].evidenceClass is unsupported")
+        refs = _string_list(item.get("evidenceRefs", []), f"metadata.research.claimAudit[{index}].evidenceRefs")
+        if evidence_class in {"original_source", "supplemental_source", "local_validation"} and not refs:
+            raise ModelProfileError("recorded research evidence needs evidenceRefs")
+        application_status = item.get("applicationStatus")
+        if application_status not in {"proposed", "approved", "rejected"}:
+            raise ModelProfileError("claim audit applicationStatus is unsupported")
+        normalized_audit.append({
+            "claimId": claim_id,
+            "fieldPath": _text(item.get("fieldPath"), f"metadata.research.claimAudit[{index}].fieldPath", maximum=256),
+            "evidenceClass": evidence_class,
+            "evidenceRefs": refs,
+            "applicationStatus": application_status,
+        })
+
+    if status == "locally_validated":
+        if normalized_model["checkpoint"]["verificationStatus"] != "locally_validated":
+            raise ModelProfileError("locally validated profile needs local validation evidence")
+        if verification != "locally_validated":
+            raise ModelProfileError("locally validated profile needs local validation evidence")
+
+    return {
+        "kind": PROFILE_KIND,
+        "schemaVersion": PROFILE_SCHEMA_VERSION,
+        "profileId": profile_id,
+        "displayName": _text(profile.get("displayName"), "profile.displayName", maximum=256),
+        "validationStatus": status,
+        "model": normalized_model,
+        "prompting": normalized_prompting,
+        "parameters": {
+            "defaults": normalized_defaults,
+            "recommendedRanges": ranges,
+            "samplerSchedulerPairs": pairs,
+            "verificationStatus": verification,
+        },
+        "resolutions": {
+            "validatedPresets": validated,
+            "candidatePresets": candidates,
+            "policy": str(resolutions.get("policy", "")),
+        },
+        "compatibility": _strict_json_copy(profile.get("compatibility", {}), "compatibility"),
+        "evidence": normalized_evidence,
+        "metadata": {
+            "strengths": _string_list(metadata.get("strengths", []), "metadata.strengths"),
+            "weaknesses": _string_list(metadata.get("weaknesses", []), "metadata.weaknesses"),
+            "limitations": _string_list(metadata.get("limitations", []), "metadata.limitations"),
+            "research": {
+                "sourceUrl": _text(research.get("sourceUrl"), "metadata.research.sourceUrl", maximum=2_048),
+                "researchRunId": _text(research.get("researchRunId"), "metadata.research.researchRunId", maximum=128),
+                "researchStatus": research["researchStatus"],
+                "warnings": warnings,
+                "claimAudit": normalized_audit,
+            }
+        },
+    }
+
+
+def _validate_for_helpers(profile: object) -> dict[str, Any]:
+    if isinstance(profile, Mapping) and isinstance(profile.get("metadata"), Mapping) and "research" in profile["metadata"]:
+        return validate_researched_model_profile(profile)
+    return validate_model_profile(profile)
+
+
 def _reject_constant(token: str) -> None:
     raise ModelProfileError(f"invalid JSON constant: {token}")
 
@@ -638,7 +813,7 @@ def list_model_profiles(
 def model_reference(profile: object) -> dict[str, Any]:
     """Snapshot the exact model identity fields required by Recipe v1."""
 
-    normalized = validate_model_profile(profile)
+    normalized = _validate_for_helpers(profile)
     model = normalized["model"]
     return {
         "profileId": normalized["profileId"],
@@ -653,19 +828,19 @@ def model_reference(profile: object) -> dict[str, Any]:
 def profile_default_parameters(profile: object) -> dict[str, Any]:
     """Return only genuine model defaults, never a speculative size or seed."""
 
-    normalized = validate_model_profile(profile)
+    normalized = _validate_for_helpers(profile)
     return deepcopy(normalized["parameters"]["defaults"])
 
 
 def validated_resolution_presets(profile: object) -> list[dict[str, Any]]:
     """Return only locally validated presets eligible for auto recommendation."""
 
-    normalized = validate_model_profile(profile)
+    normalized = _validate_for_helpers(profile)
     return deepcopy(normalized["resolutions"]["validatedPresets"])
 
 
 def candidate_resolution_presets(profile: object) -> list[dict[str, Any]]:
-    normalized = validate_model_profile(profile)
+    normalized = _validate_for_helpers(profile)
     return deepcopy(normalized["resolutions"]["candidatePresets"])
 
 
@@ -674,7 +849,7 @@ def compile_positive_prefix(
 ) -> str:
     """Compile the fixed prefix plus explicitly selected allowed enhancements."""
 
-    normalized = validate_model_profile(profile)
+    normalized = _validate_for_helpers(profile)
     available = normalized["prompting"]["optionalEnhancements"]
     selected = _string_list(list(optional_enhancements), "optional_enhancements")
     unknown = [item for item in selected if item not in available]
@@ -687,7 +862,7 @@ def compile_positive_prefix(
 
 def canonical_model_profile_json(profile: object) -> str:
     return json.dumps(
-        validate_model_profile(profile),
+        _validate_for_helpers(profile),
         ensure_ascii=False,
         allow_nan=False,
         sort_keys=True,
@@ -716,5 +891,6 @@ __all__ = [
     "model_reference",
     "profile_default_parameters",
     "validate_model_profile",
+    "validate_researched_model_profile",
     "validated_resolution_presets",
 ]

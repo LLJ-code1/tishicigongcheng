@@ -868,6 +868,246 @@ def research_source(
     return ResearchResult(snapshot=snapshot, claims=tuple(adapter.parse(snapshot)))
 
 
+def _research_identity(source_url: str, version_id: object = None) -> str:
+    canonical = _canonical_civitai_page(source_url)
+    if canonical is None:
+        raise ResearchError("unsupported_source", "no adapter accepts this source URL")
+    model_match = re.search(r"/models/([1-9][0-9]*)", urlsplit(canonical).path)
+    assert model_match is not None
+    prefix = f"civitai-model-page-v1-{model_match.group(1)}"
+    if isinstance(version_id, int) and not isinstance(version_id, bool) and version_id > 0:
+        return f"{prefix}-v{version_id}"
+    suffix = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+    return f"{prefix}-pending-{suffix}"
+
+
+def _research_run_id(source_url: str, snapshots: Sequence[SourceSnapshot]) -> str:
+    material = source_url + "\n" + "\n".join(
+        f"{item.snapshot_id}:{item.body_sha256}:{item.fetch_status}" for item in snapshots
+    )
+    return "research-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
+
+def _set_projected_field(profile: dict[str, Any], path: str, value: Any, claim: EvidenceClaim | None) -> None:
+    value = _deep_thaw_json(value)
+    if path == "resolutions.candidatePresets":
+        if not isinstance(value, list):
+            raise ResearchError("invalid_projection", "candidate presets must be an array")
+        evidence_ref = (
+            claim.evidence_refs[0] if claim is not None and claim.evidence_refs else
+            (claim.claim_id if claim is not None else "user-supplied")
+        )
+        candidates = []
+        for index, raw in enumerate(value):
+            if not isinstance(raw, Mapping):
+                raise ResearchError("invalid_projection", "candidate preset must be an object")
+            width = raw.get("width")
+            height = raw.get("height")
+            if (
+                isinstance(width, bool) or not isinstance(width, int) or
+                isinstance(height, bool) or not isinstance(height, int) or
+                width < 64 or height < 64 or width > 8192 or height > 8192 or
+                width % 8 or height % 8
+            ):
+                raise ResearchError("invalid_projection", "candidate dimensions are invalid")
+            raw_id = raw.get("id") or f"candidate-{width}x{height}-{index + 1}"
+            if not isinstance(raw_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._~-]{0,127}", raw_id):
+                raise ResearchError("invalid_projection", "candidate preset ID is invalid")
+            label = raw.get("label") or f"{width} x {height}"
+            if not isinstance(label, str) or not label.strip():
+                raise ResearchError("invalid_projection", "candidate preset label is invalid")
+            candidates.append({
+                "id": raw_id,
+                "width": width,
+                "height": height,
+                "label": label.strip(),
+                "verificationStatus": "author_reported_pending_local_validation"
+                if claim is not None and claim.evidence_class == "original_source"
+                else "project_candidate_pending_local_validation",
+                "evidenceRef": evidence_ref,
+                "autoRecommend": False,
+            })
+        profile["resolutions"]["candidatePresets"] = candidates
+        return
+    target: dict[str, Any] = profile
+    parts = path.split(".")
+    for part in parts[:-1]:
+        child = target.get(part)
+        if not isinstance(child, dict):
+            raise ResearchError("unsupported_field", f"{path} cannot be projected")
+        target = child
+    if parts[-1] not in target and path not in {
+        "model.family", "model.versionName", "model.versionId", "model.baseModel",
+        "parameters.defaults.sampler", "parameters.defaults.scheduler",
+        "parameters.defaults.steps", "parameters.defaults.cfg",
+        "parameters.recommendedRanges.cfg",
+    }:
+        raise ResearchError("unsupported_field", f"{path} cannot be projected")
+    target[parts[-1]] = value
+
+
+def _audit_item(
+    claim_id: str,
+    field_path: str,
+    evidence_class: str,
+    evidence_refs: Sequence[str],
+    status: str,
+) -> dict[str, Any]:
+    return {
+        "claimId": claim_id,
+        "fieldPath": field_path,
+        "evidenceClass": evidence_class,
+        "evidenceRefs": list(evidence_refs),
+        "applicationStatus": status,
+    }
+
+
+def apply_claim_decisions(
+    profile: Mapping[str, Any],
+    claims: Sequence[EvidenceClaim | Mapping[str, Any]],
+    decisions: Mapping[str, str],
+    manual_fields: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Project reviewed facts while retaining a complete, honest claim audit."""
+
+    if not isinstance(profile, Mapping) or not isinstance(decisions, Mapping):
+        raise ResearchError("invalid_contract", "profile and decisions must be objects")
+    result = json.loads(json.dumps(profile, ensure_ascii=False, allow_nan=False))
+    normalized_claims = [normalize_claim(item) for item in claims]
+    known_ids = {item.claim_id for item in normalized_claims}
+    if any(key not in known_ids for key in decisions):
+        raise ResearchError("unknown_claim", "decision references an unknown claim")
+    audit: list[dict[str, Any]] = []
+    applied_paths: set[str] = set()
+    for claim in normalized_claims:
+        status = decisions.get(claim.claim_id, claim.application_status)
+        if status not in APPLICATION_STATUSES:
+            raise ResearchError("invalid_application_status", "unknown application status")
+        audit.append(_audit_item(
+            claim.claim_id, claim.field_path, claim.evidence_class,
+            claim.evidence_refs, status,
+        ))
+        if status != "approved":
+            continue
+        if claim.field_path in applied_paths:
+            raise ResearchError("conflicting_claims", "multiple approved claims target one field")
+        applied_paths.add(claim.field_path)
+        _set_projected_field(result, claim.field_path, claim.value, claim)
+
+    manual = manual_fields or {}
+    if not isinstance(manual, Mapping):
+        raise ResearchError("invalid_contract", "manual_fields must be an object")
+    for path, value in manual.items():
+        if path not in ALLOWED_CLAIM_PATHS:
+            raise ResearchError("unsupported_field", "manual field is not allowlisted")
+        _validate_claim_value(value)
+        _set_projected_field(result, path, value, None)
+        manual_id = "manual-" + hashlib.sha256(path.encode("utf-8")).hexdigest()[:12]
+        audit.append(_audit_item(manual_id, path, "user_supplied", (), "approved"))
+
+    version_id = result.get("model", {}).get("versionId")
+    source_url = result.get("metadata", {}).get("research", {}).get("sourceUrl")
+    result["profileId"] = _research_identity(source_url, version_id)
+    warnings = result["metadata"]["research"]["warnings"]
+    warnings = [item for item in warnings if item != "missing_exact_version"]
+    if not isinstance(version_id, int) or isinstance(version_id, bool):
+        warnings.append("missing_exact_version")
+    result["metadata"]["research"]["warnings"] = list(dict.fromkeys(warnings))
+    result["metadata"]["research"]["claimAudit"] = audit
+    return result, audit
+
+
+def build_pending_profile(
+    source_url: str,
+    snapshots: Sequence[SourceSnapshot],
+    claims: Sequence[EvidenceClaim | Mapping[str, Any]],
+    manual_fields: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a usable but deliberately sparse pending-verification profile."""
+
+    canonical = _canonical_civitai_page(source_url)
+    if canonical is None:
+        raise ResearchError("unsupported_source", "no adapter accepts this source URL")
+    if not isinstance(snapshots, Sequence) or any(
+        not isinstance(item, SourceSnapshot) for item in snapshots
+    ):
+        raise ResearchError("invalid_contract", "snapshots must contain SourceSnapshot values")
+    warnings = []
+    if any(item.fetch_status == "failed" for item in snapshots):
+        warnings.append("research_fetch_failed")
+    profile = {
+        "kind": "anima_model_profile",
+        "schemaVersion": 1,
+        "profileId": _research_identity(canonical),
+        "displayName": "Pending model research",
+        "validationStatus": "pending_local_validation",
+        "model": {
+            "family": None,
+            "branch": None,
+            "versionName": None,
+            "versionId": None,
+            "baseModel": None,
+            "checkpoint": {
+                "filename": None,
+                "sha256": None,
+                "verificationStatus": "unverified",
+            },
+        },
+        "prompting": {
+            "positivePrefix": [],
+            "optionalEnhancements": [],
+            "positiveSuffix": [],
+            "negativeDefault": [],
+            "notRecommended": [],
+        },
+        "parameters": {
+            "defaults": {},
+            "recommendedRanges": {},
+            "samplerSchedulerPairs": [],
+            "verificationStatus": "unverified",
+        },
+        "resolutions": {
+            "validatedPresets": [],
+            "candidatePresets": [],
+            "policy": "",
+        },
+        "compatibility": {},
+        "evidence": [
+            {
+                "snapshotId": item.snapshot_id,
+                "sourceClass": item.source_class,
+                "requestedUrl": item.requested_url,
+                "finalUrl": item.final_url,
+                "retrievedAt": item.retrieved_at,
+                "fetchStatus": item.fetch_status,
+                **({"bodySha256": item.body_sha256} if item.body_sha256 else {}),
+                **({"errorCode": item.error_code} if item.error_code else {}),
+            }
+            for item in snapshots
+        ],
+        "metadata": {
+            "strengths": [],
+            "weaknesses": [],
+            "limitations": [],
+            "research": {
+                "sourceUrl": canonical,
+                "researchRunId": _research_run_id(canonical, snapshots),
+                "researchStatus": "pending_verification",
+                "warnings": warnings + ["missing_exact_version"],
+                "claimAudit": [],
+            }
+        },
+    }
+    decisions = {
+        normalize_claim(item).claim_id: normalize_claim(item).application_status
+        for item in claims
+    }
+    projected, _ = apply_claim_decisions(
+        profile, claims, decisions, manual_fields or {}
+    )
+    return projected
+
+
 __all__ = [
     "ALLOWED_CLAIM_PATHS",
     "AdapterRegistry",
@@ -883,6 +1123,8 @@ __all__ = [
     "SourceAdapter",
     "SourceSnapshot",
     "claim_to_dict",
+    "apply_claim_decisions",
+    "build_pending_profile",
     "default_adapter_registry",
     "default_resolver",
     "fetch_snapshot",

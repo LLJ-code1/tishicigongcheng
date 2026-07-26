@@ -100,6 +100,46 @@ class BundledAnimaProfileTests(unittest.TestCase):
 
 
 class ModelProfileAdversarialTests(unittest.TestCase):
+    def test_researched_profile_validator_rejects_unknown_fields(self):
+        import model_research
+
+        profile = model_research.build_pending_profile(
+            "https://civitai.com/models/1",
+            [],
+            [],
+            manual_fields={"displayName": "Pending"},
+        )
+        profile["parameters"]["invented"] = 7
+        with self.assertRaisesRegex(model_profiles.ModelProfileError, "unsupported"):
+            model_profiles.validate_researched_model_profile(profile)
+
+    def test_researched_profile_helpers_preserve_sparse_unverified_values(self):
+        import model_research
+
+        profile = model_research.build_pending_profile(
+            "https://civitai.com/models/1",
+            [],
+            [],
+            manual_fields={"displayName": "Pending"},
+        )
+        self.assertEqual(model_profiles.profile_default_parameters(profile), {})
+        self.assertEqual(model_profiles.validated_resolution_presets(profile), [])
+        self.assertEqual(model_profiles.candidate_resolution_presets(profile), [])
+        self.assertEqual(model_profiles.compile_positive_prefix(profile), "")
+
+    def test_researched_profile_revalidates_claim_audit_evidence_labels(self):
+        import model_research
+
+        profile = model_research.build_pending_profile(
+            "https://civitai.com/models/1",
+            [],
+            [],
+            manual_fields={"displayName": "Pending"},
+        )
+        profile["metadata"]["research"]["claimAudit"][0]["evidenceClass"] = "official"
+        with self.assertRaisesRegex(model_profiles.ModelProfileError, "evidenceClass"):
+            model_profiles.validate_researched_model_profile(profile)
+
     def test_validator_rejects_safe_in_the_fixed_prefix(self):
         profile = model_profiles.load_model_profile()
         profile["prompting"]["positivePrefix"].append("safe")
