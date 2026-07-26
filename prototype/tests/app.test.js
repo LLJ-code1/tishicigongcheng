@@ -471,7 +471,7 @@ test("multi-image canonical replacement and file binding follow the accepted res
   };
   if (
     shouldBindDirectorImageFile({
-      transitionAccepted: false,
+      transitionOutcome: { accepted: true, persisted: false },
       reference: references[1],
       current: acceptedDespiteSaveFailure,
     })
@@ -486,7 +486,7 @@ test("multi-image canonical replacement and file binding follow the accepted res
   });
   if (
     shouldBindDirectorImageFile({
-      transitionAccepted: false,
+      transitionOutcome: { accepted: false, persisted: false },
       reference: references[1],
       current,
     })
@@ -501,7 +501,7 @@ test("multi-image canonical replacement and file binding follow the accepted res
   };
   assert.equal(
     shouldBindDirectorImageFile({
-      transitionAccepted: false,
+      transitionOutcome: { accepted: false, persisted: false },
       reference: sameIdRejectedReplacement,
       current: {
         ...current,
@@ -529,7 +529,7 @@ test("accepted canonical image still binds its File when metadata persistence fa
 
   assert.equal(
     shouldBindDirectorImageFile({
-      transitionAccepted: false,
+      transitionOutcome: { accepted: true, persisted: false },
       reference,
       current: state.creativeIntake,
     }),
@@ -548,7 +548,7 @@ test("accepted canonical image still binds its File when metadata persistence fa
 
   assert.equal(
     shouldBindDirectorImageFile({
-      transitionAccepted: false,
+      transitionOutcome: { accepted: false, persisted: false },
       reference,
       current: emptyCreativeIntake(),
     }),
@@ -556,7 +556,7 @@ test("accepted canonical image still binds its File when metadata persistence fa
   );
   assert.equal(
     shouldBindDirectorImageFile({
-      transitionAccepted: true,
+      transitionOutcome: { accepted: true, persisted: true },
       reference,
       current: {
         ...emptyCreativeIntake(),

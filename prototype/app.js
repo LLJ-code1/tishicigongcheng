@@ -424,9 +424,11 @@
   }
 
   function shouldBindDirectorImageFile({
+    transitionOutcome,
     reference,
     current,
   }) {
+    if (!transitionOutcome?.accepted) return false;
     if (!reference || typeof reference !== "object") return false;
     let canonical;
     try {
@@ -3958,6 +3960,10 @@
   let activeVisionAbort = null;
   let activeDirectorImageAbort = null;
   let activeDirectorAbort = null;
+  let lastCreativeIntakeTransitionOutcome = {
+    accepted: false,
+    persisted: false,
+  };
   const workspaceRequestAborts = new Set();
   let uploadedImageFile = null;
   let imagePreviewUrl = "";
@@ -4810,7 +4816,7 @@
       file,
       () => app.createClientId("image")
     );
-    const transitionAccepted = await transitionCreativeIntake(
+    await transitionCreativeIntake(
       app.buildDirectorImageReplaceAction(
         state.creativeIntake,
         reference
@@ -4818,7 +4824,7 @@
     );
     if (
       !app.shouldBindDirectorImageFile({
-        transitionAccepted,
+        transitionOutcome: lastCreativeIntakeTransitionOutcome,
         reference,
         current: state.creativeIntake,
       })
@@ -4844,10 +4850,10 @@
       activeDirectorImageAbort?.abort();
     });
     clearDirectorImageEvidence("idle");
-    const accepted = await transitionCreativeIntake(
+    await transitionCreativeIntake(
       app.buildDirectorImageReplaceAction(state.creativeIntake)
     );
-    if (!accepted) return false;
+    if (!lastCreativeIntakeTransitionOutcome.accepted) return false;
     activeDirectorImageAbort?.abort();
     directorImageCollectionController.remove(reference.id);
     clearDirectorImageEvidence("idle");
@@ -4872,10 +4878,10 @@
       activeDirectorImageAbort?.abort();
     });
     clearDirectorImageEvidence("idle");
-    const accepted = await transitionCreativeIntake(
+    await transitionCreativeIntake(
       app.buildDirectorImageReplaceAction(state.creativeIntake, updated)
     );
-    if (!accepted) return false;
+    if (!lastCreativeIntakeTransitionOutcome.accepted) return false;
     clearDirectorImageEvidence("idle");
     render();
     return true;
@@ -5033,6 +5039,10 @@
 
   async function transitionCreativeIntake(action) {
     if (state.directorBusy) return false;
+    lastCreativeIntakeTransitionOutcome = {
+      accepted: false,
+      persisted: false,
+    };
     const durableState = state;
     let request;
     try {
@@ -5072,6 +5082,7 @@
         return false;
       }
       state = result.state;
+      lastCreativeIntakeTransitionOutcome.accepted = true;
       syncDirectorImageAttachmentWithCanonical();
       const acceptedProjectRevision = state.projectRevision;
       const message = creativeIntakeTransitionMessage(
@@ -5090,14 +5101,24 @@
       );
       if (request.guard.sessionId !== workspaceSessionId) return false;
       if (!persisted) {
-        state = app.rollbackCreativeIntakeAfterPersistenceFailure(
-          durableState,
-          state,
-          "创作阶段保存失败，已恢复到上次保存状态，请重试"
-        );
+        const imagesChanged =
+          action?.type === "replace_inputs" &&
+          JSON.stringify(action.images || []) !==
+            JSON.stringify(durableState.creativeIntake.inputs.images);
+        state = imagesChanged
+          ? app.reduceState(state, {
+              type: "DIRECTOR_REQUEST_FAILED",
+              error: "图片变更已在本机保留，但保存失败，请重试",
+            })
+          : app.rollbackCreativeIntakeAfterPersistenceFailure(
+              durableState,
+              state,
+              "创作阶段保存失败，已恢复到上次保存状态，请重试"
+            );
         render();
         return false;
       }
+      lastCreativeIntakeTransitionOutcome.persisted = true;
       state = app.reduceState(state, {
         type: "DIRECTOR_REQUEST_SUCCEEDED",
       });
