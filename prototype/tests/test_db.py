@@ -986,6 +986,39 @@ class PromptStudioDatabaseTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def test_model_research_schema_is_exact_and_detects_mismatch(self):
+        with db.database(self.db_path) as connection:
+            self.assertEqual(
+                {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    )
+                    if not row[0].startswith("sqlite_")
+                },
+                set(db.EXPECTED_SCHEMA_COLUMNS),
+            )
+            connection.execute(
+                "ALTER TABLE model_research_runs ADD COLUMN unexpected TEXT"
+            )
+
+        status = db.get_database_status(self.db_path)
+        self.assertFalse(status["compatible"])
+        self.assertEqual(status["state"], "error")
+
+    def test_model_active_index_must_remain_unique_and_partial(self):
+        with db.database(self.db_path) as connection:
+            connection.execute("DROP INDEX idx_model_profile_one_active")
+            connection.execute(
+                """
+                CREATE INDEX idx_model_profile_one_active
+                ON model_profile_versions(profile_id)
+                """
+            )
+
+        status = db.get_database_status(self.db_path)
+        self.assertFalse(status["compatible"])
+
     def test_settings_preserve_explicit_null(self):
         saved = db.put_settings({"optionalValue": None}, self.db_path)
 

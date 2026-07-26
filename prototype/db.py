@@ -120,6 +120,62 @@ CREATE TABLE IF NOT EXISTS settings (
     value_json TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS model_research_runs (
+    id TEXT PRIMARY KEY,
+    source_url TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error_code TEXT,
+    created_at TEXT NOT NULL,
+    completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS model_evidence_snapshots (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES model_research_runs(id),
+    source_class TEXT NOT NULL,
+    requested_url TEXT NOT NULL,
+    final_url TEXT NOT NULL,
+    retrieved_at TEXT NOT NULL,
+    content_type TEXT,
+    body_sha256 TEXT,
+    extracted_text TEXT NOT NULL,
+    fetch_status TEXT NOT NULL,
+    error_code TEXT
+);
+
+CREATE TABLE IF NOT EXISTS model_evidence_claims (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES model_research_runs(id),
+    field_path TEXT NOT NULL,
+    value_json TEXT NOT NULL,
+    evidence_class TEXT NOT NULL,
+    evidence_refs_json TEXT NOT NULL,
+    rationale TEXT NOT NULL,
+    verification_status TEXT NOT NULL,
+    application_status TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS model_profile_versions (
+    id TEXT PRIMARY KEY,
+    profile_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    parent_version_id TEXT REFERENCES model_profile_versions(id),
+    research_run_id TEXT REFERENCES model_research_runs(id),
+    lifecycle_status TEXT NOT NULL,
+    profile_json TEXT NOT NULL,
+    claim_decisions_json TEXT NOT NULL,
+    content_sha256 TEXT NOT NULL,
+    review_note TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    reviewed_at TEXT,
+    activated_at TEXT,
+    UNIQUE(profile_id, revision)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_model_profile_one_active
+ON model_profile_versions(profile_id)
+WHERE lifecycle_status = 'active';
 """
 
 
@@ -182,12 +238,60 @@ EXPECTED_SCHEMA_COLUMNS = {
         ("value_json", "TEXT", 1, 0),
         ("updated_at", "TEXT", 1, 0),
     ),
+    "model_research_runs": (
+        ("id", "TEXT", 0, 1),
+        ("source_url", "TEXT", 1, 0),
+        ("status", "TEXT", 1, 0),
+        ("error_code", "TEXT", 0, 0),
+        ("created_at", "TEXT", 1, 0),
+        ("completed_at", "TEXT", 0, 0),
+    ),
+    "model_evidence_snapshots": (
+        ("id", "TEXT", 0, 1),
+        ("run_id", "TEXT", 1, 0),
+        ("source_class", "TEXT", 1, 0),
+        ("requested_url", "TEXT", 1, 0),
+        ("final_url", "TEXT", 1, 0),
+        ("retrieved_at", "TEXT", 1, 0),
+        ("content_type", "TEXT", 0, 0),
+        ("body_sha256", "TEXT", 0, 0),
+        ("extracted_text", "TEXT", 1, 0),
+        ("fetch_status", "TEXT", 1, 0),
+        ("error_code", "TEXT", 0, 0),
+    ),
+    "model_evidence_claims": (
+        ("id", "TEXT", 0, 1),
+        ("run_id", "TEXT", 1, 0),
+        ("field_path", "TEXT", 1, 0),
+        ("value_json", "TEXT", 1, 0),
+        ("evidence_class", "TEXT", 1, 0),
+        ("evidence_refs_json", "TEXT", 1, 0),
+        ("rationale", "TEXT", 1, 0),
+        ("verification_status", "TEXT", 1, 0),
+        ("application_status", "TEXT", 1, 0),
+    ),
+    "model_profile_versions": (
+        ("id", "TEXT", 0, 1),
+        ("profile_id", "TEXT", 1, 0),
+        ("revision", "INTEGER", 1, 0),
+        ("parent_version_id", "TEXT", 0, 0),
+        ("research_run_id", "TEXT", 0, 0),
+        ("lifecycle_status", "TEXT", 1, 0),
+        ("profile_json", "TEXT", 1, 0),
+        ("claim_decisions_json", "TEXT", 1, 0),
+        ("content_sha256", "TEXT", 1, 0),
+        ("review_note", "TEXT", 1, 0),
+        ("created_at", "TEXT", 1, 0),
+        ("reviewed_at", "TEXT", 0, 0),
+        ("activated_at", "TEXT", 0, 0),
+    ),
 }
 
 EXPECTED_INDEX_COLUMNS = {
     "idx_prompt_versions_project": ("project_id", "version"),
     "idx_resources_type": ("type",),
     "idx_favorites_type_created": ("type", "created_at"),
+    "idx_model_profile_one_active": ("profile_id",),
 }
 
 
@@ -714,6 +818,32 @@ def _validate_schema(connection: sqlite3.Connection) -> None:
         ):
             raise DatabaseSchemaError(f"数据库索引 {index_name} 缺失或不兼容")
 
+    active_index = connection.execute(
+        """
+        SELECT "unique", partial
+        FROM pragma_index_list('model_profile_versions')
+        WHERE name = 'idx_model_profile_one_active'
+        """
+    ).fetchone()
+    active_index_sql_row = connection.execute(
+        """
+        SELECT sql FROM sqlite_master
+        WHERE type = 'index' AND name = 'idx_model_profile_one_active'
+        """
+    ).fetchone()
+    active_index_sql = re.sub(
+        r"\s+",
+        " ",
+        active_index_sql_row["sql"] if active_index_sql_row else "",
+    ).casefold()
+    if (
+        active_index is None
+        or int(active_index["unique"]) != 1
+        or int(active_index["partial"]) != 1
+        or "where lifecycle_status = 'active'" not in active_index_sql
+    ):
+        raise DatabaseSchemaError("model active-version index is incompatible")
+
     unique_version_index = False
     for row in connection.execute('PRAGMA index_list("prompt_versions")').fetchall():
         if int(row["unique"]) and _index_columns(connection, row["name"]) == (
@@ -947,6 +1077,170 @@ def get_database_status(db_path: Path | str | None = None) -> dict:
         if connection is not None:
             connection.close()
     return status
+
+
+# Model research/profile SQL remains here so all SQLite access has one audited
+# boundary. model_profile_store owns lifecycle validation and orchestration.
+def research_run_row(connection: sqlite3.Connection, run_id: str):
+    return connection.execute(
+        "SELECT * FROM model_research_runs WHERE id = ?", (run_id,)
+    ).fetchone()
+
+
+def insert_research_run_row(
+    connection: sqlite3.Connection, values: tuple[Any, ...]
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO model_research_runs
+            (id, source_url, status, error_code, created_at, completed_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        values,
+    )
+
+
+def complete_research_run_row(
+    connection: sqlite3.Connection, run_id: str, completed_at: str
+) -> None:
+    connection.execute(
+        """
+        UPDATE model_research_runs
+        SET status = 'completed', completed_at = ?
+        WHERE id = ? AND status = 'pending'
+        """,
+        (completed_at, run_id),
+    )
+
+
+def insert_evidence_snapshot_row(
+    connection: sqlite3.Connection, values: tuple[Any, ...]
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO model_evidence_snapshots (
+            id, run_id, source_class, requested_url, final_url, retrieved_at,
+            content_type, body_sha256, extracted_text, fetch_status, error_code
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        values,
+    )
+
+
+def insert_evidence_claim_row(
+    connection: sqlite3.Connection, values: tuple[Any, ...]
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO model_evidence_claims (
+            id, run_id, field_path, value_json, evidence_class,
+            evidence_refs_json, rationale, verification_status,
+            application_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        values,
+    )
+
+
+def evidence_snapshot_rows(connection: sqlite3.Connection, run_id: str):
+    return connection.execute(
+        """
+        SELECT * FROM model_evidence_snapshots
+        WHERE run_id = ? ORDER BY id
+        """,
+        (run_id,),
+    ).fetchall()
+
+
+def evidence_claim_rows(connection: sqlite3.Connection, run_id: str):
+    return connection.execute(
+        """
+        SELECT * FROM model_evidence_claims
+        WHERE run_id = ? ORDER BY field_path, id
+        """,
+        (run_id,),
+    ).fetchall()
+
+
+def profile_version_row(connection: sqlite3.Connection, version_id: str):
+    return connection.execute(
+        "SELECT * FROM model_profile_versions WHERE id = ?", (version_id,)
+    ).fetchone()
+
+
+def next_profile_revision(connection: sqlite3.Connection, profile_id: str) -> int:
+    return int(
+        connection.execute(
+            """
+            SELECT COALESCE(MAX(revision), 0) + 1
+            FROM model_profile_versions WHERE profile_id = ?
+            """,
+            (profile_id,),
+        ).fetchone()[0]
+    )
+
+
+def insert_profile_version_row(
+    connection: sqlite3.Connection, values: tuple[Any, ...]
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO model_profile_versions (
+            id, profile_id, revision, parent_version_id, research_run_id,
+            lifecycle_status, profile_json, claim_decisions_json,
+            content_sha256, review_note, created_at, reviewed_at, activated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        values,
+    )
+
+
+def active_profile_version_row(
+    connection: sqlite3.Connection, profile_id: str
+):
+    return connection.execute(
+        """
+        SELECT * FROM model_profile_versions
+        WHERE profile_id = ? AND lifecycle_status = 'active'
+        """,
+        (profile_id,),
+    ).fetchone()
+
+
+def supersede_profile_version_row(
+    connection: sqlite3.Connection, version_id: str
+) -> None:
+    connection.execute(
+        """
+        UPDATE model_profile_versions
+        SET lifecycle_status = 'superseded'
+        WHERE id = ? AND lifecycle_status = 'active'
+        """,
+        (version_id,),
+    )
+
+
+def activate_profile_version_row(
+    connection: sqlite3.Connection, version_id: str, activated_at: str
+) -> None:
+    connection.execute(
+        """
+        UPDATE model_profile_versions
+        SET lifecycle_status = 'active', activated_at = ?
+        WHERE id = ? AND lifecycle_status = 'reviewed'
+        """,
+        (activated_at, version_id),
+    )
+
+
+def active_profile_version_rows(connection: sqlite3.Connection):
+    return connection.execute(
+        """
+        SELECT * FROM model_profile_versions
+        WHERE lifecycle_status = 'active'
+        ORDER BY profile_id
+        """
+    ).fetchall()
 
 
 def _project_from_row(row: sqlite3.Row) -> dict:
