@@ -2253,7 +2253,12 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
                 raise model_research.ResearchError(
                     "invalid_request", "notes is invalid"
                 )
-            note = f"{note}\n\n{notes}".strip()
+            note_parts = [
+                item.strip()
+                for item in (note, notes)
+                if isinstance(item, str) and item.strip()
+            ]
+            note = "\n\n".join(note_parts)
             if len(note) > 4096:
                 raise model_research.ResearchError(
                     "invalid_request", "combined review note is too long"

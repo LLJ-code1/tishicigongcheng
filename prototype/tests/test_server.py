@@ -751,7 +751,6 @@ class PromptStudioServerTests(unittest.TestCase):
             data=json.dumps({
                 "claimDecisions": identity_decisions,
                 "manualFields": {"notes": "Identity still needs a real model name."},
-                "reviewNote": "Version fields only",
             }).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="PUT",
@@ -759,6 +758,7 @@ class PromptStudioServerTests(unittest.TestCase):
         with urlopen(request) as response:
             version_only = json.loads(response.read().decode("utf-8"))["item"]
         self.assertIn("Identity still needs", version_only["reviewNote"])
+        self.assertNotIn("None", version_only["reviewNote"])
         rejected = self.assert_http_error_json(
             Request(
                 f"{self.base_url}/api/model-profile-versions/{version_only['versionId']}/review",
