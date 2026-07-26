@@ -1,3 +1,4 @@
+import copy
 from collections.abc import Mapping
 
 
@@ -342,10 +343,266 @@ def normalize_creative_intake(value: object) -> dict:
     }
 
 
+def _transition_requires(state: dict, stages: set[str], message: str) -> None:
+    if state["stage"] not in stages:
+        _error("invalid_transition", message)
+
+
+def _transition_images(value: object) -> list[dict]:
+    images = [_image(item, f"action.images[{index}]") for index, item in enumerate(
+        _array(value, "action.images", maximum=8)
+    )]
+    _unique_identifiers(images, "action.images")
+    return images
+
+
+def _transition_directions(value: object) -> list[dict]:
+    directions = []
+    for index, value in enumerate(_array(value, "action.directions", maximum=3)):
+        direction = _mapping(value, f"action.directions[{index}]")
+        _reject_unknown_keys(direction, {"id", "label", "summary"}, f"action.directions[{index}]")
+        directions.append(
+            {
+                "id": _identifier(direction.get("id"), f"action.directions[{index}].id"),
+                "label": _text(
+                    direction.get("label"),
+                    f"action.directions[{index}].label",
+                    maximum=512,
+                    allow_empty=False,
+                ),
+                "summary": _text(
+                    direction.get("summary"),
+                    f"action.directions[{index}].summary",
+                    maximum=200_000,
+                ),
+            }
+        )
+    _unique_identifiers(directions, "action.directions")
+    return directions
+
+
+def _approved_locked_item_ids(command: Mapping[str, object]) -> set[str]:
+    value = command.get("approvedLockedItemIds", [])
+    identifiers = [
+        _identifier(item_id, f"action.approvedLockedItemIds[{index}]")
+        for index, item_id in enumerate(
+            _array(value, "action.approvedLockedItemIds", maximum=200)
+        )
+    ]
+    if len(identifiers) != len(set(identifiers)):
+        _error("duplicate_id", "action.approvedLockedItemIds contains duplicate IDs")
+    return set(identifiers)
+
+
+def _locked_brief_item_value(item: dict) -> tuple:
+    source = item["source"]
+    return (
+        item["id"],
+        item["category"],
+        item["text"],
+        source["type"],
+        source["refId"],
+    )
+
+
+def _require_locked_brief_items_approved(
+    current: dict | None, updated: dict, approved_ids: set[str]
+) -> None:
+    if current is None:
+        return
+    updated_by_id = {item["id"]: item for item in updated["items"]}
+    for item in current["items"]:
+        if not item["locked"]:
+            continue
+        replacement = updated_by_id.get(item["id"])
+        if replacement is None or _locked_brief_item_value(item) != _locked_brief_item_value(replacement):
+            if item["id"] not in approved_ids:
+                _error("locked_item", f"locked item {item['id']} requires approval")
+
+
+def _replace_inputs(state: dict, command: Mapping[str, object]) -> dict:
+    _reject_unknown_keys(command, {"type", "text", "images"}, "action")
+    state["inputs"] = {
+        "text": _text(command.get("text"), "action.text", maximum=200_000),
+        "images": _transition_images(command.get("images")),
+    }
+    state["stage"] = "intake"
+    state["directions"] = []
+    state["selectedDirectionId"] = None
+    state["brief"] = None
+    state["selectedModelProfileId"] = None
+    state["decomposition"] = None
+    state["recipeStatus"] = "missing"
+    state["conflicts"] = []
+    return state
+
+
+def _set_directions(state: dict, command: Mapping[str, object]) -> dict:
+    _transition_requires(state, {"intake"}, "inputs are required before setting directions")
+    _reject_unknown_keys(command, {"type", "directions"}, "action")
+    state["directions"] = _transition_directions(command.get("directions"))
+    state["selectedDirectionId"] = None
+    return state
+
+
+def _select_direction(state: dict, command: Mapping[str, object]) -> dict:
+    _transition_requires(state, {"intake"}, "directions are required before selecting a direction")
+    _reject_unknown_keys(command, {"type", "directionId"}, "action")
+    direction_id = _identifier(command.get("directionId"), "action.directionId")
+    if direction_id not in {direction["id"] for direction in state["directions"]}:
+        _error("unknown_direction", "action.directionId does not reference a direction")
+    state["selectedDirectionId"] = direction_id
+    state["stage"] = "direction_selected"
+    return state
+
+
+def _set_brief_draft(state: dict, command: Mapping[str, object]) -> dict:
+    _transition_requires(
+        state,
+        {"direction_selected", "brief_draft"},
+        "a selected direction is required before setting a brief draft",
+    )
+    _reject_unknown_keys(
+        command,
+        {"type", "brief", "conflicts", "approvedLockedItemIds"},
+        "action",
+    )
+    if state["selectedDirectionId"] is None:
+        _error("missing_direction", "a selected direction is required before setting a brief draft")
+    image_ids = {image["id"] for image in state["inputs"]["images"]}
+    brief = _brief(command.get("brief"), image_ids)
+    if brief is None:
+        _error("invalid_brief", "action.brief must be an object")
+    if brief["status"] != "draft":
+        _error("invalid_brief_status", "action.brief must have draft status")
+    _require_locked_brief_items_approved(
+        state["brief"], brief, _approved_locked_item_ids(command)
+    )
+    state["brief"] = brief
+    state["conflicts"] = _conflicts(command.get("conflicts", state["conflicts"]))
+    state["stage"] = "brief_draft"
+    return state
+
+
+def _confirm_brief(state: dict, command: Mapping[str, object]) -> dict:
+    _transition_requires(state, {"brief_draft"}, "a brief draft is required before brief confirmation")
+    _reject_unknown_keys(command, {"type"}, "action")
+    if state["brief"] is None:
+        _error("missing_brief", "a brief draft is required before brief confirmation")
+    if state["brief"]["openQuestions"]:
+        _error("open_questions", "brief confirmation requires no open questions")
+    if any(conflict["status"] == "open" for conflict in state["conflicts"]):
+        _error("unresolved_conflicts", "brief confirmation requires no unresolved conflicts")
+    state["brief"]["status"] = "confirmed"
+    state["stage"] = "brief_confirmed"
+    return state
+
+
+def _select_model(state: dict, command: Mapping[str, object]) -> dict:
+    _transition_requires(
+        state,
+        {"brief_confirmed", "model_selected", "decomposition_draft", "decomposition_confirmed"},
+        "brief confirmation is required before model selection",
+    )
+    _reject_unknown_keys(command, {"type", "modelProfileId"}, "action")
+    if state["brief"] is None or state["brief"]["status"] != "confirmed":
+        _error("missing_brief_confirmation", "brief confirmation is required before model selection")
+    state["selectedModelProfileId"] = _identifier(
+        command.get("modelProfileId"), "action.modelProfileId"
+    )
+    state["decomposition"] = None
+    state["recipeStatus"] = "stale"
+    state["stage"] = "model_selected"
+    return state
+
+
+def _set_decomposition_draft(state: dict, command: Mapping[str, object]) -> dict:
+    _transition_requires(
+        state,
+        {"model_selected", "decomposition_draft"},
+        "model selection is required before setting a decomposition draft",
+    )
+    _reject_unknown_keys(command, {"type", "decomposition"}, "action")
+    if state["selectedModelProfileId"] is None:
+        _error("missing_model", "model selection is required before setting a decomposition draft")
+    image_ids = {image["id"] for image in state["inputs"]["images"]}
+    decomposition = _decomposition(command.get("decomposition"), image_ids)
+    if decomposition is None:
+        _error("invalid_decomposition", "action.decomposition must be an object")
+    if decomposition["status"] != "draft":
+        _error("invalid_decomposition_status", "action.decomposition must have draft status")
+    state["decomposition"] = decomposition
+    state["recipeStatus"] = "stale"
+    state["stage"] = "decomposition_draft"
+    return state
+
+
+def _confirm_decomposition(state: dict, command: Mapping[str, object]) -> dict:
+    _transition_requires(
+        state,
+        {"decomposition_draft"},
+        "a decomposition draft is required before decomposition confirmation",
+    )
+    _reject_unknown_keys(command, {"type"}, "action")
+    if state["decomposition"] is None:
+        _error("missing_decomposition", "a decomposition draft is required before decomposition confirmation")
+    if any(not block["approved"] for block in state["decomposition"]["blocks"]):
+        _error("unapproved_decomposition", "all decomposition blocks must be approved")
+    state["decomposition"]["status"] = "confirmed"
+    state["recipeStatus"] = "ready"
+    state["stage"] = "decomposition_confirmed"
+    return state
+
+
+def _reopen_brief(state: dict, command: Mapping[str, object]) -> dict:
+    _transition_requires(
+        state,
+        {"brief_confirmed", "model_selected", "decomposition_draft", "decomposition_confirmed"},
+        "brief confirmation is required before reopening a brief",
+    )
+    _reject_unknown_keys(command, {"type"}, "action")
+    if state["brief"] is None:
+        _error("missing_brief", "brief confirmation is required before reopening a brief")
+    state["brief"]["status"] = "draft"
+    state["selectedModelProfileId"] = None
+    state["decomposition"] = None
+    state["recipeStatus"] = "stale"
+    state["stage"] = "brief_draft"
+    return state
+
+
+_TRANSITIONS = {
+    "replace_inputs": _replace_inputs,
+    "set_directions": _set_directions,
+    "select_direction": _select_direction,
+    "set_brief_draft": _set_brief_draft,
+    "confirm_brief": _confirm_brief,
+    "select_model": _select_model,
+    "set_decomposition_draft": _set_decomposition_draft,
+    "confirm_decomposition": _confirm_decomposition,
+    "reopen_brief": _reopen_brief,
+}
+
+
+def apply_creative_intake_transition(current: object, action: object) -> dict:
+    state = normalize_creative_intake(current)
+    command = _mapping(action, "action")
+    action_type = _text(
+        command.get("type"), "action.type", maximum=64, allow_empty=False
+    )
+    handler = _TRANSITIONS.get(action_type)
+    if handler is None:
+        _error("unsupported_action", f"unsupported creative-intake action: {action_type}")
+    updated = handler(copy.deepcopy(state), command)
+    updated["revision"] = state["revision"] + 1
+    return normalize_creative_intake(updated)
+
+
 __all__ = [
     "CreativeIntakeValidationError",
     "SCHEMA_VERSION",
     "STAGES",
+    "apply_creative_intake_transition",
     "empty_creative_intake",
     "normalize_creative_intake",
 ]

@@ -180,6 +180,160 @@ class PromptStudioCreativeIntakeTests(unittest.TestCase):
                 with self.assertRaises(creative_intake.CreativeIntakeValidationError):
                     creative_intake.normalize_creative_intake(value)
 
+    def test_transitions_progress_through_confirmed_decomposition(self):
+        state = creative_intake.empty_creative_intake()
+        state = creative_intake.apply_creative_intake_transition(
+            state, {"type": "replace_inputs", "text": "red-haired runner", "images": []}
+        )
+        state = creative_intake.apply_creative_intake_transition(
+            state,
+            {
+                "type": "set_directions",
+                "directions": [
+                    {"id": "main", "label": "Main", "summary": "Rainy-night run."},
+                    {"id": "alt-1", "label": "Alt one", "summary": "Daytime run."},
+                    {"id": "alt-2", "label": "Alt two", "summary": "Station run."},
+                ],
+            },
+        )
+        state = creative_intake.apply_creative_intake_transition(
+            state, {"type": "select_direction", "directionId": "main"}
+        )
+        self.assertEqual(state["stage"], "direction_selected")
+        self.assertEqual(state["revision"], 3)
+
+        state = creative_intake.apply_creative_intake_transition(
+            state, {"type": "set_brief_draft", "brief": draft_brief()}
+        )
+        self.assertEqual(state["stage"], "brief_draft")
+        state = creative_intake.apply_creative_intake_transition(
+            state, {"type": "confirm_brief"}
+        )
+        self.assertEqual(state["stage"], "brief_confirmed")
+        self.assertEqual(state["brief"]["status"], "confirmed")
+        state = creative_intake.apply_creative_intake_transition(
+            state, {"type": "select_model", "modelProfileId": "anima-1.1-v1"}
+        )
+        self.assertEqual(state["stage"], "model_selected")
+        state = creative_intake.apply_creative_intake_transition(
+            state, {"type": "set_decomposition_draft", "decomposition": approved_decomposition()}
+        )
+        self.assertEqual(state["stage"], "decomposition_draft")
+        state = creative_intake.apply_creative_intake_transition(
+            state, {"type": "confirm_decomposition"}
+        )
+        self.assertEqual(state["stage"], "decomposition_confirmed")
+        self.assertEqual(state["decomposition"]["status"], "confirmed")
+        self.assertEqual(state["recipeStatus"], "ready")
+        self.assertEqual(state["revision"], 8)
+
+    def test_set_brief_draft_requires_one_time_approval_for_locked_item_change(self):
+        state = creative_intake.empty_creative_intake()
+        state = creative_intake.apply_creative_intake_transition(
+            state, {"type": "replace_inputs", "text": "runner", "images": []}
+        )
+        state = creative_intake.apply_creative_intake_transition(
+            state, {"type": "set_directions", "directions": [direction("main")]}
+        )
+        state = creative_intake.apply_creative_intake_transition(
+            state, {"type": "select_direction", "directionId": "main"}
+        )
+        locked_brief = draft_brief(locked=True)
+        brief_state = creative_intake.apply_creative_intake_transition(
+            state, {"type": "set_brief_draft", "brief": locked_brief}
+        )
+        changed_brief = draft_brief(locked=True)
+        changed_brief["items"][0]["text"] = "sprint"
+
+        with self.assertRaisesRegex(creative_intake.CreativeIntakeValidationError, "locked item"):
+            creative_intake.apply_creative_intake_transition(
+                brief_state,
+                {
+                    "type": "set_brief_draft",
+                    "brief": changed_brief,
+                    "approvedLockedItemIds": [],
+                },
+            )
+
+        updated = creative_intake.apply_creative_intake_transition(
+            brief_state,
+            {
+                "type": "set_brief_draft",
+                "brief": changed_brief,
+                "approvedLockedItemIds": ["item-1"],
+            },
+        )
+        self.assertEqual(updated["brief"]["items"][0]["text"], "sprint")
+        self.assertNotIn("approvedLockedItemIds", updated)
+
+    def test_transitions_reject_invalid_gates_and_unresolved_confirmation(self):
+        intake = creative_intake.empty_creative_intake()
+        with self.assertRaisesRegex(creative_intake.CreativeIntakeValidationError, "brief confirmation"):
+            creative_intake.apply_creative_intake_transition(
+                intake, {"type": "select_model", "modelProfileId": "anima-1.1-v1"}
+            )
+        with self.assertRaisesRegex(creative_intake.CreativeIntakeValidationError, "model selection"):
+            creative_intake.apply_creative_intake_transition(
+                intake,
+                {"type": "set_decomposition_draft", "decomposition": approved_decomposition()},
+            )
+        intake["stage"] = "direction_selected"
+        with self.assertRaisesRegex(creative_intake.CreativeIntakeValidationError, "selected direction"):
+            creative_intake.apply_creative_intake_transition(
+                intake, {"type": "set_brief_draft", "brief": draft_brief()}
+            )
+
+        state = state_at_brief_draft()
+        state["brief"]["openQuestions"] = ["What time of day?"]
+        with self.assertRaisesRegex(creative_intake.CreativeIntakeValidationError, "open questions"):
+            creative_intake.apply_creative_intake_transition(state, {"type": "confirm_brief"})
+        state["brief"]["openQuestions"] = []
+        state["conflicts"] = [conflict("conflict-1")]
+        with self.assertRaisesRegex(creative_intake.CreativeIntakeValidationError, "unresolved conflicts"):
+            creative_intake.apply_creative_intake_transition(state, {"type": "confirm_brief"})
+
+        state = state_at_model_selected()
+        state = creative_intake.apply_creative_intake_transition(
+            state, {"type": "set_decomposition_draft", "decomposition": draft_decomposition()}
+        )
+        with self.assertRaisesRegex(creative_intake.CreativeIntakeValidationError, "approved"):
+            creative_intake.apply_creative_intake_transition(state, {"type": "confirm_decomposition"})
+
+    def test_reopen_and_model_change_invalidate_downstream_data(self):
+        state = state_at_model_selected()
+        state = creative_intake.apply_creative_intake_transition(
+            state, {"type": "set_decomposition_draft", "decomposition": approved_decomposition()}
+        )
+        state = creative_intake.apply_creative_intake_transition(
+            state, {"type": "confirm_decomposition"}
+        )
+        reopened = creative_intake.apply_creative_intake_transition(state, {"type": "reopen_brief"})
+        self.assertEqual(reopened["stage"], "brief_draft")
+        self.assertEqual(reopened["brief"], {**state["brief"], "status": "draft"})
+        self.assertEqual(reopened["inputs"], state["inputs"])
+        self.assertEqual(reopened["directions"], state["directions"])
+        self.assertEqual(reopened["selectedDirectionId"], state["selectedDirectionId"])
+        self.assertIsNone(reopened["selectedModelProfileId"])
+        self.assertIsNone(reopened["decomposition"])
+        self.assertEqual(reopened["recipeStatus"], "stale")
+
+        selected = creative_intake.apply_creative_intake_transition(
+            state, {"type": "select_model", "modelProfileId": "anima-2.0-v1"}
+        )
+        self.assertEqual(selected["brief"], state["brief"])
+        self.assertEqual(selected["selectedModelProfileId"], "anima-2.0-v1")
+        self.assertIsNone(selected["decomposition"])
+        self.assertEqual(selected["recipeStatus"], "stale")
+
+    def test_failed_transition_leaves_source_untouched(self):
+        state = creative_intake.empty_creative_intake()
+        snapshot = creative_intake.normalize_creative_intake(state)
+        with self.assertRaises(creative_intake.CreativeIntakeValidationError):
+            creative_intake.apply_creative_intake_transition(
+                state, {"type": "select_direction", "directionId": "missing"}
+            )
+        self.assertEqual(state, snapshot)
+
 
 def image(identifier):
     return {
@@ -249,6 +403,53 @@ def state_with_decomposition():
     value["selectedModelProfileId"] = "anima-1.1-v1"
     value["decomposition"] = {"status": "draft", "blocks": [decomposition_block("block-1")]}
     return value
+
+
+def draft_brief(locked=False):
+    return {
+        "status": "draft",
+        "summary": "A runner crosses a rainy street.",
+        "items": [{**brief_item("item-1"), "locked": locked}],
+        "aiAdditions": [],
+        "openQuestions": [],
+    }
+
+
+def approved_decomposition():
+    return {
+        "status": "draft",
+        "blocks": [{**decomposition_block("block-1"), "approved": True}],
+    }
+
+
+def draft_decomposition():
+    return {"status": "draft", "blocks": [decomposition_block("block-1")]}
+
+
+def state_at_brief_draft():
+    state = creative_intake.empty_creative_intake()
+    state = creative_intake.apply_creative_intake_transition(
+        state, {"type": "replace_inputs", "text": "runner", "images": []}
+    )
+    state = creative_intake.apply_creative_intake_transition(
+        state, {"type": "set_directions", "directions": [direction("main")]}
+    )
+    state = creative_intake.apply_creative_intake_transition(
+        state, {"type": "select_direction", "directionId": "main"}
+    )
+    return creative_intake.apply_creative_intake_transition(
+        state, {"type": "set_brief_draft", "brief": draft_brief()}
+    )
+
+
+def state_at_model_selected():
+    state = state_at_brief_draft()
+    state = creative_intake.apply_creative_intake_transition(
+        state, {"type": "confirm_brief"}
+    )
+    return creative_intake.apply_creative_intake_transition(
+        state, {"type": "select_model", "modelProfileId": "anima-1.1-v1"}
+    )
 
 
 if __name__ == "__main__":
