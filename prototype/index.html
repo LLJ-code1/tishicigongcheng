@@ -251,6 +251,59 @@
                   </button>
                 </div>
               </section>
+
+              <section
+                class="decomposition-preview-panel hidden"
+                id="decompositionPreviewPanel"
+                aria-labelledby="decompositionPreviewTitle"
+              >
+                <div class="director-section-heading">
+                  <div>
+                    <p class="eyebrow">MODEL-ADAPTED · 13 BLOCKS</p>
+                    <h3 id="decompositionPreviewTitle">模型适配拆解审阅</h3>
+                  </div>
+                  <button
+                    class="primary-button"
+                    id="generateDecompositionPreview"
+                    type="button"
+                  >生成 13 区块预览</button>
+                </div>
+                <p
+                  class="decomposition-lineage"
+                  id="decompositionProfileLineage"
+                  role="status"
+                  aria-live="polite"
+                >选择已激活的模型档案后可生成预览。</p>
+                <ul
+                  class="decomposition-warnings"
+                  id="decompositionWarnings"
+                  aria-live="polite"
+                ></ul>
+                <div id="decompositionBlockList">
+                  <article class="decomposition-card" data-decomposition-block="template">
+                    <section><h4>语义层（已确认需求）</h4></section>
+                    <section>
+                      <h4>模型适配层</h4>
+                      <label for="decompositionAdaptationTemplate">英文表达</label>
+                      <textarea id="decompositionAdaptationTemplate"></textarea>
+                      <details data-rule-evidence>
+                        <summary>查看规则与证据</summary>
+                      </details>
+                    </section>
+                    <button type="button" data-edit-adaptation="template">编辑英文</button>
+                    <button type="button" data-approve-decomposition="template">接受</button>
+                    <button type="button" data-return-decomposition="template">退回</button>
+                  </article>
+                </div>
+                <div class="decomposition-confirm-row">
+                  <button
+                    class="primary-button"
+                    id="confirmDecomposition"
+                    type="button"
+                    disabled
+                  >确认全部拆解并进入工作台</button>
+                </div>
+              </section>
             </aside>
           </section>
 

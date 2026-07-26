@@ -4872,6 +4872,88 @@
     }
   }
 
+  function decompositionSemanticSourceLabel(source) {
+    if (source?.type === "user") return "用户明确要求";
+    if (source?.type === "image") {
+      return `参考图${source.refId ? ` · ${source.refId}` : ""}`;
+    }
+    if (source?.type === "model_rule") return "已批准模型规则";
+    return "AI 补全";
+  }
+
+  function buildDecompositionPreviewRenderModel(state) {
+    const intake = normalizeCreativeIntake(
+      state?.creativeIntake || emptyCreativeIntake()
+    );
+    const decomposition = intake.decomposition;
+    const preview = safeObject(state?.decompositionPreview);
+    const visible = [
+      "model_selected",
+      "decomposition_draft",
+      "decomposition_confirmed",
+    ].includes(intake.stage);
+    const profile = selectedDecompositionProfile(state || {});
+    return {
+      visible,
+      canGenerate:
+        visible &&
+        Boolean(profile?.profileVersionId) &&
+        /^[0-9a-f]{64}$/.test(
+          String(
+            profile?.profileContentSha256 || profile?.contentSha256 || ""
+          ).toLowerCase()
+        ) &&
+        preview.status !== "loading",
+      canConfirm: canConfirmDecomposition(intake),
+      status: ["idle", "loading", "ready", "error"].includes(preview.status)
+        ? preview.status
+        : "idle",
+      error: typeof preview.error === "string" ? preview.error : "",
+      returnedBlockIds: Array.isArray(preview.returnedBlockIds)
+        ? preview.returnedBlockIds.filter((id) =>
+            DECOMPOSITION_BLOCK_IDS.includes(id)
+          )
+        : [],
+      lineage: {
+        profileId: intake.selectedModelProfileId || "",
+        profileVersionId:
+          decomposition?.profileVersionId || profile?.profileVersionId || "",
+        profileContentSha256:
+          decomposition?.profileContentSha256 ||
+          String(
+            profile?.profileContentSha256 || profile?.contentSha256 || ""
+          ).toLowerCase(),
+      },
+      warnings: normalizeDecompositionWarnings(
+        Array.isArray(preview.warnings) ? preview.warnings : []
+      ),
+      blocks: decomposition
+        ? decomposition.blocks.map((block) => ({
+            id: block.id,
+            category: block.category,
+            semantic: {
+              zh: block.zh,
+              sourceLabel: decompositionSemanticSourceLabel(block.source),
+              locked: block.locked,
+              items: block.semanticItems.map((item) => ({
+                id: item.id,
+                text: item.text,
+                sourceLabel: decompositionSemanticSourceLabel(item.source),
+                locked: item.locked,
+              })),
+            },
+            adaptation: {
+              en: block.en,
+              reason: block.reason,
+              ruleRefs: clone(block.ruleRefs),
+            },
+            approved: block.approved,
+            risks: [...block.risks],
+          }))
+        : [],
+    };
+  }
+
   function normalizeDecompositionWarnings(value) {
     if (!Array.isArray(value) || value.length > 100) {
       throw new Error("Invalid decomposition warning");
@@ -5141,6 +5223,7 @@
     isDecompositionPreviewCurrent,
     buildDecompositionBlockReviewAction,
     canConfirmDecomposition,
+    buildDecompositionPreviewRenderModel,
     normalizeDecompositionWarnings,
     validateDecompositionPreviewResponse,
     performDecompositionPreviewRequest,
@@ -5168,6 +5251,7 @@
   let resourceSort = "count";
   let resourceSearchTimer = null;
   let resourceRequestId = 0;
+  let decompositionEditingBlockId = "";
   let previewResourceId = "";
   let favoriteResources = [];
   const favoriteMutationQueue = new Map();
@@ -8600,6 +8684,110 @@
       reopenButton.hidden = !model.showWorkbench;
       reopenButton.disabled = model.busy;
     }
+    renderDecompositionPreview();
+  }
+
+  function renderDecompositionPreview() {
+    const model = app.buildDecompositionPreviewRenderModel(state);
+    const panel = $("#decompositionPreviewPanel");
+    if (!panel) return;
+    panel.classList.toggle("hidden", !model.visible);
+    panel.dataset.status = model.status;
+    panel.setAttribute("aria-busy", model.status === "loading" ? "true" : "false");
+
+    const generate = $("#generateDecompositionPreview");
+    if (generate) {
+      generate.disabled = !model.canGenerate;
+      generate.textContent =
+        model.status === "loading" ? "正在生成完整预览…" : "生成 13 区块预览";
+    }
+    const lineage = $("#decompositionProfileLineage");
+    if (lineage) {
+      lineage.textContent = model.lineage.profileVersionId
+        ? `模型 ${model.lineage.profileId}；不可变版本 ${model.lineage.profileVersionId}；SHA-256 ${model.lineage.profileContentSha256}`
+        : "当前模型尚无可用于适配的已激活版本。";
+    }
+    const warnings = $("#decompositionWarnings");
+    if (warnings) {
+      const rows = [
+        ...(model.error ? [{ message: model.error, decision: "error" }] : []),
+        ...model.warnings,
+      ];
+      warnings.hidden = !rows.length;
+      warnings.innerHTML = rows
+        .map(
+          (warning) =>
+            `<li><strong>${warning.decision === "rejected" ? "已拒绝规则" : warning.decision === "proposed" ? "待核实规则" : "生成失败"}</strong> ${escapeHtml(warning.message)}</li>`
+        )
+        .join("");
+    }
+    const list = $("#decompositionBlockList");
+    if (list) {
+      list.innerHTML = model.blocks.length
+        ? model.blocks
+            .map((block) => {
+              const id = escapeHtml(block.id);
+              const editing = decompositionEditingBlockId === block.id;
+              const returned = model.returnedBlockIds.includes(block.id);
+              const semanticItems = block.semantic.items.length
+                ? block.semantic.items
+                    .map(
+                      (item) => `<li>
+                        <span>${escapeHtml(item.text)}</span>
+                        <small>${escapeHtml(item.sourceLabel)}${item.locked ? " · 已锁定" : ""}</small>
+                      </li>`
+                    )
+                    .join("")
+                : `<li><span>${escapeHtml(block.semantic.zh || "本区块暂无明确语义")}</span><small>${escapeHtml(block.semantic.sourceLabel)}${block.semantic.locked ? " · 已锁定" : ""}</small></li>`;
+              const rules = block.adaptation.ruleRefs.length
+                ? block.adaptation.ruleRefs
+                    .map(
+                      (rule) => `<li>
+                        <code>${escapeHtml(rule.claimId)}</code>
+                        <span>${escapeHtml(rule.fieldPath)}</span>
+                        <span>证据：${rule.evidenceRefs.map(escapeHtml).join("、")}</span>
+                      </li>`
+                    )
+                    .join("")
+                : "<li>未应用模型专属规则；使用通用回退措辞。</li>";
+              const risks = block.risks.length
+                ? `<ul>${block.risks.map((risk) => `<li>${escapeHtml(risk)}</li>`).join("")}</ul>`
+                : "<p>未发现已知风险。</p>";
+              return `<article class="decomposition-card${block.approved ? " is-approved" : ""}${returned ? " is-returned" : ""}${block.semantic.locked ? " is-locked" : ""}" data-decomposition-block="${id}">
+                <header><strong>${escapeHtml(block.category)}</strong><span>${block.approved ? "已接受" : returned ? "已退回" : "待审阅"}</span></header>
+                <div class="decomposition-layers">
+                  <section class="decomposition-semantic">
+                    <h4>语义层（已确认需求）</h4>
+                    <ul>${semanticItems}</ul>
+                  </section>
+                  <section class="decomposition-adaptation">
+                    <h4>模型适配层</h4>
+                    <label for="decomposition-adaptation-${id}">英文表达</label>
+                    <textarea id="decomposition-adaptation-${id}" data-adaptation-input="${id}" ${editing ? "" : "readonly"}>${escapeHtml(block.adaptation.en)}</textarea>
+                    <label for="decomposition-edit-reason-${id}">编辑理由</label>
+                    <textarea id="decomposition-edit-reason-${id}" data-adaptation-reason="${id}" ${editing ? "" : "hidden"} placeholder="必填：说明为何修改英文表达"></textarea>
+                    <p><strong>适配理由：</strong>${escapeHtml(block.adaptation.reason)}</p>
+                    <details data-rule-evidence="${id}">
+                      <summary>查看已批准规则与证据</summary>
+                      <ul>${rules}</ul>
+                    </details>
+                  </section>
+                </div>
+                <section class="decomposition-risks" aria-label="风险"><h4>风险</h4>${risks}</section>
+                <footer class="decomposition-review-actions">
+                  <button type="button" data-edit-adaptation="${id}">${editing ? "取消编辑" : "编辑英文"}</button>
+                  ${editing ? `<button type="button" data-save-adaptation="${id}">保存编辑</button>` : ""}
+                  <button type="button" data-approve-decomposition="${id}" ${block.approved ? "disabled" : ""}>接受区块</button>
+                  <button type="button" data-return-decomposition="${id}">退回区块</button>
+                  ${returned ? `<button type="button" data-regenerate-decomposition="${id}">重新生成退回块</button>` : ""}
+                </footer>
+              </article>`;
+            })
+            .join("")
+        : '<p class="director-empty-state">生成后会显示全部 13 个区块；语义与模型表达分层审阅。</p>';
+    }
+    const confirm = $("#confirmDecomposition");
+    if (confirm) confirm.disabled = !model.canConfirm;
   }
 
   function formatProjectDate(value) {
@@ -10054,6 +10242,63 @@
       });
       render();
       if (state.hasUnsavedProjectChanges) saveCurrentProject();
+      return;
+    }
+    if (button.id === "generateDecompositionPreview") {
+      generateDecompositionPreview();
+      return;
+    }
+    if (button.id === "confirmDecomposition") {
+      confirmReviewedDecomposition();
+      return;
+    }
+    if (button.dataset.editAdaptation) {
+      decompositionEditingBlockId =
+        decompositionEditingBlockId === button.dataset.editAdaptation
+          ? ""
+          : button.dataset.editAdaptation;
+      renderDecompositionPreview();
+      if (decompositionEditingBlockId) {
+        requestAnimationFrame(() =>
+          $(`[data-adaptation-input="${decompositionEditingBlockId}"]`)?.focus()
+        );
+      }
+      return;
+    }
+    if (button.dataset.saveAdaptation) {
+      const blockId = button.dataset.saveAdaptation;
+      const en = $(`[data-adaptation-input="${blockId}"]`)?.value || "";
+      const reason = $(`[data-adaptation-reason="${blockId}"]`)?.value || "";
+      if (!en.trim() || !reason.trim()) {
+        state.toast = "英文表达和编辑理由都不能为空";
+        renderToast();
+        $(`[data-adaptation-reason="${blockId}"]`)?.focus();
+        return;
+      }
+      decompositionEditingBlockId = "";
+      reviewDecompositionBlock(blockId, {
+        en,
+        reason,
+        approved: false,
+      });
+      return;
+    }
+    if (button.dataset.approveDecomposition) {
+      reviewDecompositionBlock(button.dataset.approveDecomposition, {
+        approved: true,
+      });
+      return;
+    }
+    if (button.dataset.returnDecomposition) {
+      reviewDecompositionBlock(
+        button.dataset.returnDecomposition,
+        { approved: false },
+        true
+      );
+      return;
+    }
+    if (button.dataset.regenerateDecomposition) {
+      generateDecompositionPreview();
       return;
     }
     if (button.id === "modelResearchRetry") {

@@ -84,6 +84,7 @@ const {
   performDecompositionPreviewRequest,
   validateDecompositionPreviewResponse,
   normalizeDecompositionWarnings,
+  buildDecompositionPreviewRenderModel,
 } = require("../app.js");
 
 const DECOMPOSITION_BLOCK_IDS = [
@@ -6027,6 +6028,104 @@ test("decomposition block review permits only adaptation review fields", () => {
   assert.equal(canConfirmDecomposition(intake), false);
   intake.decomposition.blocks.forEach((block) => { block.approved = true; });
   assert.equal(canConfirmDecomposition(intake), true);
+});
+
+test("decomposition preview render model separates semantic facts from exact model adaptation evidence", () => {
+  const state = createInitialState();
+  state.creativeIntake = decompositionIntakeFixture();
+  state.creativeIntake.selectedModelProfileId = "profile-anima";
+  state.creativeIntake.inputs.images = [{
+    id: "director-image-1",
+    name: "reference.png",
+    mimeType: "image/png",
+    status: "ready",
+    requestedUses: ["appearance"],
+  }];
+  state.modelProfiles = [{
+    profileId: "profile-anima",
+    profileVersionId: "profile-version-7",
+    contentSha256: "a".repeat(64),
+  }];
+  state.creativeIntake.decomposition.blocks[0].semanticItems = [
+    {
+      id: "identity-user",
+      text: "一名成年女性侦探",
+      source: { type: "user", refId: null },
+      locked: true,
+    },
+    {
+      id: "identity-image",
+      text: "短发",
+      source: { type: "image", refId: "director-image-1" },
+      locked: false,
+    },
+  ];
+  state.creativeIntake.decomposition.blocks[0].ruleRefs = [{
+    claimId: "claim-language",
+    fieldPath: "prompting.language",
+    evidenceRefs: ["snapshot-official"],
+  }];
+  state.creativeIntake.decomposition.blocks[0].risks = ["通用回退措辞"];
+  state.decompositionPreview.warnings = [{
+    claimId: "claim-cfg",
+    decision: "proposed",
+    message: "CFG 尚未核实，未应用。",
+  }];
+  state.decompositionPreview.rawProviderMessage = "must never render";
+  state.decompositionPreview.snapshotBody = { secret: "must never render" };
+  state.settings.apiKey = "must never render";
+
+  const model = buildDecompositionPreviewRenderModel(state);
+
+  assert.equal(model.visible, true);
+  assert.equal(model.canGenerate, true);
+  assert.equal(model.canConfirm, false);
+  assert.deepEqual(model.lineage, {
+    profileId: "profile-anima",
+    profileVersionId: "profile-version-7",
+    profileContentSha256: "a".repeat(64),
+  });
+  assert.deepEqual(model.blocks[0].semantic.items, [
+    {
+      id: "identity-user",
+      text: "一名成年女性侦探",
+      sourceLabel: "用户明确要求",
+      locked: true,
+    },
+    {
+      id: "identity-image",
+      text: "短发",
+      sourceLabel: "参考图 · director-image-1",
+      locked: false,
+    },
+  ]);
+  assert.deepEqual(model.blocks[0].adaptation.ruleRefs[0], {
+    claimId: "claim-language",
+    fieldPath: "prompting.language",
+    evidenceRefs: ["snapshot-official"],
+  });
+  assert.deepEqual(model.blocks[0].risks, ["通用回退措辞"]);
+  assert.equal(JSON.stringify(model).includes("must never render"), false);
+});
+
+test("decomposition preview DOM exposes accessible review and evidence controls", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  assert.match(html, /id="decompositionPreviewPanel"/);
+  assert.match(html, /id="generateDecompositionPreview"[^>]*type="button"|type="button"[^>]*id="generateDecompositionPreview"/);
+  assert.match(html, /id="decompositionProfileLineage"[^>]*role="status"/);
+  assert.match(html, /id="decompositionWarnings"[^>]*aria-live="polite"/);
+  assert.match(html, /id="confirmDecomposition"[^>]*type="button"|type="button"[^>]*id="confirmDecomposition"/);
+  for (const attribute of [
+    "data-decomposition-block",
+    "data-approve-decomposition",
+    "data-return-decomposition",
+    "data-edit-adaptation",
+    "data-rule-evidence",
+  ]) {
+    assert.match(html, new RegExp(attribute));
+  }
+  assert.match(html, /<details[^>]*data-rule-evidence/);
+  assert.match(html, /<label[^>]*for="decompositionAdaptationTemplate"/);
 });
 
 test("decomposition preview request uses exact body, persists before success, and discards stale", async () => {

@@ -3705,3 +3705,128 @@ select:focus {
   color: var(--muted);
   font-style: normal;
 }
+
+.decomposition-preview-panel {
+  container-type: inline-size;
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface-soft);
+}
+
+.decomposition-preview-panel[data-status="loading"] {
+  outline: 2px dashed var(--teal);
+  outline-offset: 2px;
+}
+
+.decomposition-preview-panel[data-status="error"] {
+  border-style: double;
+}
+
+.decomposition-lineage {
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+}
+
+.decomposition-warnings,
+.decomposition-risks ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+#decompositionBlockList {
+  display: grid;
+  gap: 12px;
+}
+
+.decomposition-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.decomposition-card > header,
+.decomposition-review-actions,
+.decomposition-confirm-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.decomposition-card.is-approved {
+  border-width: 2px;
+}
+
+.decomposition-card.is-approved > header span::before {
+  content: "✓ ";
+}
+
+.decomposition-card.is-returned {
+  border-style: dashed;
+}
+
+.decomposition-card.is-returned > header span::before {
+  content: "↩ ";
+}
+
+.decomposition-card.is-locked .decomposition-semantic h4::after {
+  content: " · 锁定";
+}
+
+.decomposition-layers {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.decomposition-layers > section,
+.decomposition-risks {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.decomposition-semantic li {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 8px;
+}
+
+.decomposition-semantic small,
+.decomposition-adaptation p {
+  color: var(--muted);
+}
+
+.decomposition-adaptation textarea {
+  width: 100%;
+  min-height: 84px;
+  resize: vertical;
+}
+
+.decomposition-adaptation details {
+  margin-top: 10px;
+}
+
+.decomposition-adaptation code,
+.decomposition-adaptation details span {
+  overflow-wrap: anywhere;
+}
+
+@container (max-width: 760px) {
+  .decomposition-layers {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .decomposition-preview-panel {
+    padding: 12px;
+  }
+}
