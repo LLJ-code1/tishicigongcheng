@@ -938,6 +938,61 @@ def _set_decomposition_draft(state: dict, command: Mapping[str, object]) -> dict
     return state
 
 
+def _regenerate_decomposition_draft(
+    state: dict, command: Mapping[str, object]
+) -> dict:
+    _transition_requires(
+        state,
+        {"decomposition_draft"},
+        "a decomposition draft is required before regeneration",
+    )
+    _reject_unknown_keys(command, {"type", "decomposition"}, "action")
+    image_ids = {image["id"] for image in state["inputs"]["images"]}
+    candidate = _decomposition(
+        command.get("decomposition"), image_ids, state["brief"]
+    )
+    if candidate is None or candidate["status"] != "draft":
+        _error(
+            "invalid_decomposition_status",
+            "regenerated decomposition must have draft status",
+        )
+    current = state["decomposition"]
+    if current is None or current["status"] != "draft":
+        _error(
+            "missing_decomposition",
+            "a decomposition draft is required before regeneration",
+        )
+    for field in _IMMUTABLE_DECOMPOSITION_ROOT_FIELDS:
+        if candidate[field] != current[field]:
+            _error(
+                "immutable_decomposition",
+                f"immutable decomposition field changed: {field}",
+            )
+    immutable_block_fields = (
+        "id",
+        "category",
+        "zh",
+        "source",
+        "locked",
+        "semanticItems",
+    )
+    for index, (before, after) in enumerate(
+        zip(current["blocks"], candidate["blocks"], strict=True)
+    ):
+        for field in immutable_block_fields:
+            if after[field] != before[field]:
+                _error(
+                    "immutable_decomposition",
+                    "immutable decomposition block field changed: "
+                    f"blocks[{index}].{field}",
+                )
+        after["approved"] = False
+    state["decomposition"] = candidate
+    state["recipeStatus"] = "stale"
+    state["stage"] = "decomposition_draft"
+    return state
+
+
 def _confirm_decomposition(state: dict, command: Mapping[str, object]) -> dict:
     _transition_requires(
         state,
@@ -993,6 +1048,7 @@ _TRANSITIONS = {
     "confirm_brief": _confirm_brief,
     "select_model": _select_model,
     "set_decomposition_draft": _set_decomposition_draft,
+    "regenerate_decomposition_draft": _regenerate_decomposition_draft,
     "confirm_decomposition": _confirm_decomposition,
     "reopen_brief": _reopen_brief,
 }

@@ -814,7 +814,7 @@ def process_model_adapted_decomposition_request(
             code="invalid_request",
         ) from error
     if (
-        current["stage"] != "model_selected"
+        current["stage"] not in {"model_selected", "decomposition_draft"}
         or current["brief"] is None
         or current["brief"].get("status") != "confirmed"
         or not current["selectedModelProfileId"]
@@ -823,6 +823,21 @@ def process_model_adapted_decomposition_request(
             "creative intake no longer permits a decomposition preview",
             code="stale_intake",
         )
+    if current["stage"] == "decomposition_draft":
+        existing = current["decomposition"]
+        if (
+            existing is None
+            or existing["status"] != "draft"
+            or existing["profileVersionId"] != payload["profileVersionId"]
+            or existing["profileContentSha256"]
+            != str(payload["profileContentSha256"]).lower()
+            or existing["briefContentSha256"]
+            != creative_intake.canonical_brief_sha256(current["brief"])
+        ):
+            raise DecompositionError(
+                "decomposition draft lineage no longer permits regeneration",
+                code="stale_intake",
+            )
 
     snapshot = snapshot_loader(
         current["selectedModelProfileId"],
@@ -830,15 +845,23 @@ def process_model_adapted_decomposition_request(
         payload["profileContentSha256"],
         db_path=db_path,
     )
+    generation_intake = deepcopy(current)
+    if generation_intake["stage"] == "decomposition_draft":
+        generation_intake["stage"] = "model_selected"
+        generation_intake["decomposition"] = None
     draft = generate_model_adapted_decomposition(
-        intake=current,
+        intake=generation_intake,
         profile_snapshot=snapshot,
         provider=provider,
     )
     item = apply_creative_intake_transition(
         current,
         {
-            "type": "set_decomposition_draft",
+            "type": (
+                "regenerate_decomposition_draft"
+                if current["stage"] == "decomposition_draft"
+                else "set_decomposition_draft"
+            ),
             "decomposition": draft,
         },
     )

@@ -732,6 +732,68 @@ class PromptStudioCreativeIntakeTests(unittest.TestCase):
                         {"type": "set_decomposition_draft", "decomposition": changed},
                     )
 
+    def test_decomposition_regeneration_replaces_only_adaptation_and_resets_approval(self):
+        state = state_at_model_selected()
+        state = creative_intake.apply_creative_intake_transition(
+            state,
+            {
+                "type": "set_decomposition_draft",
+                "decomposition": approved_decomposition(state["brief"]),
+            },
+        )
+        regenerated = copy.deepcopy(state["decomposition"])
+        regenerated["blocks"][0]["en"] = "regenerated runner wording"
+        regenerated["blocks"][0]["reason"] = "Updated for the activated model."
+        regenerated["blocks"][0]["ruleRefs"] = [rule_ref("claim-regenerated")]
+        regenerated["blocks"][0]["risks"] = ["capability_not_verified"]
+
+        result = creative_intake.apply_creative_intake_transition(
+            state,
+            {
+                "type": "regenerate_decomposition_draft",
+                "decomposition": regenerated,
+            },
+        )
+
+        self.assertEqual(result["stage"], "decomposition_draft")
+        self.assertEqual(
+            result["decomposition"]["blocks"][0]["en"],
+            "regenerated runner wording",
+        )
+        self.assertTrue(
+            all(not block["approved"] for block in result["decomposition"]["blocks"])
+        )
+        for before, after in zip(
+            state["decomposition"]["blocks"],
+            result["decomposition"]["blocks"],
+            strict=True,
+        ):
+            for field in ("id", "category", "zh", "source", "locked", "semanticItems"):
+                self.assertEqual(after[field], before[field])
+
+    def test_decomposition_regeneration_rejects_semantic_or_root_lineage_changes(self):
+        state = state_with_decomposition()
+        mutations = (
+            lambda value: value.__setitem__("profileVersionId", "other-version"),
+            lambda value: value["blocks"][0].__setitem__("zh", "changed semantic"),
+            lambda value: value["blocks"][0].__setitem__("semanticItems", []),
+        )
+        for mutate in mutations:
+            with self.subTest(mutate=mutate):
+                candidate = copy.deepcopy(state["decomposition"])
+                mutate(candidate)
+                with self.assertRaisesRegex(
+                    creative_intake.CreativeIntakeValidationError,
+                    "decomposition",
+                ):
+                    creative_intake.apply_creative_intake_transition(
+                        state,
+                        {
+                            "type": "regenerate_decomposition_draft",
+                            "decomposition": candidate,
+                        },
+                    )
+
     def test_rule_and_evidence_refs_require_safe_identifiers(self):
         unsafe_identifiers = (
             "../claim",

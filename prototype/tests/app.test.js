@@ -6108,6 +6108,76 @@ test("decomposition preview render model separates semantic facts from exact mod
   assert.equal(JSON.stringify(model).includes("must never render"), false);
 });
 
+test("decomposition preview always renders thirteen canonical placeholder cards", () => {
+  const state = createInitialState();
+  state.creativeIntake = creativeIntakeStageFixture("model_selected");
+  state.modelProfiles = [{
+    profileId: "anima-1.1-v1",
+    profileVersionId: "profile-version-7",
+    contentSha256: "a".repeat(64),
+  }];
+
+  const model = buildDecompositionPreviewRenderModel(state);
+
+  assert.deepEqual(model.blocks.map((block) => block.id), DECOMPOSITION_BLOCK_IDS);
+  assert.equal(model.blocks.every((block) => block.placeholder), true);
+});
+
+test("decomposition preview returned markers clear on success approval and edit", () => {
+  let state = createInitialState();
+  state.creativeIntake = decompositionIntakeFixture();
+  state.decompositionPreview.returnedBlockIds = ["identity", "appearance"];
+
+  state = reduceState(state, {
+    type: "DECOMPOSITION_PREVIEW_SUCCEEDED",
+    warnings: [],
+  });
+  assert.deepEqual(state.decompositionPreview.returnedBlockIds, []);
+
+  state.decompositionPreview.returnedBlockIds = ["identity", "appearance"];
+  const approved = structuredClone(state.creativeIntake);
+  approved.decomposition.blocks[0].approved = true;
+  state = reduceState(state, { type: "CREATIVE_INTAKE_REPLACED", item: approved });
+  assert.deepEqual(state.decompositionPreview.returnedBlockIds, ["appearance"]);
+
+  const edited = structuredClone(state.creativeIntake);
+  edited.revision += 1;
+  edited.decomposition.blocks[1].en = "edited appearance";
+  edited.decomposition.blocks[1].reason = "manual correction";
+  state = reduceState(state, { type: "CREATIVE_INTAKE_REPLACED", item: edited });
+  assert.deepEqual(state.decompositionPreview.returnedBlockIds, []);
+});
+
+test("decomposition warning labels distinguish legacy notices from structured evidence", () => {
+  const state = createInitialState();
+  state.creativeIntake = decompositionIntakeFixture();
+  state.decompositionPreview.warnings = [
+    { claimId: null, decision: null, message: "generic fallback" },
+    {
+      claimId: "claim-cfg",
+      decision: "proposed",
+      message: "CFG is not verified.",
+    },
+  ];
+
+  const model = buildDecompositionPreviewRenderModel(state);
+
+  assert.deepEqual(model.warnings, [
+    {
+      claimId: null,
+      decision: null,
+      message: "generic fallback",
+      label: "兼容提示",
+    },
+    {
+      claimId: "claim-cfg",
+      decision: "proposed",
+      message: "CFG is not verified.",
+      label: "待核实规则",
+    },
+  ]);
+});
+
 test("decomposition preview DOM exposes accessible review and evidence controls", () => {
   const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
   assert.match(html, /id="decompositionPreviewPanel"/);

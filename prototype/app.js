@@ -3671,6 +3671,7 @@
       case "DECOMPOSITION_PREVIEW_SUCCEEDED":
         next.decompositionPreview.status = "ready";
         next.decompositionPreview.error = "";
+        next.decompositionPreview.returnedBlockIds = [];
         next.decompositionPreview.warnings = clone(
           normalizeDecompositionWarnings(
             Array.isArray(action.warnings) ? action.warnings : []
@@ -3722,7 +3723,26 @@
         {
           const hadDownstream =
             creativeDirectorStageView(next.creativeIntake?.stage).canContinue;
+        const previousDecomposition = next.creativeIntake?.decomposition;
         next.creativeIntake = normalizeCreativeIntake(action.item);
+        if (next.creativeIntake.decomposition && previousDecomposition) {
+          next.decompositionPreview.returnedBlockIds =
+            next.decompositionPreview.returnedBlockIds.filter((blockId) => {
+              const before = previousDecomposition.blocks.find(
+                (block) => block.id === blockId
+              );
+              const after = next.creativeIntake.decomposition.blocks.find(
+                (block) => block.id === blockId
+              );
+              return Boolean(
+                before &&
+                  after &&
+                  !after.approved &&
+                  before.en === after.en &&
+                  before.reason === after.reason
+              );
+            });
+        }
         if (!next.creativeIntake.decomposition) {
           next.decompositionPreview = {
             status: "idle",
@@ -4926,11 +4946,35 @@
       },
       warnings: normalizeDecompositionWarnings(
         Array.isArray(preview.warnings) ? preview.warnings : []
-      ),
-      blocks: decomposition
-        ? decomposition.blocks.map((block) => ({
+      ).map((warning) => ({
+        ...warning,
+        label:
+          warning.decision === "proposed"
+            ? "待核实规则"
+            : warning.decision === "rejected"
+              ? "已拒绝规则"
+              : "兼容提示",
+      })),
+      blocks: (decomposition
+        ? decomposition.blocks
+        : DECOMPOSITION_BLOCK_IDS.map((id) => ({
+            id,
+            category: id,
+            zh: "",
+            en: "",
+            source: { type: "ai", refId: null },
+            locked: false,
+            approved: false,
+            reason: "",
+            risks: [],
+            ruleRefs: [],
+            semanticItems: [],
+            placeholder: true,
+          }))
+        ).map((block) => ({
             id: block.id,
             category: block.category,
+            placeholder: Boolean(block.placeholder),
             semantic: {
               zh: block.zh,
               sourceLabel: decompositionSemanticSourceLabel(block.source),
@@ -4949,8 +4993,7 @@
             },
             approved: block.approved,
             risks: [...block.risks],
-          }))
-        : [],
+          })),
     };
   }
 
@@ -4970,20 +5013,25 @@
         throw new Error("Invalid decomposition warning");
       }
       const keys = Object.keys(entry);
-      const claimId = String(entry.claimId || "");
+      const legacy = entry.claimId === null && entry.decision === null;
+      const claimId = legacy ? null : String(entry.claimId || "");
       const message = String(entry.message || "").trim();
       if (
         keys.some(
           (key) => !["claimId", "decision", "message"].includes(key)
         ) ||
-        !SAFE_DIRECTOR_IMAGE_ID.test(claimId) ||
-        !["proposed", "rejected"].includes(entry.decision) ||
+        (!legacy && !SAFE_DIRECTOR_IMAGE_ID.test(claimId)) ||
+        (!legacy && !["proposed", "rejected"].includes(entry.decision)) ||
         !message ||
         Array.from(message).length > 2_000
       ) {
         throw new Error("Invalid decomposition warning");
       }
-      return { claimId, decision: entry.decision, message };
+      return {
+        claimId,
+        decision: legacy ? null : entry.decision,
+        message,
+      };
     });
   }
 
@@ -8716,8 +8764,13 @@
       warnings.hidden = !rows.length;
       warnings.innerHTML = rows
         .map(
-          (warning) =>
-            `<li><strong>${warning.decision === "rejected" ? "已拒绝规则" : warning.decision === "proposed" ? "待核实规则" : "生成失败"}</strong> ${escapeHtml(warning.message)}</li>`
+          (warning) => `<li><strong>${escapeHtml(
+            warning.label || "生成失败"
+          )}</strong> ${
+            warning.claimId
+              ? `<code>${escapeHtml(warning.claimId)}</code> `
+              : ""
+          }${escapeHtml(warning.message)}</li>`
         )
         .join("");
     }

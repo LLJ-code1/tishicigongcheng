@@ -229,6 +229,78 @@ class ModelAdaptedDecompositionProcessorTests(unittest.TestCase):
             )
         self.assertEqual(context.exception.code, "stale_intake")
 
+    def test_processor_regenerates_draft_with_exact_lineage_and_resets_approvals(self):
+        first = process_model_adapted_decomposition_request(
+            self.legal_payload(),
+            provider=lambda messages: decomposition_provider_output(),
+            db_path="unit-test.db",
+            snapshot_loader=lambda *args, **kwargs: activated_snapshot(),
+        )
+        current = first["item"]
+        for block in current["decomposition"]["blocks"]:
+            block["approved"] = True
+        payload = {
+            "current": current,
+            "profileVersionId": "profile-version-7",
+            "profileContentSha256": "a" * 64,
+        }
+
+        def regenerated_provider(messages):
+            output = decomposition_provider_output()
+            output["blocks"][0]["en"] = "regenerated detective"
+            output["blocks"][0]["reason"] = "Regenerated model wording."
+            return output
+
+        result = process_model_adapted_decomposition_request(
+            payload,
+            provider=regenerated_provider,
+            db_path="unit-test.db",
+            snapshot_loader=lambda *args, **kwargs: activated_snapshot(),
+        )
+
+        self.assertEqual(result["item"]["stage"], "decomposition_draft")
+        self.assertEqual(
+            result["item"]["decomposition"]["blocks"][0]["en"],
+            "regenerated detective",
+        )
+        self.assertTrue(
+            all(
+                not block["approved"]
+                for block in result["item"]["decomposition"]["blocks"]
+            )
+        )
+
+    def test_processor_rejects_draft_regeneration_lineage_mismatch_before_dependencies(self):
+        first = process_model_adapted_decomposition_request(
+            self.legal_payload(),
+            provider=lambda messages: decomposition_provider_output(),
+            db_path="unit-test.db",
+            snapshot_loader=lambda *args, **kwargs: activated_snapshot(),
+        )
+        cases = (
+            ("profileVersionId", "other-version", "stale_intake"),
+            ("profileContentSha256", "b" * 64, "stale_intake"),
+            ("briefContentSha256", "b" * 64, "invalid_request"),
+        )
+        for field, value, expected_code in cases:
+            with self.subTest(field=field):
+                current = json.loads(json.dumps(first["item"]))
+                current["decomposition"][field] = value
+                with self.assertRaises(DecompositionError) as context:
+                    process_model_adapted_decomposition_request(
+                        {
+                            "current": current,
+                            "profileVersionId": "profile-version-7",
+                            "profileContentSha256": "a" * 64,
+                        },
+                        provider=lambda messages: self.fail("provider called"),
+                        db_path="unit-test.db",
+                        snapshot_loader=lambda *args, **kwargs: self.fail(
+                            "snapshot loaded"
+                        ),
+                    )
+                self.assertEqual(context.exception.code, expected_code)
+
     def test_snapshot_and_provider_failures_do_not_mutate_canonical_input(self):
         for failure in (
             model_profile_store.ProfileStoreError(
