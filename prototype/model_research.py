@@ -1,20 +1,18 @@
-"""Evidence contracts and adapter-only parsing for official model research.
-
-This module deliberately contains no network access. Fetch policy and transport
-are layered on top of these contracts so an unsupported URL can never become an
-unrestricted fetch request.
-"""
+"""Evidence contracts and bounded fetching for official model research."""
 
 from __future__ import annotations
 
 import hashlib
 import html
+import http.client
+import ipaddress
 import json
 import re
+import socket
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Mapping, Protocol, Sequence
-from urllib.parse import urlsplit, urlunsplit
+from typing import Any, Callable, Mapping, Protocol, Sequence
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 
 ALLOWED_CLAIM_PATHS = frozenset(
@@ -55,6 +53,11 @@ VERIFICATION_STATUSES = frozenset(
 SOURCE_CLASSES = EVIDENCE_CLASSES
 FETCH_STATUSES = frozenset({"succeeded", "failed"})
 MAX_CLAIM_VALUE_BYTES = 64 * 1024
+MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+MAX_DECODED_TEXT_BYTES = 2 * 1024 * 1024
+MAX_REDIRECTS = 5
+REQUEST_TIMEOUT_SECONDS = 15
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _CIVITAI_PATH = re.compile(
     r"/models/[1-9][0-9]*(?:/[A-Za-z0-9._~-]+)?/?"
 )
@@ -164,6 +167,12 @@ class SourceSnapshot:
             raise ResearchError("invalid_contract", "content_type must be a string or null")
         if self.error_code is not None and not isinstance(self.error_code, str):
             raise ResearchError("invalid_contract", "error_code must be a string or null")
+
+
+@dataclass(frozen=True)
+class ResearchResult:
+    snapshot: SourceSnapshot
+    claims: tuple["EvidenceClaim", ...]
 
 
 @dataclass(frozen=True)
@@ -382,6 +391,10 @@ class SourceAdapter(Protocol):
     def parse(self, snapshot: SourceSnapshot) -> list[EvidenceClaim]: ...
 
 
+Resolver = Callable[[str], Sequence[str]]
+Fetcher = Callable[[FetchRequest], FetchResponse]
+
+
 class AdapterRegistry:
     def __init__(self, adapters: Sequence[SourceAdapter]):
         self._adapters = tuple(adapters)
@@ -518,18 +531,264 @@ def default_adapter_registry() -> AdapterRegistry:
     return AdapterRegistry((CivitaiModelPageAdapter(),))
 
 
+def default_resolver(host: str) -> tuple[str, ...]:
+    """Resolve a hostname without exposing socket result details to callers."""
+    try:
+        answers = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise ResearchError("dns_failed", "source hostname could not be resolved") from exc
+    return tuple(dict.fromkeys(answer[4][0] for answer in answers))
+
+
+def validate_fetch_url(url: str, resolver: Resolver) -> str:
+    """Validate one outbound HTTPS hop and all of its DNS answers."""
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except (TypeError, ValueError) as exc:
+        raise ResearchError("invalid_url", "source URL is malformed") from exc
+    host = parsed.hostname
+    if parsed.scheme.casefold() != "https":
+        raise ResearchError("https_required", "source URL must use HTTPS")
+    if not host:
+        raise ResearchError("invalid_url", "source URL must have a hostname")
+    if parsed.username is not None or parsed.password is not None:
+        raise ResearchError("credentials_forbidden", "URL credentials are forbidden")
+    if parsed.fragment:
+        raise ResearchError("fragment_forbidden", "URL fragments are forbidden")
+    if port is not None and port != 443:
+        raise ResearchError("port_forbidden", "only the default HTTPS port is allowed")
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        raise ResearchError("ip_literal_forbidden", "IP-literal hosts are forbidden")
+    if host.casefold() == "localhost" or host.casefold().endswith(".localhost"):
+        raise ResearchError("unsafe_address", "localhost names are forbidden")
+    try:
+        addresses = tuple(resolver(host))
+    except ResearchError:
+        raise
+    except Exception as exc:
+        raise ResearchError("dns_failed", "source hostname could not be resolved") from exc
+    if not addresses:
+        raise ResearchError("dns_failed", "source hostname returned no addresses")
+    for address_text in addresses:
+        try:
+            address = ipaddress.ip_address(address_text)
+        except ValueError as exc:
+            raise ResearchError("dns_failed", "resolver returned an invalid address") from exc
+        if (
+            not address.is_global
+            or address.is_multicast
+            or address.is_reserved
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_private
+            or address.is_unspecified
+        ):
+            raise ResearchError("unsafe_address", "source hostname resolved unsafely")
+    hostname = host.casefold()
+    authority = hostname if port is None else f"{hostname}:{port}"
+    return urlunsplit(("https", authority, parsed.path or "/", parsed.query, ""))
+
+
+def _header(headers: Mapping[str, str], name: str) -> str | None:
+    wanted = name.casefold()
+    for key, value in headers.items():
+        if key.casefold() == wanted:
+            return value
+    return None
+
+
+def _snapshot_id(requested_url: str, final_url: str, retrieved_at: str, body: bytes) -> str:
+    digest = hashlib.sha256()
+    for value in (requested_url.encode(), final_url.encode(), retrieved_at.encode(), body):
+        digest.update(len(value).to_bytes(8, "big"))
+        digest.update(value)
+    return "snap-" + digest.hexdigest()[:24]
+
+
+def _failed_snapshot(requested_url: str, retrieved_at: str) -> SourceSnapshot:
+    return SourceSnapshot(
+        snapshot_id=_snapshot_id(requested_url, requested_url, retrieved_at, b""),
+        source_class="original_source",
+        requested_url=requested_url,
+        final_url=requested_url,
+        retrieved_at=retrieved_at,
+        content_type=None,
+        body_sha256="",
+        extracted_text="",
+        fetch_status="failed",
+        error_code="fetch_failed",
+    )
+
+
+def fetch_snapshot(
+    request: FetchRequest,
+    *,
+    adapter: SourceAdapter,
+    fetcher: Fetcher,
+    resolver: Resolver,
+    clock: Callable[[], str],
+) -> SourceSnapshot:
+    """Fetch an adapter-owned page with validation before every network hop."""
+    if not adapter.supports(request.url):
+        raise ResearchError("unsupported_source", "request is not owned by its adapter")
+    requested_url = validate_fetch_url(request.url, resolver)
+    current_url = requested_url
+    headers = dict(request.headers)
+    retrieved_at = _required_text(clock(), "retrieved_at")
+
+    for redirect_count in range(MAX_REDIRECTS + 1):
+        if not adapter.supports(current_url):
+            raise ResearchError("unsupported_source", "redirect left the source adapter")
+        try:
+            response = fetcher(FetchRequest(current_url, headers))
+        except ResearchError:
+            raise
+        except Exception:
+            return _failed_snapshot(requested_url, retrieved_at)
+        if not isinstance(response, FetchResponse):
+            return _failed_snapshot(requested_url, retrieved_at)
+        if response.url != current_url:
+            raise ResearchError("response_url_mismatch", "transport changed the fetched URL")
+
+        if response.status in _REDIRECT_STATUSES:
+            location = _header(response.headers, "Location")
+            if not location:
+                raise ResearchError("invalid_redirect", "redirect has no Location")
+            if redirect_count >= MAX_REDIRECTS:
+                raise ResearchError("too_many_redirects", "redirect limit exceeded")
+            target = urljoin(current_url, location)
+            if not adapter.supports(target):
+                raise ResearchError("unsupported_source", "redirect left the source adapter")
+            current_url = validate_fetch_url(target, resolver)
+            continue
+        if not 200 <= response.status <= 299:
+            raise ResearchError("unexpected_status", "source returned a non-success status")
+        if len(response.body) > MAX_RESPONSE_BYTES:
+            raise ResearchError("response_too_large", "source response exceeds 2 MiB")
+
+        content_type_header = _header(response.headers, "Content-Type") or ""
+        parts = [part.strip() for part in content_type_header.split(";")]
+        content_type = parts[0].casefold()
+        if content_type not in {"text/html", "application/json"}:
+            raise ResearchError(
+                "unsupported_content_type", "source must be UTF-8 HTML or JSON"
+            )
+        charset = None
+        for parameter in parts[1:]:
+            if "=" in parameter:
+                key, value = parameter.split("=", 1)
+                if key.strip().casefold() == "charset":
+                    charset = value.strip().strip("\"'").casefold()
+        if charset not in (None, "utf-8", "utf8"):
+            raise ResearchError("unsupported_encoding", "source must use UTF-8")
+        try:
+            text = response.body.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ResearchError("invalid_utf8", "source body is not valid UTF-8") from exc
+        if len(text.encode("utf-8")) > MAX_DECODED_TEXT_BYTES:
+            raise ResearchError("response_too_large", "decoded source exceeds 2 MiB")
+        return SourceSnapshot(
+            snapshot_id=_snapshot_id(
+                requested_url, current_url, retrieved_at, response.body
+            ),
+            source_class="original_source",
+            requested_url=requested_url,
+            final_url=current_url,
+            retrieved_at=retrieved_at,
+            content_type=content_type,
+            body_sha256=hashlib.sha256(response.body).hexdigest(),
+            extracted_text=text,
+            fetch_status="succeeded",
+            error_code=None,
+        )
+    raise ResearchError("too_many_redirects", "redirect limit exceeded")
+
+
+def production_fetcher(
+    request: FetchRequest,
+    *,
+    connection_factory: Callable[..., http.client.HTTPSConnection] = http.client.HTTPSConnection,
+) -> FetchResponse:
+    """Perform exactly one HTTPS request; redirects remain caller-controlled."""
+    parsed = urlsplit(request.url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ResearchError("https_required", "transport accepts HTTPS only")
+    forbidden = {
+        "accept-encoding",
+        "authorization",
+        "cookie",
+        "proxy-authorization",
+        "proxy-connection",
+    }
+    headers = {
+        key: value
+        for key, value in request.headers.items()
+        if key.casefold() not in forbidden
+    }
+    headers["Accept-Encoding"] = "identity"
+    connection = connection_factory(
+        parsed.hostname, parsed.port or 443, timeout=REQUEST_TIMEOUT_SECONDS
+    )
+    try:
+        target = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+        connection.request("GET", target, headers=headers)
+        response = connection.getresponse()
+        body = response.read(MAX_RESPONSE_BYTES + 1)
+        return FetchResponse(
+            request.url,
+            response.status,
+            {key: value for key, value in response.getheaders()},
+            body,
+        )
+    finally:
+        connection.close()
+
+
+def research_source(
+    request: ResearchRequest,
+    *,
+    registry: AdapterRegistry,
+    fetcher: Fetcher,
+    resolver: Resolver,
+    clock: Callable[[], str],
+) -> ResearchResult:
+    adapter = registry.resolve(request.source_url)
+    snapshot = fetch_snapshot(
+        adapter.request_for(request.source_url),
+        adapter=adapter,
+        fetcher=fetcher,
+        resolver=resolver,
+        clock=clock,
+    )
+    return ResearchResult(snapshot=snapshot, claims=tuple(adapter.parse(snapshot)))
+
+
 __all__ = [
     "ALLOWED_CLAIM_PATHS",
     "AdapterRegistry",
     "EvidenceClaim",
     "FetchRequest",
     "FetchResponse",
+    "Fetcher",
+    "MAX_RESPONSE_BYTES",
+    "ResearchResult",
     "ResearchError",
     "ResearchRequest",
+    "Resolver",
     "SourceAdapter",
     "SourceSnapshot",
     "claim_to_dict",
     "default_adapter_registry",
+    "default_resolver",
+    "fetch_snapshot",
     "normalize_claim",
+    "production_fetcher",
+    "research_source",
     "snapshot_to_dict",
+    "validate_fetch_url",
 ]

@@ -270,5 +270,291 @@ class ModelResearchContractTests(unittest.TestCase):
         )
 
 
+class ModelResearchFetchPolicyTests(unittest.TestCase):
+    def setUp(self):
+        self.url = "https://civitai.com/models/1"
+        self.registry = model_research.default_adapter_registry()
+        self.adapter = self.registry.resolve(self.url)
+        self.request = self.adapter.request_for(self.url)
+        self.public_resolver = lambda host: ["93.184.216.34"]
+        self.clock = lambda: "2026-07-26T10:00:00Z"
+
+    def fetch(self, fetcher, *, resolver=None):
+        return model_research.fetch_snapshot(
+            self.request,
+            adapter=self.adapter,
+            resolver=resolver or self.public_resolver,
+            fetcher=fetcher,
+            clock=self.clock,
+        )
+
+    def test_rejects_private_dns_before_fetch(self):
+        calls = []
+        with self.assertRaisesRegex(model_research.ResearchError, "unsafe_address"):
+            self.fetch(lambda request: calls.append(request), resolver=lambda host: ["127.0.0.1"])
+        self.assertEqual(calls, [])
+
+    def test_rejects_all_non_global_and_mixed_dns_answers(self):
+        unsafe_sets = (
+            ["::1"],
+            ["fe80::1"],
+            ["fc00::1"],
+            ["10.0.0.1"],
+            ["169.254.1.1"],
+            ["224.0.0.1"],
+            ["240.0.0.1"],
+            ["93.184.216.34", "127.0.0.1"],
+            [object()],
+            [],
+        )
+        for answers in unsafe_sets:
+            with self.subTest(answers=answers), self.assertRaises(model_research.ResearchError):
+                model_research.validate_fetch_url(self.url, lambda host, value=answers: value)
+
+    def test_rejects_credentials_fragment_ports_ip_literals_and_non_https(self):
+        bad_urls = (
+            "https://user@civitai.com/models/1",
+            "https://civitai.com/models/1#private",
+            "https://civitai.com:8443/models/1",
+            "https://127.0.0.1/models/1",
+            "https://[::1]/models/1",
+            "http://civitai.com/models/1",
+        )
+        for url in bad_urls:
+            with self.subTest(url=url), self.assertRaises(model_research.ResearchError):
+                model_research.validate_fetch_url(url, self.public_resolver)
+
+    def test_revalidates_redirect_adapter_and_dns_before_next_fetch(self):
+        calls = []
+
+        def fetcher(request):
+            calls.append(request.url)
+            return model_research.FetchResponse(
+                request.url,
+                302,
+                {"Location": "https://civitai.com/models/2"},
+                b"",
+            )
+
+        def resolver(host):
+            return ["93.184.216.34"] if len(calls) == 0 else ["127.0.0.1"]
+
+        with self.assertRaisesRegex(model_research.ResearchError, "unsafe_address"):
+            self.fetch(fetcher, resolver=resolver)
+        self.assertEqual(calls, [self.url])
+
+    def test_resolves_exactly_once_before_each_fetch_hop(self):
+        fetch_calls = []
+        resolve_calls = []
+
+        def fetcher(request):
+            fetch_calls.append(request.url)
+            if len(fetch_calls) == 1:
+                return model_research.FetchResponse(
+                    request.url,
+                    302,
+                    {"Location": "https://civitai.com/models/2"},
+                    b"",
+                )
+            return model_research.FetchResponse(
+                request.url,
+                200,
+                {"Content-Type": "text/html"},
+                b"ok",
+            )
+
+        self.fetch(
+            fetcher,
+            resolver=lambda host: (
+                resolve_calls.append(host) or ["93.184.216.34"]
+            ),
+        )
+        self.assertEqual(resolve_calls, ["civitai.com", "civitai.com"])
+        self.assertEqual(fetch_calls, [self.url, "https://civitai.com/models/2"])
+
+    def test_rejects_redirect_to_unsupported_or_encoded_target(self):
+        targets = (
+            "https://localhost/private",
+            "//example.com/private",
+            "https:%2f%2fcivitai.com/models/2",
+        )
+        for target in targets:
+            with self.subTest(target=target), self.assertRaises(model_research.ResearchError):
+                self.fetch(
+                    lambda request, value=target: model_research.FetchResponse(
+                        request.url, 302, {"Location": value}, b""
+                    )
+                )
+
+    def test_rejects_sixth_redirect(self):
+        calls = []
+
+        def fetcher(request):
+            calls.append(request.url)
+            number = len(calls) + 1
+            return model_research.FetchResponse(
+                request.url, 302, {"Location": f"https://civitai.com/models/{number}"}, b""
+            )
+
+        with self.assertRaisesRegex(model_research.ResearchError, "too_many_redirects"):
+            self.fetch(fetcher)
+        self.assertEqual(len(calls), 6)
+
+    def test_rejects_oversize_body_decoded_text_bad_type_encoding_and_status(self):
+        cases = (
+            (
+                "response_too_large",
+                model_research.FetchResponse(
+                    self.url,
+                    200,
+                    {"Content-Type": "text/html; charset=utf-8"},
+                    b"x" * (2 * 1024 * 1024 + 1),
+                ),
+            ),
+            (
+                "response_too_large",
+                model_research.FetchResponse(
+                    self.url,
+                    200,
+                    {"Content-Type": "text/html; charset=utf-8"},
+                    ("\u4e00" * (1024 * 1024)).encode("utf-8"),
+                ),
+            ),
+            (
+                "unsupported_content_type",
+                model_research.FetchResponse(
+                    self.url, 200, {"Content-Type": "image/png"}, b"png"
+                ),
+            ),
+            (
+                "unsupported_encoding",
+                model_research.FetchResponse(
+                    self.url,
+                    200,
+                    {"Content-Type": "text/html; charset=latin-1"},
+                    b"text",
+                ),
+            ),
+            (
+                "invalid_utf8",
+                model_research.FetchResponse(
+                    self.url,
+                    200,
+                    {"Content-Type": "application/json"},
+                    b"\xff",
+                ),
+            ),
+            (
+                "unexpected_status",
+                model_research.FetchResponse(
+                    self.url, 404, {"Content-Type": "text/html"}, b"missing"
+                ),
+            ),
+        )
+        for code, response in cases:
+            with self.subTest(code=code), self.assertRaisesRegex(
+                model_research.ResearchError, code
+            ):
+                self.fetch(lambda request, value=response: value)
+
+    def test_successful_response_is_bounded_utf8_snapshot(self):
+        body = '{"name":"Example"}'.encode()
+        snapshot = self.fetch(
+            lambda request: model_research.FetchResponse(
+                request.url,
+                200,
+                {"content-type": "application/json; charset=UTF-8"},
+                body,
+            )
+        )
+        self.assertEqual(snapshot.fetch_status, "succeeded")
+        self.assertEqual(snapshot.requested_url, self.url)
+        self.assertEqual(snapshot.final_url, self.url)
+        self.assertEqual(snapshot.content_type, "application/json")
+        self.assertEqual(snapshot.extracted_text, body.decode())
+        self.assertEqual(snapshot.body_sha256, __import__("hashlib").sha256(body).hexdigest())
+
+    def test_transport_failure_returns_stable_failed_snapshot(self):
+        def broken_fetcher(request):
+            raise TimeoutError("secret upstream details")
+
+        snapshot = self.fetch(broken_fetcher)
+        self.assertEqual(snapshot.fetch_status, "failed")
+        self.assertEqual(snapshot.error_code, "fetch_failed")
+        self.assertEqual(snapshot.extracted_text, "")
+        self.assertEqual(snapshot.final_url, self.url)
+
+    def test_research_source_uses_only_injected_fetcher(self):
+        calls = []
+        result = model_research.research_source(
+            model_research.ResearchRequest(self.url),
+            registry=self.registry,
+            resolver=self.public_resolver,
+            fetcher=lambda request: (
+                calls.append(request.url)
+                or model_research.FetchResponse(
+                    request.url,
+                    200,
+                    {"Content-Type": "application/json"},
+                    b'{"name":"Example"}',
+                )
+            ),
+            clock=self.clock,
+        )
+        self.assertEqual(calls, [self.url])
+        self.assertEqual(result.snapshot.fetch_status, "succeeded")
+        self.assertEqual(result.claims[0].field_path, "displayName")
+
+    def test_production_transport_is_single_hop_bounded_and_strips_secrets(self):
+        class Response:
+            status = 302
+
+            def getheaders(self):
+                return [("Location", "/models/2")]
+
+            def read(self, amount):
+                self.amount = amount
+                return b""
+
+        class Connection:
+            def __init__(self, host, port, timeout):
+                self.init = (host, port, timeout)
+                self.response = Response()
+                connections.append(self)
+
+            def request(self, method, target, headers):
+                self.sent = (method, target, headers)
+
+            def getresponse(self):
+                return self.response
+
+            def close(self):
+                self.closed = True
+
+        connections = []
+        response = model_research.production_fetcher(
+            model_research.FetchRequest(
+                self.url + "?version=2",
+                {
+                    "Accept": "text/html",
+                    "authorization": "secret",
+                    "Cookie": "secret",
+                    "accept-encoding": "gzip",
+                },
+            ),
+            connection_factory=Connection,
+        )
+        connection = connections[0]
+        self.assertEqual(connection.init, ("civitai.com", 443, 15))
+        self.assertEqual(connection.sent[0:2], ("GET", "/models/1?version=2"))
+        sent_headers = {key.casefold(): value for key, value in connection.sent[2].items()}
+        self.assertNotIn("authorization", sent_headers)
+        self.assertNotIn("cookie", sent_headers)
+        self.assertEqual(sent_headers["accept-encoding"], "identity")
+        self.assertEqual(connection.response.amount, 2 * 1024 * 1024 + 1)
+        self.assertTrue(connection.closed)
+        self.assertEqual(response.status, 302)
+
+
 if __name__ == "__main__":
     unittest.main()
