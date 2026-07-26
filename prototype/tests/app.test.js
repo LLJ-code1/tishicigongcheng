@@ -62,6 +62,7 @@ const {
   resolveDirectorImageEvidence,
   resolveDirectorImageEvidenceCollection,
   buildDirectorImageCards,
+  buildDirectorImageUiState,
   validateDirectorImageFileBatch,
   resolveCreativeBriefSourceLabel,
   shouldBindDirectorImageFile,
@@ -2025,6 +2026,59 @@ test("director image cards preserve canonical order and expose independent contr
   assert.deepEqual(cards[1].failures, ["模型离线"]);
 });
 
+test("director image UI keeps replacement input available at eight but blocks add and drop", () => {
+  assert.deepEqual(buildDirectorImageUiState(8, false), {
+    addDisabled: true,
+    dropDisabled: true,
+    inputDisabled: false,
+    canAttach: true,
+  });
+  assert.deepEqual(buildDirectorImageUiState(3, true), {
+    addDisabled: true,
+    dropDisabled: true,
+    inputDisabled: true,
+    canAttach: false,
+  });
+});
+
+test("targeted image retry marks only its card analyzing", () => {
+  const intake = creativeIntakeStageFixture("brief_draft");
+  intake.inputs.images = [
+    {
+      id: "image-ready",
+      name: "ready.png",
+      mimeType: "image/png",
+      status: "local_reference_not_embedded",
+      requestedUses: ["action"],
+    },
+    {
+      id: "image-retry",
+      name: "retry.png",
+      mimeType: "image/png",
+      status: "local_reference_not_embedded",
+      requestedUses: ["outfit"],
+    },
+  ];
+  const attachments = new Map([
+    ["image-ready", { objectUrl: "blob:ready", status: "ready", failures: [] }],
+    ["image-retry", { objectUrl: "blob:retry", status: "partial", failures: [] }],
+  ]);
+
+  const cards = buildDirectorImageCards(
+    intake,
+    (imageId) => attachments.get(imageId),
+    { analyzingIds: ["image-retry"] }
+  );
+
+  assert.deepEqual(
+    cards.map((card) => [card.id, card.status]),
+    [
+      ["image-ready", "ready"],
+      ["image-retry", "analyzing"],
+    ]
+  );
+});
+
 test("director image file batch accepts available slots and reports every rejected file", () => {
   const png = (name) => ({ name, type: "image/png", size: 100 });
   const current = Array.from({ length: 7 }, (_, index) => ({
@@ -3925,6 +3979,11 @@ test("director homepage exposes multi-image drop cards and per-card recovery con
   assert.match(source, /validateDirectorImageFileBatch/);
   assert.match(source, /data-director-image-id/);
   assert.match(source, /sourceLabel/);
+  assert.match(
+    source,
+    /async function attachDirectorImageFiles[\s\S]*?if\s*\(state\.directorBusy \|\| activeDirectorImageAbort\)\s*return false;/
+  );
+  assert.match(source, /directorImageDropZone[\s\S]*?aria-disabled/);
   for (const use of [
     "character",
     "appearance",
@@ -3946,6 +4005,7 @@ test("director homepage exposes multi-image drop cards and per-card recovery con
   assert.match(source, /data-director-image-action="retry"/);
   assert.match(css, /\.director-image-card/);
   assert.match(css, /\.director-image-drop-zone:focus-visible/);
+  assert.match(css, /\.director-image-drop-zone\[aria-disabled="true"\]/);
   assert.match(css, /overflow-wrap:\s*anywhere/);
   assert.match(css, /\.director-analysis-failures/);
 });

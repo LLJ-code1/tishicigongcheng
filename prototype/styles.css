@@ -3002,6 +3002,12 @@ select:focus {
   border-color: var(--teal);
 }
 
+.director-image-drop-zone[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .director-image-errors {
   margin: 0;
   padding: 7px 10px 7px 28px;
@@ -3014,6 +3020,8 @@ select:focus {
 .director-image-cards {
   display: grid;
   gap: 8px;
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
 }
 
@@ -3021,6 +3029,8 @@ select:focus {
   display: grid;
   gap: 8px;
   min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   padding: 9px;
   border: 1px solid var(--line);
   border-radius: 7px;

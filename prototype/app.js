@@ -325,10 +325,28 @@
     return { ...clone(reference), requestedUses: normalized };
   }
 
-  function buildDirectorImageCards(value, getAttachment) {
+  function buildDirectorImageUiState(imageCount, busy) {
+    const atLimit = Number(imageCount) >= 8;
+    const isBusy = Boolean(busy);
+    return {
+      addDisabled: atLimit || isBusy,
+      dropDisabled: atLimit || isBusy,
+      inputDisabled: isBusy,
+      canAttach: !isBusy,
+    };
+  }
+
+  function buildDirectorImageCards(
+    value,
+    getAttachment,
+    { analyzingIds = [] } = {}
+  ) {
     const intake = normalizeCreativeIntake(value);
     const lookup =
       typeof getAttachment === "function" ? getAttachment : () => null;
+    const analyzing = new Set(
+      Array.isArray(analyzingIds) ? analyzingIds : []
+    );
     return intake.inputs.images.map((reference) => {
       const attachment = lookup(reference.id);
       const failures = Array.isArray(attachment?.failures)
@@ -336,10 +354,12 @@
             .map((failure) => String(failure?.error || "").trim())
             .filter(Boolean)
         : [];
-      const status = String(
-        attachment?.status ||
-          (attachment ? "idle" : "missing")
-      );
+      const status = analyzing.has(reference.id)
+        ? "analyzing"
+        : String(
+            attachment?.status ||
+              (attachment ? "idle" : "missing")
+          );
       return {
         id: reference.id,
         name: reference.name,
@@ -4163,6 +4183,7 @@
     createDirectorImageReference,
     setDirectorImageRequestedUses,
     buildDirectorImageCards,
+    buildDirectorImageUiState,
     buildDirectorImageReplaceAction,
     buildDirectorImagesReplaceAction,
     shouldBindDirectorImageFile,
@@ -4233,6 +4254,7 @@
   let activeDirectorImageAbort = null;
   let activeDirectorAbort = null;
   let directorImageFileErrors = [];
+  let directorAnalyzingImageIds = new Set();
   let lastCreativeIntakeTransitionOutcome = {
     accepted: false,
     persisted: false,
@@ -4978,6 +5000,17 @@
     const controller = new AbortController();
     activeDirectorImageAbort = controller;
     workspaceRequestAborts.add(controller);
+    const targetedRetryIds =
+      force && retryImageIds.length
+        ? retryImageIds.filter((imageId) =>
+            references.some((reference) => reference.id === imageId)
+          )
+        : [];
+    directorAnalyzingImageIds = new Set(
+      targetedRetryIds.length
+        ? targetedRetryIds
+        : references.map((reference) => reference.id)
+    );
     state = app.reduceState(state, {
       type: "DIRECTOR_IMAGE_ANALYSIS_STATUS_CHANGED",
       status: "analyzing",
@@ -5073,11 +5106,14 @@
       workspaceRequestAborts.delete(controller);
       if (activeDirectorImageAbort === controller) {
         activeDirectorImageAbort = null;
+        directorAnalyzingImageIds = new Set();
+        render();
       }
     }
   }
 
   async function attachDirectorImageFiles(files, { replaceId = "" } = {}) {
+    if (state.directorBusy || activeDirectorImageAbort) return false;
     const currentReferences = state.creativeIntake.inputs.images;
     const replacement = replaceId
       ? currentReferences.find((item) => item.id === replaceId)
@@ -7049,15 +7085,13 @@
       };
       const cards = app.buildDirectorImageCards(
         state.creativeIntake,
-        (imageId) => directorImageCollectionController.get(imageId)
+        (imageId) => directorImageCollectionController.get(imageId),
+        { analyzingIds: Array.from(directorAnalyzingImageIds) }
       );
       imageCards.innerHTML = cards.length
         ? cards
             .map((card) => {
-              const effectiveStatus =
-                model.imageAnalysisStatus === "analyzing"
-                  ? "analyzing"
-                  : card.status;
+              const effectiveStatus = card.status;
               const statusText = {
                 missing: "需重新附加原图",
                 idle: "发送前将在本机分析",
@@ -7134,17 +7168,28 @@
             .join("")
         : '<p class="director-empty-state">尚未添加参考图。</p>';
     }
+    const imageUiState = app.buildDirectorImageUiState(
+      state.creativeIntake.inputs.images.length,
+      model.busy || model.imageAnalysisStatus === "analyzing"
+    );
     const addButton = $("#directorImageAddBtn");
-    const atImageLimit = state.creativeIntake.inputs.images.length >= 8;
     if (addButton) {
-      addButton.classList.toggle("is-disabled", atImageLimit || model.busy);
+      addButton.classList.toggle("is-disabled", imageUiState.addDisabled);
       addButton.setAttribute(
         "aria-disabled",
-        atImageLimit || model.busy ? "true" : "false"
+        imageUiState.addDisabled ? "true" : "false"
       );
     }
     const imageInput = $("#directorImageInput");
-    if (imageInput) imageInput.disabled = atImageLimit || model.busy;
+    if (imageInput) imageInput.disabled = imageUiState.inputDisabled;
+    const imageDropZone = $("#directorImageDropZone");
+    if (imageDropZone) {
+      imageDropZone.setAttribute(
+        "aria-disabled",
+        imageUiState.dropDisabled ? "true" : "false"
+      );
+      imageDropZone.tabIndex = imageUiState.dropDisabled ? -1 : 0;
+    }
     const imageErrors = $("#directorImageErrors");
     if (imageErrors) {
       imageErrors.hidden = !directorImageFileErrors.length;
@@ -9201,6 +9246,9 @@
 
   const directorImageDropZone = $("#directorImageDropZone");
   directorImageDropZone?.addEventListener("click", () => {
+    if (directorImageDropZone.getAttribute("aria-disabled") === "true") {
+      return;
+    }
     const input = $("#directorImageInput");
     delete input.dataset.replaceId;
     input.click();
@@ -9212,6 +9260,9 @@
   });
   directorImageDropZone?.addEventListener("dragover", (event) => {
     event.preventDefault();
+    if (directorImageDropZone.getAttribute("aria-disabled") === "true") {
+      return;
+    }
     directorImageDropZone.classList.add("is-dragging");
   });
   directorImageDropZone?.addEventListener("dragleave", () => {
@@ -9220,6 +9271,9 @@
   directorImageDropZone?.addEventListener("drop", (event) => {
     event.preventDefault();
     directorImageDropZone.classList.remove("is-dragging");
+    if (directorImageDropZone.getAttribute("aria-disabled") === "true") {
+      return;
+    }
     attachDirectorImageFiles(Array.from(event.dataTransfer?.files || []));
   });
 
