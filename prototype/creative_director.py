@@ -150,23 +150,45 @@ def _provider_secrets(config: dict) -> tuple[str, ...]:
     return tuple(dict.fromkeys(values))
 
 
-def _contains_secret(value: object, secrets: tuple[str, ...]) -> bool:
+def _collect_strings(value: object) -> list[str]:
     if isinstance(value, str):
-        return any(secret in value for secret in secrets)
+        return [value]
     if isinstance(value, dict):
-        return any(
-            _contains_secret(key, secrets)
-            or _contains_secret(item, secrets)
-            for key, item in value.items()
-        )
+        strings = []
+        for item in value.values():
+            strings.extend(_collect_strings(item))
+        return strings
     if isinstance(value, list):
-        return any(_contains_secret(item, secrets) for item in value)
+        strings = []
+        for item in value:
+            strings.extend(_collect_strings(item))
+        return strings
+    return []
+
+
+def _ordered_strings_reconstruct_secret(
+    strings: list[str],
+    secret: str,
+) -> bool:
+    matched = 0
+    for value in strings:
+        remainder = secret[matched:]
+        for length in range(len(remainder), 0, -1):
+            if remainder[:length] in value:
+                matched += length
+                break
+        if matched == len(secret):
+            return True
     return False
 
 
-def _reject_provider_secret_echo(proposal: dict, config: dict) -> None:
+def _reject_provider_secret_echo(value: dict, config: dict) -> None:
     secrets = _provider_secrets(config)
-    if secrets and _contains_secret(proposal, secrets):
+    strings = _collect_strings(value)
+    if any(
+        _ordered_strings_reconstruct_secret(strings, secret)
+        for secret in secrets
+    ):
         raise CreativeDirectorError(
             "model proposal contained protected provider credentials",
             code="provider_secret_echo",
@@ -243,12 +265,13 @@ def run_creative_director_turn(
     proposal = normalize_creative_director_proposal(
         response_content(response)
     )
-    _reject_provider_secret_echo(proposal, config)
     item = apply_creative_intake_transition(
         canonical_current,
         proposal["action"],
     )
-    return {"message": proposal["message"], "item": item}
+    result = {"message": proposal["message"], "item": item}
+    _reject_provider_secret_echo(result, config)
+    return result
 
 
 __all__ = [

@@ -334,6 +334,80 @@ class CreativeDirectorTurnTests(unittest.TestCase):
                 )
                 self.assertEqual(self.current, original)
 
+    def test_turn_fails_closed_when_secret_is_split_across_return_fields(self):
+        original = copy.deepcopy(self.current)
+
+        def malicious_transport(_url, _body, headers, _timeout):
+            secret = headers["Authorization"].removeprefix("Bearer ")
+            split_at = secret.index("-") + 1
+            return {
+                "choices": [{
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "message": secret[:split_at],
+                                "action": {
+                                    "type": "set_directions",
+                                    "directions": [{
+                                        "id": "recommended",
+                                        "label": "电影感",
+                                        "summary": secret[split_at:],
+                                    }],
+                                },
+                            }
+                        )
+                    }
+                }]
+            }
+
+        with self.assertRaises(
+            creative_director.CreativeDirectorError
+        ) as raised:
+            creative_director.run_creative_director_turn(
+                current=self.current,
+                user_message="继续",
+                image_evidence=[],
+                provider="api",
+                settings=self.settings,
+                transport=malicious_transport,
+            )
+
+        self.assertEqual(raised.exception.code, "provider_secret_echo")
+        self.assertNotIn(
+            self.settings["apiTextKey"],
+            str(raised.exception),
+        )
+        self.assertEqual(self.current, original)
+
+    def test_secret_check_includes_strings_from_final_canonical_item(self):
+        current = creative_intake.empty_creative_intake()
+        current["inputs"]["text"] = "secret"
+        original = copy.deepcopy(current)
+
+        def malicious_transport(_url, _body, headers, _timeout):
+            secret = headers["Authorization"].removeprefix("Bearer ")
+            split_at = secret.index("-") + 1
+            return self.direction_response(secret[:split_at])
+
+        with self.assertRaises(
+            creative_director.CreativeDirectorError
+        ) as raised:
+            creative_director.run_creative_director_turn(
+                current=current,
+                user_message="继续",
+                image_evidence=[],
+                provider="api",
+                settings=self.settings,
+                transport=malicious_transport,
+            )
+
+        self.assertEqual(raised.exception.code, "provider_secret_echo")
+        self.assertNotIn(
+            self.settings["apiTextKey"],
+            str(raised.exception),
+        )
+        self.assertEqual(current, original)
+
     def test_turn_applies_legal_action_through_creative_intake_transition(self):
         result = creative_director.run_creative_director_turn(
             current=self.current,
