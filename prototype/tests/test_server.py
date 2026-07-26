@@ -914,6 +914,54 @@ class PromptStudioServerTests(unittest.TestCase):
         )
         transport.assert_not_called()
 
+    def test_creative_director_rejects_malicious_current_image_with_or_without_evidence(self):
+        for evidence in (
+            None,
+            {
+                "imageId": "../image",
+                "requestedUses": [],
+                "summary": "visible content",
+                "sourceModels": ["wd14"],
+                "uncertain": True,
+            },
+        ):
+            with self.subTest(evidence=evidence):
+                current = creative_intake.empty_creative_intake()
+                current["inputs"]["images"] = [
+                    {
+                        "id": "../image",
+                        "name": "reference.png",
+                        "mimeType": "image/png",
+                        "status": "local_reference_not_embedded",
+                        "requestedUses": [],
+                    }
+                ]
+                with patch(
+                    "creative_director.default_transport"
+                ) as transport:
+                    response = self.assert_http_error_json(
+                        Request(
+                            f"{self.base_url}/api/creative-intake/director",
+                            data=json.dumps(
+                                {
+                                    "current": current,
+                                    "message": "继续",
+                                    "imageEvidence": evidence,
+                                },
+                                ensure_ascii=False,
+                            ).encode("utf-8"),
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        ),
+                        400,
+                    )
+
+                self.assertEqual(
+                    response["code"],
+                    "invalid_creative_director_request",
+                )
+                transport.assert_not_called()
+
     def test_creative_director_sanitizes_provider_and_model_failures(self):
         provider_secret = "HTTP-API-SECRET"
         upstream_body = "RAW-UPSTREAM-RESPONSE-BODY"

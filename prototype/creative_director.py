@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 from creative_intake import (
+    CreativeIntakeValidationError,
     apply_creative_intake_transition,
     normalize_creative_intake,
 )
@@ -35,6 +36,19 @@ _IMAGE_EVIDENCE_FIELDS = {
     "uncertain",
 }
 _SAFE_MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_SAFE_IMAGE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$")
+_IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/webp"}
+_IMAGE_STATUS = "local_reference_not_embedded"
+_IMAGE_USE_TYPES = {
+    "character",
+    "appearance",
+    "outfit",
+    "action",
+    "environment",
+    "composition",
+    "lighting",
+    "style",
+}
 
 
 class CreativeDirectorError(PromptEngineError):
@@ -97,6 +111,21 @@ def _normalize_image_evidence(
     images = current["inputs"]["images"]
     if len(images) > 1:
         _invalid_request("single-image director turns allow at most one image")
+    if images:
+        image = images[0]
+        if not _SAFE_IMAGE_ID.fullmatch(image["id"]):
+            _invalid_request("current image ID is invalid")
+        if image["mimeType"] not in _IMAGE_MIME_TYPES:
+            _invalid_request("current image MIME type is invalid")
+        if image["status"] != _IMAGE_STATUS:
+            _invalid_request("current image status is invalid")
+        requested_uses = image["requestedUses"]
+        if (
+            len(requested_uses) > len(_IMAGE_USE_TYPES)
+            or len(requested_uses) != len(set(requested_uses))
+            or not set(requested_uses).issubset(_IMAGE_USE_TYPES)
+        ):
+            _invalid_request("current image requestedUses is invalid")
     if image_evidence is None:
         return None
     if not isinstance(image_evidence, dict):
@@ -315,7 +344,14 @@ def run_creative_director_turn(
     skill_override: object = "",
     transport=None,
 ) -> dict:
-    canonical_current = normalize_creative_intake(current)
+    try:
+        canonical_current = normalize_creative_intake(current)
+    except CreativeIntakeValidationError as error:
+        raise CreativeDirectorError(
+            "creative director current state is invalid",
+            code="invalid_creative_director_request",
+            status=400,
+        ) from error
     if not isinstance(user_message, str) or not user_message.strip():
         _invalid_request("user_message must be non-empty text")
     if len(user_message) > 20_000:

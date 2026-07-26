@@ -590,6 +590,72 @@ class CreativeDirectorTurnTests(unittest.TestCase):
                 transport=lambda *_args: self.direction_response(),
             )
 
+    def test_turn_rejects_malicious_current_image_before_provider_with_or_without_evidence(self):
+        valid_image = {
+            "id": "image-safe",
+            "name": "reference.png",
+            "mimeType": "image/png",
+            "status": "local_reference_not_embedded",
+            "requestedUses": ["action"],
+        }
+        malicious_images = {
+            "path id": {**valid_image, "id": "../image"},
+            "base64-like id": {
+                **valid_image,
+                "id": "data:image/png;base64,AAAA",
+            },
+            "oversized id": {**valid_image, "id": "i" * 129},
+            "unsafe name": {**valid_image, "name": "../reference.png"},
+            "arbitrary mime": {**valid_image, "mimeType": "image/gif"},
+            "arbitrary status": {**valid_image, "status": "embedded"},
+            "arbitrary use": {
+                **valid_image,
+                "requestedUses": ["hidden_multi_image"],
+            },
+            "duplicate use": {
+                **valid_image,
+                "requestedUses": ["action", "action"],
+            },
+        }
+        for label, image in malicious_images.items():
+            for evidence_mode in ("none", "object"):
+                with self.subTest(label=label, evidence=evidence_mode):
+                    current = creative_intake.empty_creative_intake()
+                    current["inputs"]["images"] = [copy.deepcopy(image)]
+                    evidence = None
+                    if evidence_mode == "object":
+                        evidence = {
+                            "imageId": image["id"],
+                            "requestedUses": [],
+                            "summary": "visible content",
+                            "sourceModels": ["wd14"],
+                            "uncertain": True,
+                        }
+                    called = False
+
+                    def transport(*_args):
+                        nonlocal called
+                        called = True
+                        return self.direction_response()
+
+                    with self.assertRaises(
+                        creative_director.CreativeDirectorError
+                    ) as raised:
+                        creative_director.run_creative_director_turn(
+                            current=current,
+                            user_message="继续",
+                            image_evidence=evidence,
+                            provider="local",
+                            settings=self.settings,
+                            transport=transport,
+                        )
+
+                    self.assertEqual(
+                        raised.exception.code,
+                        "invalid_creative_director_request",
+                    )
+                    self.assertFalse(called)
+
     def test_turn_accepts_exact_image_evidence_boundaries_and_sends_only_text(self):
         current = creative_intake.empty_creative_intake()
         current["inputs"]["images"] = [

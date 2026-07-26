@@ -53,6 +53,7 @@ const {
   shouldReuseDirectorImageEvidence,
   createDirectorImageFlowGuard,
   resolveDirectorImageEvidence,
+  shouldBindDirectorImageFile,
 } = require("../app.js");
 const unicode15 = require("../unicode15-data.js");
 
@@ -333,6 +334,61 @@ test("single-image requested-use chips are allowlisted and AI suggestion means n
   assert.throws(
     () => setDirectorImageRequestedUses(reference, ["hidden_multi_image"]),
     /requested image use/
+  );
+});
+
+test("accepted canonical image still binds its File when metadata persistence fails", () => {
+  const reference = {
+    id: "image-new",
+    name: "reference.png",
+    mimeType: "image/png",
+    status: "local_reference_not_embedded",
+    requestedUses: [],
+  };
+  let state = createInitialState();
+  state.creativeIntake.inputs.images = [reference];
+  state.directorError = "作品元数据保存失败";
+
+  assert.equal(
+    shouldBindDirectorImageFile({
+      transitionAccepted: false,
+      reference,
+      current: state.creativeIntake,
+    }),
+    true
+  );
+  state = reduceState(state, {
+    type: "DIRECTOR_IMAGE_EVIDENCE_SET",
+    item: null,
+    failures: [],
+  });
+  state = reduceState(state, {
+    type: "DIRECTOR_IMAGE_ANALYSIS_STATUS_CHANGED",
+    status: "idle",
+  });
+  assert.equal(state.directorError, "作品元数据保存失败");
+
+  assert.equal(
+    shouldBindDirectorImageFile({
+      transitionAccepted: false,
+      reference,
+      current: emptyCreativeIntake(),
+    }),
+    false
+  );
+  assert.equal(
+    shouldBindDirectorImageFile({
+      transitionAccepted: true,
+      reference,
+      current: {
+        ...emptyCreativeIntake(),
+        inputs: {
+          text: "",
+          images: [{ ...reference, id: "image-other" }],
+        },
+      },
+    }),
+    false
   );
 });
 

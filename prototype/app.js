@@ -284,6 +284,25 @@
     };
   }
 
+  function shouldBindDirectorImageFile({
+    reference,
+    current,
+  }) {
+    if (!reference || typeof reference !== "object") return false;
+    let canonical;
+    try {
+      canonical = normalizeCreativeIntake(current);
+    } catch {
+      return false;
+    }
+    const image = canonical.inputs.images[0] || null;
+    return Boolean(
+      image &&
+        canonical.inputs.images.length === 1 &&
+        image.id === reference.id
+    );
+  }
+
   function createSingleImagePreviewController({
     createObjectURL,
     revokeObjectURL,
@@ -3443,6 +3462,7 @@
     createDirectorImageReference,
     setDirectorImageRequestedUses,
     buildDirectorImageReplaceAction,
+    shouldBindDirectorImageFile,
     createSingleImagePreviewController,
     buildDirectorImageEvidence,
     performDirectorImageAnalysis,
@@ -4355,13 +4375,21 @@
       file,
       () => app.createClientId("image")
     );
-    const accepted = await transitionCreativeIntake(
+    const transitionAccepted = await transitionCreativeIntake(
       app.buildDirectorImageReplaceAction(
         state.creativeIntake,
         reference
       )
     );
-    if (!accepted) return false;
+    if (
+      !app.shouldBindDirectorImageFile({
+        transitionAccepted,
+        reference,
+        current: state.creativeIntake,
+      })
+    ) {
+      return false;
+    }
     directorImagePreviewController.attach(file, {
       confirmReplace: () => true,
       createId: () => reference.id,
