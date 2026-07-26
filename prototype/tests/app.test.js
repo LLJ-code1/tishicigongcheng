@@ -784,6 +784,7 @@ test("multi-image evidence collection keeps successes when a peer analysis fails
     projectRevision: 13,
     getCurrentContext: () => ({
       references,
+      analyzerIds: ["wd14"],
       sessionId: 7,
       workspaceRevision: 11,
       projectRevision: 13,
@@ -840,6 +841,7 @@ test("multi-image evidence collection converts one thrown analyzer failure witho
     projectRevision: 1,
     getCurrentContext: () => ({
       references,
+      analyzerIds: ["wd14"],
       sessionId: 1,
       workspaceRevision: 1,
       projectRevision: 1,
@@ -1005,6 +1007,7 @@ test("multi-image resolver rejects results after removal, file replacement, or c
     projectRevision: 8,
     getCurrentContext: () => ({
       references,
+      analyzerIds: ["wd14"],
       sessionId: 2,
       workspaceRevision: 6,
       projectRevision,
@@ -1040,6 +1043,48 @@ test("multi-image resolver rejects results after removal, file replacement, or c
   assert.equal(result.stale, true);
 });
 
+test("multi-image resolver rejects an in-flight result when analyzer selection changes", async () => {
+  const references = [{ id: "action-ref", requestedUses: ["action"] }];
+  const entry = { file: { name: "action.png" } };
+  let analyzerIds = ["wd14"];
+  let finish;
+  const pending = resolveDirectorImageEvidenceCollection({
+    references,
+    getEntry: () => entry,
+    analyzerIds: ["wd14"],
+    sessionId: 2,
+    workspaceRevision: 6,
+    projectRevision: 8,
+    getCurrentContext: () => ({
+      references,
+      analyzerIds,
+      sessionId: 2,
+      workspaceRevision: 6,
+      projectRevision: 8,
+    }),
+    analyze: () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  });
+  analyzerIds = ["joycaption"];
+  finish({
+    evidence: {
+      imageId: "action-ref",
+      requestedUses: ["action"],
+      summary: "stale analyzer output",
+      sourceModels: ["wd14"],
+      uncertain: false,
+    },
+    failedAnalyzers: [],
+    allFailed: false,
+  });
+
+  const result = await pending;
+  assert.deepEqual(result.items, []);
+  assert.equal(result.stale, true);
+});
+
 test("multi-image director evidence is allowlisted text and external requests contain no local file material", async () => {
   const reference = { id: "image-one", requestedUses: ["action"] };
   const file = {
@@ -1056,6 +1101,7 @@ test("multi-image director evidence is allowlisted text and external requests co
     projectRevision: 1,
     getCurrentContext: () => ({
       references: [reference],
+      analyzerIds: ["wd14"],
       sessionId: 1,
       workspaceRevision: 1,
       projectRevision: 1,
@@ -3643,6 +3689,25 @@ test("unified creative director homepage replaces the split creation entry point
   assert.match(css, /\.director-error-banner/);
   assert.match(css, /\.director-source-badge/);
   assert.match(css, /\.director-lock-badge/);
+});
+
+test("browser creative director production flow resolves every canonical image as a collection", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  const ensureBody = source.match(
+    /async function ensureDirectorImageEvidence\([\s\S]*?\n  }\n\n  async function attachDirectorImageFile/
+  )?.[0];
+  const sendBody = source.match(
+    /async function sendCreativeDirectorMessage\([\s\S]*?\n  }\n\n  function/
+  )?.[0];
+
+  assert.ok(ensureBody, "production evidence orchestration exists");
+  assert.match(ensureBody, /resolveDirectorImageEvidenceCollection/);
+  assert.doesNotMatch(ensureBody, /inputs\.images\[0\]/);
+  assert.doesNotMatch(ensureBody, /app\.resolveDirectorImageEvidence\(/);
+  assert.match(ensureBody, /directorImageCollectionController\.get/);
+  assert.match(ensureBody, /retryImageIds/);
+  assert.ok(sendBody, "production director sender exists");
+  assert.doesNotMatch(sendBody, /inputs\.images\[0\]/);
 });
 
 test("director homepage exposes one local-analysis image with use chips and recovery controls", () => {

@@ -417,6 +417,20 @@
       get(imageId) {
         return safeEntry(entries.get(imageId));
       },
+      setAnalysis(imageId, {
+        evidence = null,
+        failures = [],
+        status = "idle",
+        evidenceContext = null,
+      } = {}) {
+        const entry = entries.get(imageId);
+        if (!entry) return false;
+        entry.evidence = evidence == null ? null : clone(evidence);
+        entry.failures = Array.isArray(failures) ? clone(failures) : [];
+        entry.status = String(status || "idle");
+        entry.evidenceContext = evidenceContext;
+        return true;
+      },
       size() {
         return entries.size;
       },
@@ -831,6 +845,8 @@
     const current = getCurrentContext() || {};
     const globallyStale =
       directorCollectionSignature(current.references) !== initialSignature ||
+      JSON.stringify(current.analyzerIds || []) !==
+        JSON.stringify(analyzerIds || []) ||
       current.sessionId !== sessionId ||
       current.workspaceRevision !== workspaceRevision ||
       current.projectRevision !== projectRevision;
@@ -4844,43 +4860,14 @@
     }
   }
 
-  async function ensureDirectorImageEvidence({ force = false } = {}) {
-    const reference = state.creativeIntake.inputs.images[0] || null;
-    if (!reference) {
+  async function ensureDirectorImageEvidence({
+    force = false,
+    retryImageIds = [],
+  } = {}) {
+    const references = state.creativeIntake.inputs.images;
+    if (!references.length) {
       clearDirectorImageEvidence("idle");
       return true;
-    }
-    const currentAttachment = directorImageCollectionController.get(
-      reference.id
-    );
-    if (
-      app.shouldReuseDirectorImageEvidence(
-        reference,
-        state.directorImageEvidence,
-        force
-      )
-    ) {
-      return true;
-    }
-    if (
-      !currentAttachment
-    ) {
-      state = app.reduceState(state, {
-        type: "DIRECTOR_IMAGE_EVIDENCE_SET",
-        item: null,
-        failures: [
-          {
-            id: "attachment",
-            error: "原图未持久化，请重新附加这张参考图后再分析。",
-          },
-        ],
-      });
-      state = app.reduceState(state, {
-        type: "DIRECTOR_IMAGE_ANALYSIS_STATUS_CHANGED",
-        status: "error",
-      });
-      render();
-      return false;
     }
     const analyzerIds = selectedLocalDirectorAnalyzers();
     if (!analyzerIds.length) {
@@ -4907,25 +4894,34 @@
     activeDirectorImageAbort = controller;
     workspaceRequestAborts.add(controller);
     state = app.reduceState(state, {
-      type: "DIRECTOR_IMAGE_EVIDENCE_SET",
-      item: null,
-      failures: [],
-    });
-    state = app.reduceState(state, {
       type: "DIRECTOR_IMAGE_ANALYSIS_STATUS_CHANGED",
       status: "analyzing",
     });
     render();
     try {
-      const resolved = await app.resolveDirectorImageEvidence({
-        getReference: () =>
-          state.creativeIntake.inputs.images[0] || null,
-        currentEvidence: null,
-        force: true,
-        guard: directorImageFlowGuard,
-        analyze: (capturedReference) =>
+      const resolved = await app.resolveDirectorImageEvidenceCollection({
+        references,
+        getEntry: (imageId) =>
+          directorImageCollectionController.get(imageId),
+        analyzerIds,
+        sessionId: workspaceSessionId,
+        workspaceRevision: state.workspaceRevision,
+        projectRevision: state.projectRevision,
+        getCurrentContext: () => ({
+          references: state.creativeIntake.inputs.images,
+          analyzerIds: selectedLocalDirectorAnalyzers(),
+          sessionId: workspaceSessionId,
+          workspaceRevision: state.workspaceRevision,
+          projectRevision: state.projectRevision,
+        }),
+        retryImageIds: force
+          ? retryImageIds.length
+            ? retryImageIds
+            : references.map((reference) => reference.id)
+          : retryImageIds,
+        analyze: (capturedReference, attachment) =>
           app.performDirectorImageAnalysis({
-            file: currentAttachment.file,
+            file: attachment.file,
             imageReference: capturedReference,
             analyzerIds,
             readBase64: fileToBase64,
@@ -4933,25 +4929,61 @@
             signal: controller.signal,
           }),
       });
-      if (controller.signal.aborted || !resolved.accepted) {
+      if (controller.signal.aborted || resolved.stale) {
         return false;
       }
-      const result = resolved.result;
+      const evidenceById = new Map(
+        resolved.items.map((item) => [item.imageId, item])
+      );
+      const failuresById = new Map(
+        resolved.failures.map((item) => [item.imageId, item.failures])
+      );
+      for (const reference of references) {
+        const evidence = evidenceById.get(reference.id) || null;
+        const failures = failuresById.get(reference.id) || [];
+        const attachment = directorImageCollectionController.get(
+          reference.id
+        );
+        directorImageCollectionController.setAnalysis(reference.id, {
+          evidence,
+          failures,
+          status: evidence
+            ? failures.length
+              ? "partial"
+              : "ready"
+            : "error",
+          evidenceContext: evidence
+            ? {
+                file: attachment?.file,
+                analyzerIds: analyzerIds.slice(),
+                sessionId: workspaceSessionId,
+                workspaceRevision: state.workspaceRevision,
+                projectRevision: state.projectRevision,
+              }
+            : null,
+        });
+      }
+      const flatFailures = resolved.failures.flatMap((item) =>
+        item.failures.map((failure) => ({
+          ...failure,
+          imageId: item.imageId,
+        }))
+      );
       state = app.reduceState(state, {
         type: "DIRECTOR_IMAGE_EVIDENCE_SET",
-        item: result.evidence,
-        failures: result.failedAnalyzers,
+        item: resolved.items,
+        failures: flatFailures,
       });
       state = app.reduceState(state, {
         type: "DIRECTOR_IMAGE_ANALYSIS_STATUS_CHANGED",
-        status: result.allFailed
+        status: !resolved.items.length
           ? "error"
-          : result.failedAnalyzers.length
+          : resolved.failures.length
             ? "partial"
             : "ready",
       });
       render();
-      return !result.allFailed;
+      return resolved.items.length > 0;
     } finally {
       workspaceRequestAborts.delete(controller);
       if (activeDirectorImageAbort === controller) {
@@ -5095,16 +5127,7 @@
       return;
     }
     if (state.creativeIntake.inputs.images.length) {
-      const imageSnapshot = directorImageFlowGuard.capture(
-        state.creativeIntake.inputs.images[0]
-      );
-      if (
-        !(await ensureDirectorImageEvidence()) ||
-        !directorImageFlowGuard.isCurrent(
-          imageSnapshot,
-          state.creativeIntake.inputs.images[0] || null
-        )
-      ) {
+      if (!(await ensureDirectorImageEvidence())) {
         return;
       }
     }
@@ -8444,7 +8467,12 @@
       return;
     }
     if (button.id === "directorImageRetryBtn") {
-      ensureDirectorImageEvidence({ force: true });
+      ensureDirectorImageEvidence({
+        force: true,
+        retryImageIds: button.dataset.directorImageId
+          ? [button.dataset.directorImageId]
+          : [],
+      });
       return;
     }
     if (button.id === "directorContinueBtn") {
