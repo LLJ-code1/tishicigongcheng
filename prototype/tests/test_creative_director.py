@@ -227,6 +227,13 @@ class CreativeDirectorTurnTests(unittest.TestCase):
                 self.assertEqual(body["model"], expected_model)
                 self.assertEqual(body["messages"][0]["role"], "system")
                 self.assertEqual(body["messages"][1]["role"], "user")
+                request_text = body["messages"][1]["content"]
+                if request_text.startswith("/no_think\n"):
+                    request_text = request_text.removeprefix("/no_think\n")
+                self.assertEqual(
+                    json.loads(request_text)["imageEvidence"],
+                    [],
+                )
                 self.assertEqual(result["item"]["revision"], 1)
                 if provider == "api":
                     self.assertEqual(
@@ -479,7 +486,6 @@ class CreativeDirectorTurnTests(unittest.TestCase):
         cases = (
             ("blank message", " ", None),
             ("oversized message", "x" * 20_001, None),
-            ("evidence array", "继续", []),
             ("evidence without current image", "继续", {"imageId": "image-1"}),
         )
         for label, user_message, image_evidence in cases:
@@ -578,17 +584,139 @@ class CreativeDirectorTurnTests(unittest.TestCase):
                 )
                 self.assertFalse(called)
 
+    def test_turn_normalizes_ordered_multi_image_evidence_before_provider(self):
         current = creative_intake.empty_creative_intake()
-        current["inputs"]["images"] = [image, {**image, "id": "image-2"}]
-        with self.assertRaises(creative_director.CreativeDirectorError):
-            creative_director.run_creative_director_turn(
-                current=current,
-                user_message="继续",
-                image_evidence=valid,
-                provider="local",
-                settings=self.settings,
-                transport=lambda *_args: self.direction_response(),
-            )
+        current["inputs"]["images"] = [
+            {
+                "id": "image-action",
+                "name": "action.png",
+                "mimeType": "image/png",
+                "status": "local_reference_not_embedded",
+                "requestedUses": ["action"],
+            },
+            {
+                "id": "image-outfit",
+                "name": "outfit.webp",
+                "mimeType": "image/webp",
+                "status": "local_reference_not_embedded",
+                "requestedUses": ["outfit"],
+            },
+        ]
+        action_evidence = {
+            "imageId": "image-action",
+            "requestedUses": ["action"],
+            "summary": "人物向前奔跑",
+            "sourceModels": ["wd14"],
+            "uncertain": False,
+        }
+        outfit_evidence = {
+            "imageId": "image-outfit",
+            "requestedUses": ["outfit"],
+            "summary": "红色风衣",
+            "sourceModels": ["florence"],
+            "uncertain": False,
+        }
+        captured = {}
+
+        def transport(_url, body, _headers, _timeout):
+            captured.update(body)
+            return self.direction_response()
+
+        creative_director.run_creative_director_turn(
+            current=current,
+            user_message="组合动作和服装",
+            image_evidence=[outfit_evidence, action_evidence],
+            provider="local",
+            settings=self.settings,
+            transport=transport,
+        )
+
+        request_text = captured["messages"][1]["content"]
+        if request_text.startswith("/no_think\n"):
+            request_text = request_text.removeprefix("/no_think\n")
+        content = json.loads(request_text)
+        self.assertEqual(
+            content["imageEvidence"],
+            [action_evidence, outfit_evidence],
+        )
+
+        legacy = {}
+
+        def legacy_transport(_url, body, _headers, _timeout):
+            legacy.update(body)
+            return self.direction_response()
+
+        one_image = copy.deepcopy(current)
+        one_image["inputs"]["images"] = [one_image["inputs"]["images"][0]]
+        creative_director.run_creative_director_turn(
+            current=one_image,
+            user_message="只用动作",
+            image_evidence=action_evidence,
+            provider="local",
+            settings=self.settings,
+            transport=legacy_transport,
+        )
+        legacy_text = legacy["messages"][1]["content"]
+        if legacy_text.startswith("/no_think\n"):
+            legacy_text = legacy_text.removeprefix("/no_think\n")
+        self.assertEqual(
+            json.loads(legacy_text)["imageEvidence"],
+            [action_evidence],
+        )
+
+    def test_turn_rejects_invalid_multi_image_evidence_before_provider(self):
+        current = creative_intake.empty_creative_intake()
+        current["inputs"]["images"] = [
+            {
+                "id": f"image-{index}",
+                "name": f"reference-{index}.png",
+                "mimeType": "image/png",
+                "status": "local_reference_not_embedded",
+                "requestedUses": ["action"],
+            }
+            for index in range(8)
+        ]
+        valid = {
+            "imageId": "image-0",
+            "requestedUses": ["action"],
+            "summary": "奔跑",
+            "sourceModels": ["wd14"],
+            "uncertain": False,
+        }
+        cases = {
+            "duplicate image": [valid, copy.deepcopy(valid)],
+            "unknown image": [{**valid, "imageId": "image-unknown"}],
+            "too many evidence items": [
+                {**valid, "imageId": f"image-{index % 8}"}
+                for index in range(9)
+            ],
+            "bytes field": [{**valid, "bytes": "AAAA"}],
+        }
+        for label, evidence in cases.items():
+            with self.subTest(label=label):
+                called = False
+
+                def transport(*_args):
+                    nonlocal called
+                    called = True
+                    return self.direction_response()
+
+                with self.assertRaises(
+                    creative_director.CreativeDirectorError
+                ) as raised:
+                    creative_director.run_creative_director_turn(
+                        current=current,
+                        user_message="继续",
+                        image_evidence=evidence,
+                        provider="local",
+                        settings=self.settings,
+                        transport=transport,
+                    )
+                self.assertEqual(
+                    raised.exception.code,
+                    "invalid_creative_director_request",
+                )
+                self.assertFalse(called)
 
     def test_turn_rejects_malicious_current_image_before_provider_with_or_without_evidence(self):
         valid_image = {
@@ -690,7 +818,7 @@ class CreativeDirectorTurnTests(unittest.TestCase):
         )
 
         content = json.loads(captured["messages"][1]["content"])
-        self.assertEqual(content["imageEvidence"], evidence)
+        self.assertEqual(content["imageEvidence"], [evidence])
         serialized = json.dumps(content, ensure_ascii=False)
         self.assertNotIn("dataBase64", serialized)
         self.assertNotIn("localPath", serialized)

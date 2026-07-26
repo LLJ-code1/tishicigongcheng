@@ -107,12 +107,10 @@ def _valid_unicode_text(
 def _normalize_image_evidence(
     current: dict,
     image_evidence: object,
-) -> dict | None:
+) -> list[dict]:
     images = current["inputs"]["images"]
-    if len(images) > 1:
-        _invalid_request("single-image director turns allow at most one image")
-    if images:
-        image = images[0]
+    image_by_id = {}
+    for image in images:
         if not _SAFE_IMAGE_ID.fullmatch(image["id"]):
             _invalid_request("current image ID is invalid")
         if image["mimeType"] not in _IMAGE_MIME_TYPES:
@@ -126,77 +124,98 @@ def _normalize_image_evidence(
             or not set(requested_uses).issubset(_IMAGE_USE_TYPES)
         ):
             _invalid_request("current image requestedUses is invalid")
+        image_by_id[image["id"]] = image
     if image_evidence is None:
-        return None
-    if not isinstance(image_evidence, dict):
-        _invalid_request("image_evidence must be null or one object")
-    if set(image_evidence) != _IMAGE_EVIDENCE_FIELDS:
-        _invalid_request("image_evidence fields are invalid")
-    if len(images) != 1:
-        _invalid_request("image_evidence requires the current image")
+        evidence_items = []
+    elif isinstance(image_evidence, dict):
+        evidence_items = [image_evidence]
+    elif isinstance(image_evidence, list) and len(image_evidence) <= 8:
+        evidence_items = image_evidence
+    else:
+        _invalid_request("image_evidence must be null, one object, or an array")
 
-    image = images[0]
-    image_id = _valid_unicode_text(
-        image_evidence["imageId"],
-        "image_evidence.imageId",
-        maximum=128,
-    )
-    if image_id != image["id"]:
-        _invalid_request("image_evidence imageId does not match current image")
-
-    requested_uses = image_evidence["requestedUses"]
-    if not isinstance(requested_uses, list) or len(requested_uses) > 8:
-        _invalid_request("image_evidence.requestedUses is invalid")
-    normalized_uses = [
-        _valid_unicode_text(
-            value,
-            "image_evidence.requestedUses",
+    normalized_by_id = {}
+    for index, evidence in enumerate(evidence_items):
+        label = f"image_evidence[{index}]"
+        if not isinstance(evidence, dict):
+            _invalid_request(f"{label} must be an object")
+        if set(evidence) != _IMAGE_EVIDENCE_FIELDS:
+            _invalid_request(f"{label} fields are invalid")
+        image_id = _valid_unicode_text(
+            evidence["imageId"],
+            f"{label}.imageId",
             maximum=128,
         )
-        for value in requested_uses
-    ]
-    if len(normalized_uses) != len(set(normalized_uses)):
-        _invalid_request("image_evidence.requestedUses contains duplicates")
-    if not set(normalized_uses).issubset(set(image["requestedUses"])):
-        _invalid_request(
-            "image_evidence.requestedUses must match current image uses"
-        )
+        if image_id in normalized_by_id:
+            _invalid_request("image_evidence image IDs must be unique")
+        image = image_by_id.get(image_id)
+        if image is None:
+            _invalid_request("image_evidence imageId does not match a current image")
 
-    summary = _valid_unicode_text(
-        image_evidence["summary"],
-        "image_evidence.summary",
-        maximum=100_000,
-    )
-    source_models = image_evidence["sourceModels"]
-    if (
-        not isinstance(source_models, list)
-        or not source_models
-        or len(source_models) > 16
-    ):
-        _invalid_request("image_evidence.sourceModels is invalid")
-    normalized_models = [
-        _valid_unicode_text(
-            value,
-            "image_evidence.sourceModels",
-            maximum=128,
+        requested_uses = evidence["requestedUses"]
+        if not isinstance(requested_uses, list) or len(requested_uses) > 8:
+            _invalid_request(f"{label}.requestedUses is invalid")
+        normalized_uses = [
+            _valid_unicode_text(
+                value,
+                f"{label}.requestedUses",
+                maximum=128,
+            )
+            for value in requested_uses
+        ]
+        if len(normalized_uses) != len(set(normalized_uses)):
+            _invalid_request(f"{label}.requestedUses contains duplicates")
+        if not set(normalized_uses).issubset(set(image["requestedUses"])):
+            _invalid_request(
+                f"{label}.requestedUses must match current image uses"
+            )
+
+        summary = _valid_unicode_text(
+            evidence["summary"],
+            f"{label}.summary",
+            maximum=100_000,
         )
-        for value in source_models
+        source_models = evidence["sourceModels"]
+        if (
+            not isinstance(source_models, list)
+            or not source_models
+            or len(source_models) > 16
+        ):
+            _invalid_request(f"{label}.sourceModels is invalid")
+        normalized_models = [
+            _valid_unicode_text(
+                value,
+                f"{label}.sourceModels",
+                maximum=128,
+            )
+            for value in source_models
+        ]
+        if (
+            len(normalized_models) != len(set(normalized_models))
+            or any(
+                not _SAFE_MODEL_ID.fullmatch(value)
+                for value in normalized_models
+            )
+        ):
+            _invalid_request(
+                f"{label}.sourceModels must be unique safe IDs"
+            )
+        uncertain = evidence["uncertain"]
+        if not isinstance(uncertain, bool):
+            _invalid_request(f"{label}.uncertain must be a boolean")
+        normalized_by_id[image_id] = {
+            "imageId": image_id,
+            "requestedUses": normalized_uses,
+            "summary": summary,
+            "sourceModels": normalized_models,
+            "uncertain": uncertain,
+        }
+
+    return [
+        normalized_by_id[image["id"]]
+        for image in images
+        if image["id"] in normalized_by_id
     ]
-    if (
-        len(normalized_models) != len(set(normalized_models))
-        or any(not _SAFE_MODEL_ID.fullmatch(value) for value in normalized_models)
-    ):
-        _invalid_request("image_evidence.sourceModels must be unique safe IDs")
-    uncertain = image_evidence["uncertain"]
-    if not isinstance(uncertain, bool):
-        _invalid_request("image_evidence.uncertain must be a boolean")
-    return {
-        "imageId": image_id,
-        "requestedUses": normalized_uses,
-        "summary": summary,
-        "sourceModels": normalized_models,
-        "uncertain": uncertain,
-    }
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:

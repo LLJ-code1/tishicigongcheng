@@ -914,6 +914,71 @@ class PromptStudioServerTests(unittest.TestCase):
         )
         transport.assert_not_called()
 
+    def test_creative_director_accepts_multi_image_text_evidence(self):
+        current = creative_intake.empty_creative_intake()
+        current["inputs"]["images"] = [
+            {
+                "id": "image-action",
+                "name": "action.png",
+                "mimeType": "image/png",
+                "status": "local_reference_not_embedded",
+                "requestedUses": ["action"],
+            },
+            {
+                "id": "image-outfit",
+                "name": "outfit.webp",
+                "mimeType": "image/webp",
+                "status": "local_reference_not_embedded",
+                "requestedUses": ["outfit"],
+            },
+        ]
+        evidence = [
+            {
+                "imageId": "image-outfit",
+                "requestedUses": ["outfit"],
+                "summary": "红色风衣",
+                "sourceModels": ["florence"],
+                "uncertain": False,
+            },
+            {
+                "imageId": "image-action",
+                "requestedUses": ["action"],
+                "summary": "向前奔跑",
+                "sourceModels": ["wd14"],
+                "uncertain": False,
+            },
+        ]
+        captured = {}
+
+        def transport(_url, body, _headers, _timeout):
+            captured.update(body)
+            return self.creative_director_response()
+
+        with patch(
+            "creative_director.default_transport",
+            side_effect=transport,
+        ):
+            status, payload = self.json_request(
+                "/api/creative-intake/director",
+                {
+                    "current": current,
+                    "message": "组合动作和服装",
+                    "imageEvidence": evidence,
+                },
+            )
+
+        self.assertEqual(status, 200)
+        request_text = captured["messages"][1]["content"]
+        if request_text.startswith("/no_think\n"):
+            request_text = request_text.removeprefix("/no_think\n")
+        sent = json.loads(request_text)
+        self.assertEqual(
+            [item["imageId"] for item in sent["imageEvidence"]],
+            ["image-action", "image-outfit"],
+        )
+        self.assertNotIn("dataBase64", json.dumps(sent))
+        self.assertEqual(payload["item"]["revision"], 1)
+
     def test_creative_director_rejects_malicious_current_image_with_or_without_evidence(self):
         for evidence in (
             None,
