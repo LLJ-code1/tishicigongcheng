@@ -181,6 +181,52 @@ test("creative intake normalization mirrors canonical containers enums and limit
   }
 });
 
+test("creative intake fails closed when a confirmed brief precedes brief_confirmed", () => {
+  const result = normalizeCreativeIntake({
+    ...emptyCreativeIntake(),
+    revision: 1,
+    stage: "intake",
+    brief: confirmedBriefFixture(),
+  });
+
+  assert.deepEqual(result, {
+    schemaVersion: 1,
+    revision: 0,
+    stage: "intake",
+    inputs: { text: "", images: [] },
+    directions: [],
+    selectedDirectionId: null,
+    brief: null,
+    selectedModelProfileId: null,
+    decomposition: null,
+    recipeStatus: "missing",
+    conflicts: [],
+  });
+});
+
+test("creative intake fails closed when decomposition precedes model_selected", () => {
+  const result = normalizeCreativeIntake({
+    ...emptyCreativeIntake(),
+    revision: 1,
+    stage: "brief_confirmed",
+    decomposition: { status: "draft", blocks: [] },
+  });
+
+  assert.deepEqual(result, {
+    schemaVersion: 1,
+    revision: 0,
+    stage: "intake",
+    inputs: { text: "", images: [] },
+    directions: [],
+    selectedDirectionId: null,
+    brief: null,
+    selectedModelProfileId: null,
+    decomposition: null,
+    recipeStatus: "missing",
+    conflicts: [],
+  });
+});
+
 test("persists creative intake in project metadata but not Recipe v1", () => {
   const state = createInitialState();
   state.creativeIntake = {

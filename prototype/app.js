@@ -345,7 +345,7 @@
       : {};
   }
 
-  const CREATIVE_INTAKE_STAGES = new Set([
+  const CREATIVE_INTAKE_STAGE_ORDER = [
     "intake",
     "direction_selected",
     "brief_draft",
@@ -353,7 +353,8 @@
     "model_selected",
     "decomposition_draft",
     "decomposition_confirmed",
-  ]);
+  ];
+  const CREATIVE_INTAKE_STAGES = new Set(CREATIVE_INTAKE_STAGE_ORDER);
   const CREATIVE_INTAKE_RECIPE_STATUSES = new Set([
     "missing",
     "stale",
@@ -610,6 +611,24 @@
       if (selectedModelProfileId !== null) {
         selectedModelProfileId = identifier(selectedModelProfileId);
       }
+      const normalizedBrief = brief(intake.brief, imageIds);
+      const normalizedDecomposition = decomposition(
+        intake.decomposition,
+        imageIds
+      );
+      const stageIndex = CREATIVE_INTAKE_STAGE_ORDER.indexOf(stage);
+      if (
+        normalizedBrief?.status === "confirmed" &&
+        stageIndex < CREATIVE_INTAKE_STAGE_ORDER.indexOf("brief_confirmed")
+      ) {
+        fail();
+      }
+      if (
+        normalizedDecomposition !== null &&
+        stageIndex < CREATIVE_INTAKE_STAGE_ORDER.indexOf("model_selected")
+      ) {
+        fail();
+      }
       const recipeStatus = text(intake.recipeStatus, 32, false);
       if (!CREATIVE_INTAKE_RECIPE_STATUSES.has(recipeStatus)) fail();
       const conflicts = unique(
@@ -626,9 +645,9 @@
         },
         directions,
         selectedDirectionId,
-        brief: brief(intake.brief, imageIds),
+        brief: normalizedBrief,
         selectedModelProfileId,
-        decomposition: decomposition(intake.decomposition, imageIds),
+        decomposition: normalizedDecomposition,
         recipeStatus,
         conflicts,
       };
