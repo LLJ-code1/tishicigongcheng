@@ -412,7 +412,8 @@ Content-Type: application/json
 | `400 unsupported_source` | host/path、redirect 或 adapter 不受支持 | 改用受支持的原始模型页，或继续使用已有模型 |
 | `400 unsafe_address` | localhost、IP 字面量或 DNS 含非 global 地址 | 请求未发送；检查 URL/DNS，不绕过策略 |
 | `400 invalid_request` | 未知字段、缺少 CAS 字段或值越界 | 按严格请求 schema 修正 |
-| `404 unknown_run` / `unknown_version` | 运行或版本不存在 | 重新读取服务端历史 |
+| `404 unknown_run` | 研究运行不存在 | 重新读取服务端历史 |
+| `400 unknown_version` | 档案版本不存在 | 重新读取服务端历史 |
 | `409 active_version_changed` | 活动版本已被其他操作替换 | 刷新目录，核对新活动版本后再次确认 |
 | `409 profile_hash_mismatch` | 存储正文与规范 Hash 不一致 | 停止审核/激活，保留数据库并排查 |
 | `409 unresolved_model_identity` | 名称、精确版本号或来源仍未确认 | 决定 claim 或补充人工身份字段后创建新 draft |
