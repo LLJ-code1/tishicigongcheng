@@ -202,6 +202,46 @@ class ModelResearchContractTests(unittest.TestCase):
         ):
             model_profiles.validate_researched_model_profile(projected)
 
+    def test_reapplying_decisions_clears_rejected_claims_and_removed_manual_fields(self):
+        steps = self.claim("steps", "parameters.defaults.steps", 28)
+        initial = model_research.build_pending_profile(
+            self.source_url,
+            [self.snapshot],
+            [],
+            manual_fields={"displayName": "Temporary", "model.versionId": 22},
+        )
+        approved, _ = model_research.apply_claim_decisions(
+            initial, [steps], {"steps": "approved"}, {}
+        )
+        self.assertEqual(approved["parameters"]["defaults"]["steps"], 28)
+
+        revised, audit = model_research.apply_claim_decisions(
+            approved, [steps], {"steps": "rejected"}, {}
+        )
+
+        self.assertNotIn("steps", revised["parameters"]["defaults"])
+        self.assertEqual(revised["displayName"], "Pending model research")
+        self.assertIsNone(revised["model"]["versionId"])
+        self.assertTrue(revised["profileId"].endswith("pending-ceed14790ac1"))
+        self.assertEqual(
+            {item["claimId"]: item["applicationStatus"] for item in audit},
+            {"steps": "rejected"},
+        )
+
+    def test_candidate_claim_rejects_missing_stable_id(self):
+        claim = self.claim(
+            "size-no-id",
+            "resolutions.candidatePresets",
+            [{"width": 1024, "height": 1024, "label": "Square"}],
+        )
+        profile = model_research.build_pending_profile(
+            self.source_url, [self.snapshot], []
+        )
+        with self.assertRaisesRegex(model_research.ResearchError, "ID"):
+            model_research.apply_claim_decisions(
+                profile, [claim], {"size-no-id": "approved"}, {}
+            )
+
     def test_contract_records_are_immutable(self):
         request = model_research.ResearchRequest(source_url=self.source_url)
         with self.assertRaises(dataclasses.FrozenInstanceError):

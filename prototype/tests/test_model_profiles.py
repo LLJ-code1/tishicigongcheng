@@ -140,6 +140,81 @@ class ModelProfileAdversarialTests(unittest.TestCase):
         with self.assertRaisesRegex(model_profiles.ModelProfileError, "evidenceClass"):
             model_profiles.validate_researched_model_profile(profile)
 
+    def test_researched_profile_audit_must_bind_to_matching_snapshot_and_allowlisted_field(self):
+        import model_research
+
+        snapshot = model_research.SourceSnapshot(
+            snapshot_id="snapshot-1",
+            source_class="original_source",
+            requested_url="https://civitai.com/models/1",
+            final_url="https://civitai.com/models/1",
+            retrieved_at="2026-07-26T10:00:00Z",
+            content_type="application/json",
+            body_sha256="a" * 64,
+            extracted_text="{}",
+            fetch_status="succeeded",
+            error_code=None,
+        )
+        claim = model_research.EvidenceClaim(
+            claim_id="claim-1",
+            field_path="parameters.defaults.steps",
+            value=28,
+            evidence_class="original_source",
+            evidence_refs=("snapshot-1",),
+            rationale="source",
+            verification_status="source_recorded",
+            application_status="approved",
+        )
+        profile = model_research.build_pending_profile(
+            snapshot.requested_url, [snapshot], [claim]
+        )
+        invalid_profiles = []
+        missing = copy.deepcopy(profile)
+        missing["metadata"]["research"]["claimAudit"][0]["evidenceRefs"] = ["missing"]
+        invalid_profiles.append(missing)
+        mismatch = copy.deepcopy(profile)
+        mismatch["evidence"][0]["sourceClass"] = "supplemental_source"
+        invalid_profiles.append(mismatch)
+        bad_path = copy.deepcopy(profile)
+        bad_path["metadata"]["research"]["claimAudit"][0]["fieldPath"] = "checkpoint.downloadUrl"
+        invalid_profiles.append(bad_path)
+        for value in invalid_profiles:
+            with self.subTest(value=value), self.assertRaises(model_profiles.ModelProfileError):
+                model_profiles.validate_researched_model_profile(value)
+
+    def test_researched_profile_cannot_self_declare_local_validation(self):
+        import model_research
+
+        profile = model_research.build_pending_profile(
+            "https://civitai.com/models/1", [], [], manual_fields={"displayName": "Pending"}
+        )
+        profile["validationStatus"] = "locally_validated"
+        profile["model"]["checkpoint"] = {
+            "filename": "model.safetensors",
+            "sha256": "a" * 64,
+            "verificationStatus": "locally_validated",
+        }
+        profile["parameters"]["verificationStatus"] = "locally_validated"
+        with self.assertRaisesRegex(model_profiles.ModelProfileError, "local_validation evidence"):
+            model_profiles.validate_researched_model_profile(profile)
+
+    def test_researched_candidate_presets_use_strict_resolution_validation(self):
+        import model_research
+
+        profile = model_research.build_pending_profile(
+            "https://civitai.com/models/1", [], [], manual_fields={"displayName": "Pending"}
+        )
+        profile["resolutions"]["candidatePresets"] = [{
+            "id": "square",
+            "width": 1024,
+            "height": 1024,
+            "label": "Square",
+            "verificationStatus": "project_candidate_pending_local_validation",
+            "autoRecommend": False,
+        }]
+        with self.assertRaisesRegex(model_profiles.ModelProfileError, "evidenceRef"):
+            model_profiles.validate_researched_model_profile(profile)
+
     def test_validator_rejects_safe_in_the_fixed_prefix(self):
         profile = model_profiles.load_model_profile()
         profile["prompting"]["positivePrefix"].append("safe")

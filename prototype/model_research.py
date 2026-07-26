@@ -910,7 +910,7 @@ def _set_projected_field(profile: dict[str, Any], path: str, value: Any, claim: 
                 width % 8 or height % 8
             ):
                 raise ResearchError("invalid_projection", "candidate dimensions are invalid")
-            raw_id = raw.get("id") or f"candidate-{width}x{height}-{index + 1}"
+            raw_id = raw.get("id")
             if not isinstance(raw_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._~-]{0,127}", raw_id):
                 raise ResearchError("invalid_projection", "candidate preset ID is invalid")
             label = raw.get("label") or f"{width} x {height}"
@@ -946,6 +946,23 @@ def _set_projected_field(profile: dict[str, Any], path: str, value: Any, claim: 
     target[parts[-1]] = value
 
 
+def _clear_projected_field(profile: dict[str, Any], path: str) -> None:
+    if path == "displayName":
+        profile["displayName"] = "Pending model research"
+    elif path in {"model.family", "model.versionName", "model.versionId", "model.baseModel"}:
+        profile["model"][path.rsplit(".", 1)[1]] = None
+    elif path.startswith("prompting."):
+        profile["prompting"][path.rsplit(".", 1)[1]] = []
+    elif path.startswith("parameters.defaults."):
+        profile["parameters"]["defaults"].pop(path.rsplit(".", 1)[1], None)
+    elif path == "parameters.recommendedRanges.cfg":
+        profile["parameters"]["recommendedRanges"].pop("cfg", None)
+    elif path == "resolutions.candidatePresets":
+        profile["resolutions"]["candidatePresets"] = []
+    elif path in {"metadata.strengths", "metadata.weaknesses", "metadata.limitations"}:
+        profile["metadata"][path.rsplit(".", 1)[1]] = []
+
+
 def _audit_item(
     claim_id: str,
     field_path: str,
@@ -977,6 +994,20 @@ def apply_claim_decisions(
     known_ids = {item.claim_id for item in normalized_claims}
     if any(key not in known_ids for key in decisions):
         raise ResearchError("unknown_claim", "decision references an unknown claim")
+    previous_audit = (
+        result.get("metadata", {}).get("research", {}).get("claimAudit", [])
+    )
+    controlled_paths = {
+        item.get("fieldPath")
+        for item in previous_audit
+        if isinstance(item, Mapping) and item.get("fieldPath") in ALLOWED_CLAIM_PATHS
+    }
+    controlled_paths.update(item.field_path for item in normalized_claims)
+    if isinstance(manual_fields, Mapping):
+        controlled_paths.update(manual_fields.keys())
+    for controlled_path in controlled_paths:
+        _clear_projected_field(result, controlled_path)
+
     audit: list[dict[str, Any]] = []
     applied_paths: set[str] = set()
     for claim in normalized_claims:

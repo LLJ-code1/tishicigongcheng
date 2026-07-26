@@ -19,6 +19,26 @@ DEFAULT_PROFILE_DIRECTORY = Path(__file__).resolve().parent / "data" / "model-pr
 _SAFE_PROFILE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _MAX_PROFILE_BYTES = 1_000_000
+_RESEARCH_CLAIM_PATHS = frozenset({
+    "displayName",
+    "model.family",
+    "model.versionName",
+    "model.versionId",
+    "model.baseModel",
+    "prompting.positivePrefix",
+    "prompting.positiveSuffix",
+    "prompting.negativeDefault",
+    "prompting.notRecommended",
+    "parameters.defaults.sampler",
+    "parameters.defaults.scheduler",
+    "parameters.defaults.steps",
+    "parameters.defaults.cfg",
+    "parameters.recommendedRanges.cfg",
+    "resolutions.candidatePresets",
+    "metadata.strengths",
+    "metadata.weaknesses",
+    "metadata.limitations",
+})
 
 
 class ModelProfileError(ValueError):
@@ -639,21 +659,51 @@ def validate_researched_model_profile(value: object) -> dict[str, Any]:
 
     resolutions = _mapping(profile.get("resolutions"), "resolutions")
     _unknown(resolutions, {"validatedPresets", "candidatePresets", "policy"}, "resolutions")
-    validated = _strict_json_copy(resolutions.get("validatedPresets", []), "resolutions.validatedPresets")
-    candidates = _strict_json_copy(resolutions.get("candidatePresets", []), "resolutions.candidatePresets")
+    validated_raw = resolutions.get("validatedPresets", [])
+    candidates_raw = resolutions.get("candidatePresets", [])
+    if not isinstance(validated_raw, list) or not isinstance(candidates_raw, list):
+        raise ModelProfileError("resolution preset collections must be arrays")
+    validated = [
+        _normalize_resolution_preset(
+            item, f"resolutions.validatedPresets[{index}]", validated_collection=True
+        )
+        for index, item in enumerate(validated_raw)
+    ]
+    candidates = [
+        _normalize_resolution_preset(
+            item, f"resolutions.candidatePresets[{index}]", validated_collection=False
+        )
+        for index, item in enumerate(candidates_raw)
+    ]
     if validated and status != "locally_validated":
         raise ModelProfileError("validated presets require local validation evidence")
-    for index, candidate in enumerate(candidates):
-        item = _mapping(candidate, f"resolutions.candidatePresets[{index}]")
-        if item.get("autoRecommend") is not False:
-            raise ModelProfileError("candidate collection cannot be auto-recommended")
-        if item.get("verificationStatus") == "locally_validated":
-            raise ModelProfileError("candidate collection cannot claim local validation")
 
     evidence = profile.get("evidence", [])
     if not isinstance(evidence, list):
         raise ModelProfileError("evidence must be an array")
-    normalized_evidence = _strict_json_copy(evidence, "evidence")
+    normalized_evidence = []
+    evidence_classes_by_id: dict[str, str] = {}
+    for index, raw_evidence in enumerate(evidence):
+        item = _mapping(raw_evidence, f"evidence[{index}]")
+        _unknown(
+            item,
+            {
+                "snapshotId", "sourceClass", "requestedUrl", "finalUrl",
+                "retrievedAt", "fetchStatus", "bodySha256", "errorCode",
+            },
+            f"evidence[{index}]",
+        )
+        snapshot_id = _text(item.get("snapshotId"), f"evidence[{index}].snapshotId", maximum=128)
+        assert isinstance(snapshot_id, str)
+        if snapshot_id in evidence_classes_by_id:
+            raise ModelProfileError("evidence snapshotId is duplicated")
+        source_class = item.get("sourceClass")
+        if source_class not in {
+            "original_source", "supplemental_source", "ai_inference", "local_validation"
+        }:
+            raise ModelProfileError(f"evidence[{index}].sourceClass is unsupported")
+        evidence_classes_by_id[snapshot_id] = source_class
+        normalized_evidence.append(_strict_json_copy(item, f"evidence[{index}]"))
     metadata = _mapping(profile.get("metadata"), "metadata")
     _unknown(metadata, {"research", "strengths", "weaknesses", "limitations"}, "metadata")
     research = _mapping(metadata.get("research"), "metadata.research")
@@ -690,9 +740,19 @@ def validate_researched_model_profile(value: object) -> dict[str, Any]:
         application_status = item.get("applicationStatus")
         if application_status not in {"proposed", "approved", "rejected"}:
             raise ModelProfileError("claim audit applicationStatus is unsupported")
+        field_path = _text(item.get("fieldPath"), f"metadata.research.claimAudit[{index}].fieldPath", maximum=256)
+        if field_path not in _RESEARCH_CLAIM_PATHS:
+            raise ModelProfileError("claim audit fieldPath is unsupported")
+        for evidence_ref in refs:
+            if evidence_ref not in evidence_classes_by_id:
+                raise ModelProfileError("claim audit evidenceRef is unknown")
+            if evidence_class in {
+                "original_source", "supplemental_source", "local_validation"
+            } and evidence_classes_by_id[evidence_ref] != evidence_class:
+                raise ModelProfileError("claim audit evidenceClass does not match snapshot")
         normalized_audit.append({
             "claimId": claim_id,
-            "fieldPath": _text(item.get("fieldPath"), f"metadata.research.claimAudit[{index}].fieldPath", maximum=256),
+            "fieldPath": field_path,
             "evidenceClass": evidence_class,
             "evidenceRefs": refs,
             "applicationStatus": application_status,
@@ -703,6 +763,25 @@ def validate_researched_model_profile(value: object) -> dict[str, Any]:
             raise ModelProfileError("locally validated profile needs local validation evidence")
         if verification != "locally_validated":
             raise ModelProfileError("locally validated profile needs local validation evidence")
+        approved_local_paths = {
+            item["fieldPath"]
+            for item in normalized_audit
+            if item["evidenceClass"] == "local_validation"
+            and item["applicationStatus"] == "approved"
+        }
+        if not (
+            any(path.startswith("model.checkpoint") for path in approved_local_paths)
+            and any(path.startswith("parameters.") for path in approved_local_paths)
+        ):
+            raise ModelProfileError(
+                "locally validated profile needs approved local_validation evidence for checkpoint and parameters"
+            )
+    evidence_ids = set(evidence_classes_by_id)
+    for preset in validated + candidates:
+        if preset["evidenceRef"] not in evidence_ids:
+            raise ModelProfileError(
+                f"resolution preset references unknown evidence: {preset['evidenceRef']}"
+            )
 
     return {
         "kind": PROFILE_KIND,
