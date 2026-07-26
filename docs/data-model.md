@@ -61,7 +61,7 @@ SQLite 文件误当工作区。首次启动对兼容的旧 v0 库先生成本地
 | `selectedModelProfileId` | 字符串或 `null` | 已选择模型档案的标识；本阶段不进行模型资料研究。 |
 | `decomposition` | 对象或 `null` | 拆解草稿或确认状态的数据容器，供后续模型适配 UI 使用。 |
 | `recipeStatus` | `missing`、`stale` 或 `ready` | 下游配方是否缺失、因上游改动过期，或已就绪。 |
-| `conflicts` | 数组 | 至多 100 条显式冲突；每项含 `id`、`code`、`message`、`status` 和 `itemIds`。 |
+| `conflicts` | 数组 | 至多 100 条显式冲突；每项含 `id`、`code`、`message`、`status` 和 `itemIds`，其中 `status` 只能为 `open` 或 `resolved`。 |
 
 允许的 `stage` 依次为 `intake`、`direction_selected`、`brief_draft`、
 `brief_confirmed`、`model_selected`、`decomposition_draft` 和

@@ -28,9 +28,11 @@ Prompt Studio 本地后端 :57913
   -> projects.metadata_json.creativeIntake
 ```
 
-`creative_intake.py` 是创意意图状态转换的唯一权威：客户端可提交一个动作，但
-不能自行确认阶段或绕过已锁定的 brief 条目。服务端返回完整的规范化会话；前端只
-保存、恢复并使用该会话，同时用会话修订号丢弃过期响应。
+`creative_intake.py` 是创意意图状态转换的唯一权威：调用方可提交一个动作，但
+不能自行确认阶段或绕过已锁定的 brief 条目。服务端返回完整的规范化会话；当前前端
+状态层已实现会话 normalizer、项目保存/恢复和 `isCreativeIntakeResponseCurrent` guard
+helper。统一输入 UI 尚未接线该转换 API；后续接线时必须调用该 guard，按会话修订号
+拒绝过期响应。
 
 会话仍跟随现有项目元数据，通过 `workspace/commit` 的同一原子事务保存，因此不会
 增加 SQLite 表或修改 `PRAGMA user_version = 1`。项目重新打开、逻辑备份和隔离恢复
