@@ -77,10 +77,16 @@ SQLite 文件误当工作区。首次启动对兼容的旧 v0 库先生成本地
 
 `brief` 包含 `status`（`draft` 或 `confirmed`）、`summary`、`items`、`aiAdditions` 和
 `openQuestions`。每个 `items` 条目为
-`{ "id", "category", "text", "source", "locked" }`。当已锁定条目的
-`id`、`category`、`text` 或 `source` 被改变或移除时，`set_brief_draft` 必须在本次动作的
-`approvedLockedItemIds` 中明确列出该 `id`；授权不会持久化。`confirm_brief` 在仍有
-`openQuestions` 或 `conflicts` 中存在 `status: "open"` 时拒绝确认。
+`{ "id", "category", "text", "source", "locked" }`。`confirm_brief` 会把全部条目设为
+`locked: true`；为兼容早期 schema v1 写出的 confirmed brief，Python 与前端
+normalizer 也会在精确阶段门禁前把其中全部条目规范为已锁定，保留其他合法内容，因此
+项目恢复和转换 API 不会把这类历史会话清空。draft brief 不参与该兼容迁移，其每项
+`locked` 原值保持不变。
+
+当已锁定条目的 `id`、`category`、`text`、`source` 或 `locked` 状态被改变，或条目被
+移除时，`set_brief_draft` 必须在本次动作的 `approvedLockedItemIds` 中明确列出该
+`id`；授权不会持久化。因此把锁降级为 `false` 本身也需要本次明确授权。`confirm_brief`
+在仍有 `openQuestions` 或 `conflicts` 中存在 `status: "open"` 时拒绝确认。
 
 `decomposition` 为 `{ "status", "blocks" }`，状态是 `draft` 或 `confirmed`；块包含
 `id`、`category`、`zh`、`en`、`source`、`locked`、`approved`、`reason` 和 `risks`。本阶段

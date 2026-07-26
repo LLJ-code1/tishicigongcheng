@@ -187,6 +187,9 @@ def _brief(value: object, image_ids: set[str]) -> dict | None:
             }
         )
     _unique_identifiers(items, "brief.items")
+    if status == "confirmed":
+        for item in items:
+            item["locked"] = True
     return {
         "status": status,
         "summary": _text(brief.get("summary"), "brief.summary", maximum=200_000),

@@ -676,6 +676,54 @@ class PromptStudioServerTests(unittest.TestCase):
         self.assertEqual(payload["item"]["revision"], 1)
         self.assertEqual(payload["item"]["inputs"]["text"], "红发女孩，雨夜奔跑")
 
+    def test_creative_intake_transition_migrates_legacy_confirmed_current(self):
+        current = creative_intake.empty_creative_intake()
+        current.update(
+            {
+                "revision": 8,
+                "stage": "brief_confirmed",
+                "directions": [
+                    {"id": "main", "label": "Main", "summary": "Rainy-night run."}
+                ],
+                "selectedDirectionId": "main",
+                "brief": {
+                    "status": "confirmed",
+                    "summary": "A runner crosses a rainy street.",
+                    "items": [
+                        {
+                            "id": "item-1",
+                            "category": "action",
+                            "text": "run",
+                            "source": {"type": "user", "refId": None},
+                            "locked": False,
+                        }
+                    ],
+                    "aiAdditions": [],
+                    "openQuestions": [],
+                },
+            }
+        )
+
+        status, payload = self.json_request(
+            "/api/creative-intake/transition",
+            {
+                "current": current,
+                "action": {
+                    "type": "select_model",
+                    "modelProfileId": "anima-1.1-v1",
+                },
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["item"]["revision"], 9)
+        self.assertEqual(payload["item"]["stage"], "model_selected")
+        self.assertEqual(
+            payload["item"]["brief"]["summary"],
+            "A runner crosses a rainy street.",
+        )
+        self.assertTrue(payload["item"]["brief"]["items"][0]["locked"])
+
     def test_creative_intake_transition_rejects_invalid_domain_requests(self):
         locked_current = creative_intake.empty_creative_intake()
         locked_current.update(

@@ -490,6 +490,11 @@
         array(item.items, 200).map((entry) => briefItem(entry, imageIds)),
         (entry) => entry.id
       );
+      if (status === "confirmed") {
+        items.forEach((entry) => {
+          entry.locked = true;
+        });
+      }
       return {
         status,
         summary: text(item.summary, 200_000),

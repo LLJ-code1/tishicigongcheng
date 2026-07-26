@@ -63,6 +63,43 @@ class PromptStudioCreativeIntakeTests(unittest.TestCase):
         )
         self.assertTrue(normalized["brief"]["items"][0]["locked"])
 
+    def test_normalize_migrates_legacy_confirmed_brief_items_to_locked(self):
+        value = state_for_stage("brief_confirmed")
+        value["revision"] = 17
+        value["brief"]["summary"] = "Keep this legacy confirmed brief."
+        value["brief"]["items"] = [
+            brief_item("item-1"),
+            brief_item("item-2"),
+        ]
+
+        normalized = creative_intake.normalize_creative_intake(value)
+
+        self.assertEqual(normalized["revision"], 17)
+        self.assertEqual(normalized["stage"], "brief_confirmed")
+        self.assertEqual(
+            normalized["brief"]["summary"],
+            "Keep this legacy confirmed brief.",
+        )
+        self.assertEqual(
+            [item["id"] for item in normalized["brief"]["items"]],
+            ["item-1", "item-2"],
+        )
+        self.assertTrue(all(item["locked"] for item in normalized["brief"]["items"]))
+
+    def test_normalize_preserves_draft_brief_item_lock_values(self):
+        value = state_for_stage("brief_draft")
+        value["brief"]["items"] = [
+            brief_item("item-unlocked"),
+            {**brief_item("item-locked"), "locked": True},
+        ]
+
+        normalized = creative_intake.normalize_creative_intake(value)
+
+        self.assertEqual(
+            [item["locked"] for item in normalized["brief"]["items"]],
+            [False, True],
+        )
+
     def test_normalize_rejects_boolean_revision_and_oversized_text(self):
         value = creative_intake.empty_creative_intake()
         value["revision"] = True
@@ -164,9 +201,6 @@ class PromptStudioCreativeIntakeTests(unittest.TestCase):
         confirmed_with_stale_recipe = state_for_stage("decomposition_confirmed")
         confirmed_with_stale_recipe["recipeStatus"] = "stale"
 
-        confirmed_with_unlocked_item = state_for_stage("brief_confirmed")
-        confirmed_with_unlocked_item["brief"]["items"][0]["locked"] = False
-
         confirmed_with_open_question = state_for_stage("brief_confirmed")
         confirmed_with_open_question["brief"]["openQuestions"] = [
             "Which time of day?"
@@ -195,7 +229,6 @@ class PromptStudioCreativeIntakeTests(unittest.TestCase):
                 confirmed_with_draft_decomposition,
             ),
             ("decomposition confirmed with stale recipe", confirmed_with_stale_recipe),
-            ("confirmed brief with unlocked item", confirmed_with_unlocked_item),
             ("confirmed brief with open question", confirmed_with_open_question),
             ("confirmed brief with open conflict", confirmed_with_open_conflict),
             (

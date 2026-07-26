@@ -243,6 +243,51 @@ test("creative intake normalization mirrors canonical containers enums and limit
   }
 });
 
+test("creative intake normalization migrates legacy confirmed items to locked", () => {
+  const legacy = creativeIntakeStageFixture("brief_confirmed");
+  legacy.revision = 17;
+  legacy.brief.summary = "Keep this legacy confirmed brief.";
+  legacy.brief.items = [
+    {
+      ...legacy.brief.items[0],
+      locked: false,
+    },
+    {
+      ...legacy.brief.items[0],
+      id: "item-pose",
+      category: "pose",
+      text: "walking",
+      locked: false,
+    },
+  ];
+
+  const normalized = normalizeCreativeIntake(legacy);
+
+  assert.equal(normalized.revision, 17);
+  assert.equal(normalized.stage, "brief_confirmed");
+  assert.equal(normalized.brief.summary, "Keep this legacy confirmed brief.");
+  assert.deepEqual(
+    normalized.brief.items.map((item) => item.id),
+    ["item-outfit", "item-pose"]
+  );
+  assert.ok(normalized.brief.items.every((item) => item.locked));
+});
+
+test("creative intake normalization preserves draft item lock values", () => {
+  const draft = creativeIntakeStageFixture("brief_draft");
+  draft.brief.items = [
+    { ...draft.brief.items[0], locked: false },
+    { ...draft.brief.items[0], id: "item-locked", locked: true },
+  ];
+
+  const normalized = normalizeCreativeIntake(draft);
+
+  assert.deepEqual(
+    normalized.brief.items.map((item) => item.locked),
+    [false, true]
+  );
+});
+
 test("creative intake fails closed when a confirmed brief precedes brief_confirmed", () => {
   const result = normalizeCreativeIntake({
     ...emptyCreativeIntake(),
@@ -331,10 +376,6 @@ test("creative intake normalization enforces exact cross-field stage invariants"
   );
   confirmedWithStaleRecipe.recipeStatus = "stale";
 
-  const confirmedWithUnlockedItem =
-    creativeIntakeStageFixture("brief_confirmed");
-  confirmedWithUnlockedItem.brief.items[0].locked = false;
-
   const confirmedWithOpenQuestion =
     creativeIntakeStageFixture("brief_confirmed");
   confirmedWithOpenQuestion.brief.openQuestions = ["Which time of day?"];
@@ -366,7 +407,6 @@ test("creative intake normalization enforces exact cross-field stage invariants"
     decompositionWithoutDraft,
     confirmedWithDraftDecomposition,
     confirmedWithStaleRecipe,
-    confirmedWithUnlockedItem,
     confirmedWithOpenQuestion,
     confirmedWithOpenConflict,
     confirmedWithUnapprovedBlock,
@@ -423,6 +463,30 @@ test("hydrates creative intake from current project metadata", () => {
 
   assert.equal(restored.creativeIntake.stage, "brief_confirmed");
   assert.equal(restored.creativeIntake.revision, 4);
+});
+
+test("hydrates legacy confirmed creative intake without losing its content", () => {
+  const legacy = creativeIntakeStageFixture("brief_confirmed");
+  legacy.revision = 9;
+  legacy.brief.summary = "Persisted before confirmed items were auto-locked.";
+  legacy.brief.items[0].locked = false;
+
+  const restored = hydrateProjectState(createInitialState(), {
+    id: "project-one",
+    metadata: {
+      workspaceBaseVersion: 0,
+      creativeIntake: legacy,
+    },
+    versions: [],
+  });
+
+  assert.equal(restored.creativeIntake.revision, 9);
+  assert.equal(restored.creativeIntake.stage, "brief_confirmed");
+  assert.equal(
+    restored.creativeIntake.brief.summary,
+    "Persisted before confirmed items were auto-locked."
+  );
+  assert.equal(restored.creativeIntake.brief.items[0].locked, true);
 });
 
 test("absent malformed or stale historical creative intake metadata fails closed", () => {
