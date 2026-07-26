@@ -1556,9 +1556,15 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
                 self._validate_mutating_request()
             action()
         except RequestValidationError as error:
-            self._send_json_if_possible({"error": str(error)}, error.status)
+            self._send_json_if_possible(
+                self._request_validation_payload(str(error)),
+                error.status,
+            )
         except json.JSONDecodeError:
-            self._send_json_if_possible({"error": "请求 JSON 无法解析"}, 400)
+            self._send_json_if_possible(
+                self._request_validation_payload("请求 JSON 无法解析"),
+                400,
+            )
         except VersionConflictError as error:
             self._send_json_if_possible(
                 {
@@ -1656,7 +1662,10 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
                 400,
             )
         except ValueError as error:
-            self._send_json_if_possible({"error": str(error)}, 400)
+            self._send_json_if_possible(
+                self._request_validation_payload(str(error)),
+                400,
+            )
         except sqlite3.IntegrityError:
             self._send_json_if_possible({"error": "数据冲突，请刷新后重试"}, 409)
         except Exception as error:  # Keep request threads from leaking tracebacks.
@@ -1671,6 +1680,15 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             self.send_json(payload, status=status)
         except OSError:
             self.close_connection = True
+
+    def _request_validation_payload(self, message: str) -> dict:
+        payload = {"error": message}
+        if (
+            urlparse(self.path).path
+            == "/api/creative-intake/decomposition-preview"
+        ):
+            payload["code"] = "invalid_request"
+        return payload
 
     def read_idempotency_key(self) -> str | None:
         values = self.headers.get_all("Idempotency-Key") or []

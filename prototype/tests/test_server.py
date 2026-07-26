@@ -1306,6 +1306,43 @@ class PromptStudioServerTests(unittest.TestCase):
                     )
                 self.assertEqual(response["code"], error.code)
 
+    def test_decomposition_preview_wire_rejects_invalid_json_with_stable_code(self):
+        path = b"POST /api/creative-intake/decomposition-preview HTTP/1.1\r\n"
+        headers = (
+            path
+            + b"Host: 127.0.0.1:%d\r\n" % self.httpd.server_port
+            + b"Content-Type: application/json\r\n"
+        )
+        bodies = (
+            b"{",
+            b'{"current":{},"current":{}}',
+            b"[]",
+            b"null",
+            b'{"current":"\xff"}',
+        )
+        for body in bodies:
+            with self.subTest(body=body):
+                request = (
+                    headers
+                    + f"Content-Length: {len(body)}\r\n".encode("ascii")
+                    + b"Connection: close\r\n\r\n"
+                    + body
+                )
+                status, _, raw_body = self.raw_request(request)
+                payload = json.loads(raw_body.decode("utf-8"))
+                self.assertEqual(status, 400)
+                self.assertEqual(payload["code"], "invalid_request")
+
+        oversized = (
+            headers
+            + f"Content-Length: {MAX_JSON_BODY_BYTES + 1}\r\n".encode("ascii")
+            + b"Connection: close\r\n\r\n"
+        )
+        status, _, raw_body = self.raw_request(oversized)
+        payload = json.loads(raw_body.decode("utf-8"))
+        self.assertEqual(status, 413)
+        self.assertEqual(payload["code"], "invalid_request")
+
     @staticmethod
     def creative_director_response(
         *,
