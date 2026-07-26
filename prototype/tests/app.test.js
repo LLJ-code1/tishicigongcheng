@@ -46,6 +46,7 @@ const {
   buildBriefRevisionMessage,
   performCreativeIntakeRequest,
   persistCreativeIntakeRevision,
+  rollbackCreativeIntakeAfterPersistenceFailure,
   DIRECTOR_IMAGE_REQUESTED_USES,
   validateDirectorImageFile,
   createDirectorImageReference,
@@ -1909,6 +1910,30 @@ test("every accepted director transition gates success on metadata persistence",
     transitionBody,
     /await persistAcceptedCreativeIntake\([^;]+;\s*state = app\.reduceState\(state, \{\s*type: "DIRECTOR_REQUEST_SUCCEEDED"/
   );
+});
+
+test("failed creative intake persistence restores the last durable canonical stage", () => {
+  const durable = createInitialState();
+  durable.creativeIntake = creativeIntakeStageFixture("brief_confirmed");
+  durable.directorBusy = false;
+  const advanced = reduceState(durable, {
+    type: "CREATIVE_INTAKE_REPLACED",
+    item: creativeIntakeStageFixture("model_selected"),
+  });
+  advanced.directorBusy = true;
+
+  const restored = rollbackCreativeIntakeAfterPersistenceFailure(
+    durable,
+    advanced,
+    "save failed"
+  );
+
+  assert.equal(restored.creativeIntake.stage, "brief_confirmed");
+  assert.equal(restored.creativeIntake.selectedModelProfileId, null);
+  assert.equal(restored.directorBusy, false);
+  assert.equal(restored.directorError, "save failed");
+  assert.equal(buildDirectorRenderModel(restored).canContinue, false);
+  assert.equal(advanced.creativeIntake.stage, "model_selected");
 });
 
 test("creative intake persistence bypasses dirty Recipe gates and only clears project metadata", async () => {

@@ -2250,6 +2250,22 @@
     return result;
   }
 
+  function rollbackCreativeIntakeAfterPersistenceFailure(
+    durableState,
+    failedState,
+    error
+  ) {
+    const restored = reduceState(durableState, {
+      type: "DIRECTOR_REQUEST_FAILED",
+      error,
+    });
+    restored.saveError =
+      typeof failedState?.saveError === "string"
+        ? failedState.saveError
+        : "";
+    return restored;
+  }
+
   function shouldConfirmWorkspaceDiscard(state) {
     const namedOrStartedProject = Boolean(
       state.projectId ||
@@ -3824,6 +3840,7 @@
     buildDirectorRenderModel,
     performCreativeIntakeRequest,
     persistCreativeIntakeRevision,
+    rollbackCreativeIntakeAfterPersistenceFailure,
     persistedVersionSnapshot,
     buildProjectPayload,
     buildVersionPayload,
@@ -4893,6 +4910,7 @@
       return;
     }
 
+    const durableState = state;
     state = app.reduceState(state, { type: "DIRECTOR_REQUEST_STARTED" });
     render();
     try {
@@ -4922,10 +4940,11 @@
         acceptedProjectRevision
       );
       if (!persisted) {
-        state = app.reduceState(state, {
-          type: "DIRECTOR_REQUEST_FAILED",
-          error: "创作阶段已更新，但保存失败，请重试",
-        });
+        state = app.rollbackCreativeIntakeAfterPersistenceFailure(
+          durableState,
+          state,
+          "创作阶段保存失败，已恢复到上次保存状态，请重试"
+        );
         render();
         return false;
       }
@@ -4974,6 +4993,7 @@
 
   async function transitionCreativeIntake(action) {
     if (state.directorBusy) return false;
+    const durableState = state;
     let request;
     try {
       request = beginCreativeIntakeRequest(
@@ -5029,10 +5049,11 @@
         acceptedProjectRevision
       );
       if (!persisted) {
-        state = app.reduceState(state, {
-          type: "DIRECTOR_REQUEST_FAILED",
-          error: "创作阶段已更新，但保存失败，请重试",
-        });
+        state = app.rollbackCreativeIntakeAfterPersistenceFailure(
+          durableState,
+          state,
+          "创作阶段保存失败，已恢复到上次保存状态，请重试"
+        );
         render();
         return false;
       }
