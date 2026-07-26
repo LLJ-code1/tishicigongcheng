@@ -10,6 +10,9 @@ const {
   buildProjectPayload,
   buildVersionPayload,
   buildWorkspaceCommitPayload,
+  buildCreativeIntakeWorkspaceCommitPayload,
+  createCreativeIntakeSaveJournal,
+  validateCreativeIntakeMetadataCommitResult,
   createClientId,
   shouldConfirmWorkspaceDiscard,
   reduceState,
@@ -471,6 +474,95 @@ test("malformed successful director response cannot reset canonical state or app
   assert.deepEqual(state.directorMessages, []);
 });
 
+test("creative intake response must advance exactly one canonical revision", () => {
+  const state = createInitialState();
+  state.creativeIntake = {
+    ...emptyCreativeIntake(),
+    revision: 5,
+    inputs: { text: "keep revision five", images: [] },
+  };
+  const request = buildCreativeDirectorRequest(state, 4, "继续");
+
+  for (const revision of [4, 7]) {
+    assert.throws(
+      () =>
+        acceptCreativeIntakeResponse(
+          state,
+          request.guard,
+          4,
+          {
+            message: "不应接受",
+            item: { ...state.creativeIntake, revision },
+          },
+          "继续"
+        ),
+      /exactly one revision/
+    );
+  }
+  assert.equal(state.creativeIntake.revision, 5);
+  assert.deepEqual(state.directorMessages, []);
+});
+
+test("director response rejects non-text invalid-Unicode and oversized prose atomically", () => {
+  const state = createInitialState();
+  const request = buildCreativeDirectorRequest(state, 4, "红裙，奔跑");
+  const item = {
+    ...emptyCreativeIntake(),
+    revision: 1,
+    directions: [
+      { id: "main", label: "雨夜", summary: "雨夜奔跑。" },
+    ],
+  };
+
+  for (const message of [
+    { text: "object message" },
+    "\ud800",
+    "x".repeat(20_001),
+  ]) {
+    assert.throws(
+      () =>
+        acceptCreativeIntakeResponse(
+          state,
+          request.guard,
+          4,
+          { message, item },
+          "红裙，奔跑"
+        ),
+      /director message/
+    );
+  }
+  assert.equal(state.creativeIntake.revision, 0);
+  assert.deepEqual(state.directorMessages, []);
+});
+
+test("director response preserves a valid twenty-thousand-code-point message exactly", () => {
+  const state = createInitialState();
+  const request = buildCreativeDirectorRequest(state, 4, "继续");
+  const message = `${"x".repeat(19_999)}😀`;
+  const result = acceptCreativeIntakeResponse(
+    state,
+    request.guard,
+    4,
+    {
+      message,
+      item: {
+        ...emptyCreativeIntake(),
+        revision: 1,
+        directions: [
+          { id: "main", label: "完整消息", summary: "不截断。" },
+        ],
+      },
+    },
+    "继续"
+  );
+
+  assert.equal(result.state.directorMessages[1].text, message);
+  assert.equal(
+    Array.from(result.state.directorMessages[1].text).length,
+    20_000
+  );
+});
+
 test("canonical model selection does not mutate the current Recipe model", () => {
   const state = createInitialState();
   state.modelProfileId = "recipe-model";
@@ -625,32 +717,158 @@ test("request runner posts the frozen body and drops a response made stale while
   assert.equal(result.state, state);
 });
 
-test("creative intake persistence follows a successful older frozen save with one fresh commit", async () => {
+test("creative intake metadata commit stays versionless with dirty Recipe work", () => {
+  const state = createInitialState();
+  state.projectId = "project-one";
+  state.projectUpdatedAt = "2026-07-26T10:00:00Z";
+  state.projectName = "Dirty workbench";
+  state.version = 4;
+  state.hasUnsavedChanges = true;
+  state.hasUnsavedProjectChanges = true;
+  state.workingRevision = 8;
+  state.projectRevision = 9;
+  state.dirtyBlockIds = ["pose"];
+  state.creativeIntake = {
+    ...emptyCreativeIntake(),
+    revision: 3,
+    inputs: { text: "canonical director state", images: [] },
+  };
+
+  const payload = buildCreativeIntakeWorkspaceCommitPayload(state, {
+    operationId: "director-metadata-save",
+    projectId: "project-one",
+  });
+
+  assert.equal(payload.operationId, "director-metadata-save");
+  assert.equal(payload.createProject, false);
+  assert.equal(payload.version, null);
+  assert.equal(payload.project.id, "project-one");
+  assert.equal(payload.project.name, "Dirty workbench");
+  assert.equal(payload.project.baseUpdatedAt, "2026-07-26T10:00:00Z");
+  assert.equal(payload.project.metadata.workspaceBaseVersion, 4);
+  assert.equal(payload.project.metadata.creativeIntake.revision, 3);
+  assert.equal(state.hasUnsavedChanges, true);
+  assert.deepEqual(state.dirtyBlockIds, ["pose"]);
+});
+
+test("creative intake save journal freezes stable metadata-only operation and CAS body", () => {
+  const state = createInitialState();
+  state.projectId = "project-one";
+  state.projectUpdatedAt = "2026-07-26T10:00:00Z";
+  state.projectName = "Before";
+  state.version = 2;
+  state.workingRevision = 6;
+  state.projectRevision = 7;
+  state.hasUnsavedChanges = true;
+  state.hasUnsavedProjectChanges = true;
+  state.creativeIntake = {
+    ...emptyCreativeIntake(),
+    revision: 1,
+    inputs: { text: "before", images: [] },
+  };
+
+  const journal = createCreativeIntakeSaveJournal(state, {
+    operationId: "director-frozen-save",
+    projectId: "project-one",
+    originSessionId: 12,
+    createdAt: "2026-07-26T10:01:00Z",
+  });
+  state.projectName = "After";
+  state.creativeIntake.inputs.text = "after";
+
+  const frozen = JSON.parse(journal.requestBody);
+  assert.equal(journal.operationId, "director-frozen-save");
+  assert.equal(journal.kind, "creative_intake_metadata");
+  assert.equal(journal.savedRevision, 6);
+  assert.equal(journal.savedProjectRevision, 7);
+  assert.equal(journal.originSessionId, 12);
+  assert.equal(journal.createdAt, "2026-07-26T10:01:00Z");
+  assert.equal(frozen.operationId, journal.operationId);
+  assert.equal(frozen.version, null);
+  assert.equal(frozen.project.baseUpdatedAt, "2026-07-26T10:00:00Z");
+  assert.equal(frozen.project.name, "Before");
+  assert.equal(frozen.project.metadata.creativeIntake.inputs.text, "before");
+});
+
+test("metadata-only commit rejects any Recipe version or missing CAS timestamp before apply", () => {
+  const state = createInitialState();
+  state.projectId = "project-one";
+  state.projectUpdatedAt = "2026-07-26T10:00:00Z";
+  state.hasUnsavedChanges = true;
+  state.hasUnsavedProjectChanges = true;
+  state.dirtyBlockIds = ["pose"];
+  const journal = createCreativeIntakeSaveJournal(state, {
+    operationId: "director-result-guard",
+    projectId: "project-one",
+    originSessionId: 12,
+  });
+  const valid = {
+    operationId: journal.operationId,
+    createdProject: false,
+    project: {
+      id: "project-one",
+      updatedAt: "2026-07-26T10:03:00Z",
+    },
+    version: null,
+  };
+
+  assert.equal(
+    validateCreativeIntakeMetadataCommitResult(journal, valid),
+    valid
+  );
+  assert.throws(
+    () =>
+      validateCreativeIntakeMetadataCommitResult(journal, {
+        ...valid,
+        version: { id: "injected-version", version: 5 },
+      }),
+    /must not contain a Recipe version/
+  );
+  assert.throws(
+    () =>
+      validateCreativeIntakeMetadataCommitResult(journal, {
+        ...valid,
+        project: { id: "project-one" },
+      }),
+    /updatedAt/
+  );
+  assert.equal(state.hasUnsavedChanges, true);
+  assert.equal(state.hasUnsavedProjectChanges, true);
+  assert.deepEqual(state.dirtyBlockIds, ["pose"]);
+});
+
+test("creative intake persistence follows a successful older frozen save with one metadata-only commit", async () => {
   let state = {
     ...createInitialState(),
     projectRevision: 9,
+    workingRevision: 4,
+    hasUnsavedChanges: true,
     hasUnsavedProjectChanges: true,
+    dirtyBlockIds: ["pose"],
   };
-  const savedBodies = [];
+  let waited = 0;
+  let metadataSaves = 0;
   const result = await persistCreativeIntakeRevision({
     getState: () => state,
     targetProjectRevision: 9,
     waitedForFrozenSave: true,
-    save: async () => {
-      savedBodies.push({
-        projectRevision: state.projectRevision,
-        hasUnsavedProjectChanges: state.hasUnsavedProjectChanges,
-      });
-      if (savedBodies.length === 2) {
-        state = { ...state, hasUnsavedProjectChanges: false };
-      }
+    waitForFrozenSave: async () => {
+      waited += 1;
+      return "project-one";
+    },
+    saveMetadata: async () => {
+      metadataSaves += 1;
+      state = { ...state, hasUnsavedProjectChanges: false };
       return "project-one";
     },
   });
 
   assert.equal(result, "project-one");
-  assert.equal(savedBodies.length, 2);
+  assert.equal(waited, 1);
+  assert.equal(metadataSaves, 1);
   assert.equal(state.hasUnsavedProjectChanges, false);
+  assert.equal(state.hasUnsavedChanges, true);
+  assert.deepEqual(state.dirtyBlockIds, ["pose"]);
 });
 
 test("creative intake persistence does not retry a failed frozen save", async () => {
@@ -659,19 +877,62 @@ test("creative intake persistence does not retry a failed frozen save", async ()
     projectRevision: 9,
     hasUnsavedProjectChanges: true,
   };
-  let calls = 0;
+  let waits = 0;
+  let metadataSaves = 0;
   const result = await persistCreativeIntakeRevision({
     getState: () => state,
     targetProjectRevision: 9,
     waitedForFrozenSave: true,
-    save: async () => {
-      calls += 1;
+    waitForFrozenSave: async () => {
+      waits += 1;
       return null;
+    },
+    saveMetadata: async () => {
+      metadataSaves += 1;
+      return "project-one";
     },
   });
 
   assert.equal(result, null);
-  assert.equal(calls, 1);
+  assert.equal(waits, 1);
+  assert.equal(metadataSaves, 0);
+});
+
+test("creative intake persistence bypasses dirty Recipe gates and only clears project metadata", async () => {
+  let state = {
+    ...createInitialState(),
+    projectRevision: 9,
+    workingRevision: 5,
+    hasUnsavedProjectChanges: true,
+    hasUnsavedChanges: true,
+    dirtyBlockIds: ["pose", "lighting"],
+  };
+  let metadataSaves = 0;
+
+  const result = await persistCreativeIntakeRevision({
+    getState: () => state,
+    targetProjectRevision: 9,
+    waitedForFrozenSave: false,
+    waitForFrozenSave: async () => {
+      throw new Error("must not wait without an older journal");
+    },
+    saveMetadata: async () => {
+      metadataSaves += 1;
+      state = reduceState(state, {
+        type: "PROJECT_HEADER_SAVED",
+        savedProjectRevision: 9,
+        updatedAt: "2026-07-26T10:02:00Z",
+      });
+      return "project-one";
+    },
+  });
+
+  assert.equal(result, "project-one");
+  assert.equal(metadataSaves, 1);
+  assert.equal(state.hasUnsavedProjectChanges, false);
+  assert.equal(state.hasUnsavedChanges, true);
+  assert.deepEqual(state.dirtyBlockIds, ["pose", "lighting"]);
+  assert.equal(state.workingRevision, 5);
 });
 
 test("replaces creative intake only with a normalized server item", () => {

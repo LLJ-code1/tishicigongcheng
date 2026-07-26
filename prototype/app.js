@@ -535,6 +535,35 @@
     return normalized;
   }
 
+  function requireDirectorMessage(value, required) {
+    if (value === undefined && !required) return "";
+    if (typeof value !== "string") {
+      throw new TypeError("director message must be text");
+    }
+    let length = 0;
+    for (let index = 0; index < value.length; index += 1) {
+      const unit = value.charCodeAt(index);
+      if (unit >= 0xd800 && unit <= 0xdbff) {
+        const trailing = value.charCodeAt(index + 1);
+        if (!(trailing >= 0xdc00 && trailing <= 0xdfff)) {
+          throw new TypeError("director message must contain valid UTF-8 text");
+        }
+        index += 1;
+      } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+        throw new TypeError("director message must contain valid UTF-8 text");
+      }
+      length += 1;
+      if (length > 20_000) {
+        throw new TypeError("director message exceeds 20000 characters");
+      }
+    }
+    const normalized = value.trim();
+    if (required && !normalized) {
+      throw new TypeError("director message must not be empty");
+    }
+    return normalized;
+  }
+
   function acceptCreativeIntakeResponse(
     state,
     request,
@@ -549,15 +578,26 @@
       throw new TypeError("creative intake response must be an object");
     }
     const canonicalItem = requireCanonicalCreativeIntake(response.item);
-    let next = state;
     const normalizedUserMessage = String(userMessage ?? "").trim();
+    const assistantMessage = requireDirectorMessage(
+      response.message,
+      Boolean(normalizedUserMessage)
+    );
+    if (
+      canonicalItem.revision !==
+      Number(request.creativeIntakeRevision) + 1
+    ) {
+      throw new TypeError(
+        "creative intake response must advance exactly one revision"
+      );
+    }
+    let next = state;
     if (normalizedUserMessage) {
       next = reduceState(next, {
         type: "DIRECTOR_MESSAGE_ADDED",
         message: { role: "user", text: normalizedUserMessage },
       });
     }
-    const assistantMessage = String(response.message ?? "").trim();
     if (assistantMessage) {
       next = reduceState(next, {
         type: "DIRECTOR_MESSAGE_ADDED",
@@ -657,24 +697,31 @@
 
   async function persistCreativeIntakeRevision({
     getState,
-    save,
     targetProjectRevision,
     waitedForFrozenSave = false,
+    waitForFrozenSave,
+    saveMetadata,
   }) {
-    if (typeof getState !== "function" || typeof save !== "function") {
+    if (
+      typeof getState !== "function" ||
+      typeof saveMetadata !== "function" ||
+      (waitedForFrozenSave && typeof waitForFrozenSave !== "function")
+    ) {
       throw new TypeError(
-        "creative intake persistence requires state and save functions"
+        "creative intake persistence requires state and metadata save functions"
       );
     }
-    let result = await save();
+    let result = null;
+    if (waitedForFrozenSave) {
+      result = await waitForFrozenSave();
+      if (!result) return result;
+    }
     const current = getState();
     if (
-      result &&
-      waitedForFrozenSave &&
       current.hasUnsavedProjectChanges &&
       Number(current.projectRevision) >= Number(targetProjectRevision)
     ) {
-      result = await save();
+      result = await saveMetadata();
     }
     return result;
   }
@@ -1358,6 +1405,78 @@
     };
   }
 
+  function buildCreativeIntakeWorkspaceCommitPayload(state, ids = {}) {
+    const operationId = ids.operationId || createClientId("save");
+    const projectId =
+      state.projectId || ids.projectId || createClientId("project");
+    const creatingProject = !state.projectId;
+    const projectPayload = buildProjectPayload(state);
+    const project = {
+      ...projectPayload,
+      id: projectId,
+      metadata: {
+        ...projectPayload.metadata,
+        workspaceBaseVersion: Number.isSafeInteger(state.version)
+          ? state.version
+          : 0,
+      },
+    };
+    if (creatingProject) delete project.baseUpdatedAt;
+    return {
+      operationId,
+      createProject: creatingProject,
+      project,
+      version: null,
+    };
+  }
+
+  function createCreativeIntakeSaveJournal(state, options = {}) {
+    const operationId =
+      options.operationId || createClientId("save");
+    const projectId =
+      state.projectId ||
+      options.projectId ||
+      createClientId("project");
+    const request = buildCreativeIntakeWorkspaceCommitPayload(state, {
+      operationId,
+      projectId,
+    });
+    return {
+      schema: 1,
+      kind: "creative_intake_metadata",
+      status: "pending",
+      operationId,
+      projectId,
+      originalProjectId: state.projectId || "",
+      savedRevision: state.workingRevision,
+      savedProjectRevision: state.projectRevision,
+      originSessionId: options.originSessionId ?? 0,
+      requestBody: JSON.stringify(request),
+      committedResult: null,
+      createdAt: options.createdAt || new Date().toISOString(),
+    };
+  }
+
+  function validateCreativeIntakeMetadataCommitResult(journal, result) {
+    if (result?.version !== null) {
+      throw new Error(
+        "Creative intake metadata commit must not contain a Recipe version"
+      );
+    }
+    const updatedAt = result?.project?.updatedAt;
+    if (
+      typeof updatedAt !== "string" ||
+      !updatedAt.trim() ||
+      updatedAt.length > 128 ||
+      Number.isNaN(Date.parse(updatedAt))
+    ) {
+      throw new Error(
+        "Creative intake metadata commit requires a valid project.updatedAt"
+      );
+    }
+    return result;
+  }
+
   function shouldConfirmWorkspaceDiscard(state) {
     const namedOrStartedProject = Boolean(
       state.projectId ||
@@ -1945,7 +2064,7 @@
           ...(Array.isArray(next.directorMessages)
             ? next.directorMessages
             : []),
-          { role, text: text.slice(0, 20_000) },
+          { role, text: Array.from(text).slice(0, 20_000).join("") },
         ].slice(-100);
         return next;
       }
@@ -2913,6 +3032,9 @@
     buildProjectPayload,
     buildVersionPayload,
     buildWorkspaceCommitPayload,
+    buildCreativeIntakeWorkspaceCommitPayload,
+    createCreativeIntakeSaveJournal,
+    validateCreativeIntakeMetadataCommitResult,
     createClientId,
     shouldConfirmWorkspaceDiscard,
     reduceState,
@@ -3618,7 +3740,8 @@
   async function persistAcceptedCreativeIntake(
     targetProjectRevision
   ) {
-    let waitedForFrozenSave = Boolean(saveInFlight);
+    const frozenSave = saveInFlight;
+    let waitedForFrozenSave = Boolean(frozenSave);
     if (!waitedForFrozenSave) {
       try {
         waitedForFrozenSave = Boolean(readPendingSaveJournal());
@@ -3628,9 +3751,11 @@
     }
     return app.persistCreativeIntakeRevision({
       getState: () => state,
-      save: () => saveCurrentProject(),
       targetProjectRevision,
       waitedForFrozenSave,
+      waitForFrozenSave: () =>
+        frozenSave || saveCurrentProject(),
+      saveMetadata: () => saveCreativeIntakeMetadata(),
     });
   }
 
@@ -4950,6 +5075,78 @@
     });
   }
 
+  function commitPendingSaveJournal(
+    journal,
+    { automatic = false } = {}
+  ) {
+    saveInFlight = (async () => {
+      dispatch({ type: "PROJECT_SAVE_STARTED" });
+      try {
+        let result = journal.committedResult;
+        let shouldPersistCommittedResult = false;
+        if (journal.status !== "committed" || !result) {
+          const response = await apiJson("/api/workspace/commit", {
+            method: "POST",
+            headers: { "Idempotency-Key": journal.operationId },
+            body: journal.requestBody,
+          });
+          result = response?.item;
+          if (result?.operationId !== journal.operationId) {
+            throw new Error("服务返回的保存操作编号不匹配");
+          }
+          shouldPersistCommittedResult = true;
+        }
+        if (journal.kind === "creative_intake_metadata") {
+          app.validateCreativeIntakeMetadataCommitResult(journal, result);
+        }
+        if (shouldPersistCommittedResult) {
+          journal.status = "committed";
+          journal.committedResult = result;
+          writePendingSaveJournal(journal);
+        }
+        applyCommittedSave(journal, result, { automatic });
+        removePendingSaveJournal(journal.operationId);
+        await loadProjects({ silent: true });
+        return journal.projectId;
+      } catch (error) {
+        dispatch({
+          type: "PROJECT_SAVE_FAILED",
+          error:
+            error.message ||
+            "作品暂时没有完成可确认写入；恢复记录已保留，可再次保存重试",
+        });
+        return null;
+      } finally {
+        saveInFlight = null;
+      }
+    })();
+    return saveInFlight;
+  }
+
+  function saveCreativeIntakeMetadata() {
+    if (saveInFlight) return saveInFlight;
+    let pending;
+    try {
+      pending = readPendingSaveJournal();
+    } catch (error) {
+      dispatch({ type: "PROJECT_SAVE_FAILED", error: error.message });
+      return Promise.resolve(null);
+    }
+    if (pending) return saveCurrentProject();
+
+    const snapshot = JSON.parse(JSON.stringify(state));
+    const journal = app.createCreativeIntakeSaveJournal(snapshot, {
+      originSessionId: workspaceSessionId,
+    });
+    try {
+      writePendingSaveJournal(journal);
+    } catch (error) {
+      dispatch({ type: "PROJECT_SAVE_FAILED", error: error.message });
+      return Promise.resolve(null);
+    }
+    return commitPendingSaveJournal(journal);
+  }
+
   function saveCurrentProject({ automatic = false } = {}) {
     if (saveInFlight) return saveInFlight;
     let pending;
@@ -4975,42 +5172,7 @@
       }
     }
 
-    const journal = pending;
-    saveInFlight = (async () => {
-      dispatch({ type: "PROJECT_SAVE_STARTED" });
-      try {
-        let result = journal.committedResult;
-        if (journal.status !== "committed" || !result) {
-          const response = await apiJson("/api/workspace/commit", {
-            method: "POST",
-            headers: { "Idempotency-Key": journal.operationId },
-            body: journal.requestBody,
-          });
-          result = response?.item;
-          if (result?.operationId !== journal.operationId) {
-            throw new Error("服务返回的保存操作编号不匹配");
-          }
-          journal.status = "committed";
-          journal.committedResult = result;
-          writePendingSaveJournal(journal);
-        }
-        applyCommittedSave(journal, result, { automatic });
-        removePendingSaveJournal(journal.operationId);
-        await loadProjects({ silent: true });
-        return journal.projectId;
-      } catch (error) {
-        dispatch({
-          type: "PROJECT_SAVE_FAILED",
-          error:
-            error.message ||
-            "作品暂时没有完成可确认写入；恢复记录已保留，可再次保存重试",
-        });
-        return null;
-      } finally {
-        saveInFlight = null;
-      }
-    })();
-    return saveInFlight;
+    return commitPendingSaveJournal(pending, { automatic });
   }
 
   function dispatch(action) {
