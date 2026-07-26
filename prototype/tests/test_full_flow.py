@@ -43,6 +43,42 @@ WORKBENCH_BLOCK_IDS = [
 ]
 
 
+def confirmed_brief_session():
+    return {
+        "schemaVersion": 1,
+        "revision": 4,
+        "stage": "brief_confirmed",
+        "inputs": {"text": "雨夜里撑红伞的女孩", "images": []},
+        "directions": [
+            {
+                "id": "rainy-red",
+                "label": "雨夜红伞",
+                "summary": "霓虹雨夜中的红伞少女",
+            }
+        ],
+        "selectedDirectionId": "rainy-red",
+        "brief": {
+            "status": "confirmed",
+            "summary": "红伞少女在雨夜街头奔跑",
+            "items": [
+                {
+                    "id": "subject",
+                    "category": "subject",
+                    "text": "红伞少女",
+                    "source": {"type": "user", "refId": None},
+                    "locked": True,
+                }
+            ],
+            "aiAdditions": [],
+            "openQuestions": [],
+        },
+        "selectedModelProfileId": None,
+        "decomposition": None,
+        "recipeStatus": "missing",
+        "conflicts": [],
+    }
+
+
 class FullWorkflowIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
@@ -129,6 +165,80 @@ class FullWorkflowIntegrationTests(unittest.TestCase):
             self.database,
             idempotency_key=operation_id,
         ), payload
+
+    def test_creative_intake_survives_atomic_commit_and_project_reopen(self):
+        session = confirmed_brief_session()
+        result, _ = self.commit(
+            "save-intake-1",
+            {
+                "id": "project-intake",
+                "name": "雨夜红伞",
+                "mode": "text",
+                "status": "draft",
+                "metadata": {
+                    "workspaceBaseVersion": 0,
+                    "creativeIntake": session,
+                },
+            },
+            None,
+            create=True,
+        )
+
+        reopened = db.get_project(result["project"]["id"], self.database)
+
+        self.assertEqual(reopened["metadata"]["creativeIntake"], session)
+
+    def test_creative_intake_commit_replay_is_idempotent_and_changed_session_conflicts(self):
+        session = confirmed_brief_session()
+        first, frozen_request = self.commit(
+            "save-intake-idempotent",
+            {
+                "id": "project-intake-idempotent",
+                "name": "雨夜红伞",
+                "metadata": {"creativeIntake": session},
+            },
+            None,
+            create=True,
+        )
+
+        replay = db.commit_workspace(
+            frozen_request,
+            self.database,
+            idempotency_key="save-intake-idempotent",
+        )
+        changed_session = copy.deepcopy(frozen_request)
+        changed_session["project"]["metadata"]["creativeIntake"]["brief"][
+            "summary"
+        ] = "改写后的简报"
+
+        self.assertEqual(replay, first)
+        with self.assertRaises(db.IdempotencyConflictError):
+            db.commit_workspace(
+                changed_session,
+                self.database,
+                idempotency_key="save-intake-idempotent",
+            )
+
+    def test_creative_intake_survives_logical_backup_restore(self):
+        session = confirmed_brief_session()
+        self.commit(
+            "save-intake-backup",
+            {
+                "id": "project-intake-backup",
+                "name": "雨夜红伞",
+                "metadata": {"creativeIntake": session},
+            },
+            None,
+            create=True,
+        )
+
+        archive = self.root / "intake-backup.zip"
+        backup.export_database(archive, db_path=self.database)
+        restored_database = self.root / "intake-restored.db"
+        backup.restore_backup(archive, restored_database)
+        reopened = db.get_project("project-intake-backup", restored_database)
+
+        self.assertEqual(reopened["metadata"]["creativeIntake"], session)
 
     @staticmethod
     def ai_preview(payload):

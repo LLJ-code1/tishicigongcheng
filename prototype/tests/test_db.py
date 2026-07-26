@@ -1,5 +1,7 @@
 import concurrent.futures
+import copy
 import hashlib
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -12,6 +14,42 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import db  # noqa: E402
+
+
+def confirmed_brief_session():
+    return {
+        "schemaVersion": 1,
+        "revision": 4,
+        "stage": "brief_confirmed",
+        "inputs": {"text": "雨夜里撑红伞的女孩", "images": []},
+        "directions": [
+            {
+                "id": "rainy-red",
+                "label": "雨夜红伞",
+                "summary": "霓虹雨夜中的红伞少女",
+            }
+        ],
+        "selectedDirectionId": "rainy-red",
+        "brief": {
+            "status": "confirmed",
+            "summary": "红伞少女在雨夜街头奔跑",
+            "items": [
+                {
+                    "id": "subject",
+                    "category": "subject",
+                    "text": "红伞少女",
+                    "source": {"type": "user", "refId": None},
+                    "locked": True,
+                }
+            ],
+            "aiAdditions": [],
+            "openQuestions": [],
+        },
+        "selectedModelProfileId": None,
+        "decomposition": None,
+        "recipeStatus": "missing",
+        "conflicts": [],
+    }
 
 
 class PromptStudioDatabaseTests(unittest.TestCase):
@@ -835,6 +873,91 @@ class PromptStudioDatabaseTests(unittest.TestCase):
             )
         loaded = db.get_project(project["id"], self.db_path)
         self.assertEqual(loaded["metadata"], {"settings": {"textProvider": "api"}})
+
+    def test_creative_intake_metadata_removes_nested_secrets_on_commit(self):
+        session = confirmed_brief_session()
+        unsafe_session = copy.deepcopy(session)
+        unsafe_session["apiKey"] = "project-secret"
+        unsafe_session["inputs"]["authorization"] = "Bearer intake-secret"
+        unsafe_session["directions"][0]["token"] = "direction-secret"
+        unsafe_session["brief"]["items"][0]["password"] = "brief-secret"
+
+        db.commit_workspace(
+            {
+                "operationId": "save-intake-sanitized",
+                "createProject": True,
+                "project": {
+                    "id": "project-intake-sanitized",
+                    "name": "Sanitized intake",
+                    "metadata": {"creativeIntake": unsafe_session},
+                },
+                "version": None,
+            },
+            self.db_path,
+            idempotency_key="save-intake-sanitized",
+        )
+
+        reopened = db.get_project("project-intake-sanitized", self.db_path)
+
+        self.assertEqual(reopened["metadata"]["creativeIntake"], session)
+
+    def test_malformed_creative_intake_is_returned_as_sanitized_metadata(self):
+        project = db.create_project({"id": "project-malformed-intake"}, self.db_path)
+        malformed_metadata = {
+            "creativeIntake": {
+                "schemaVersion": "not-v1",
+                "revision": "not-an-integer",
+                "token": "must-not-reach-the-frontend",
+            },
+            "displayName": "retained project metadata",
+        }
+        with db.database(self.db_path) as connection:
+            connection.execute(
+                "UPDATE projects SET metadata_json = ? WHERE id = ?",
+                (json.dumps(malformed_metadata), project["id"]),
+            )
+
+        reopened = db.get_project(project["id"], self.db_path)
+        with db.database(self.db_path) as connection:
+            stored_metadata = json.loads(
+                connection.execute(
+                    "SELECT metadata_json FROM projects WHERE id = ?",
+                    (project["id"],),
+                ).fetchone()[0]
+            )
+
+        self.assertEqual(
+            reopened["metadata"],
+            {
+                "creativeIntake": {
+                    "schemaVersion": "not-v1",
+                    "revision": "not-an-integer",
+                },
+                "displayName": "retained project metadata",
+            },
+        )
+        self.assertEqual(stored_metadata, malformed_metadata)
+
+    def test_creative_intake_commit_keeps_database_schema_at_v1(self):
+        db.commit_workspace(
+            {
+                "operationId": "save-intake-schema-v1",
+                "createProject": True,
+                "project": {
+                    "id": "project-intake-schema-v1",
+                    "metadata": {"creativeIntake": confirmed_brief_session()},
+                },
+                "version": None,
+            },
+            self.db_path,
+            idempotency_key="save-intake-schema-v1",
+        )
+
+        connection = sqlite3.connect(self.db_path)
+        try:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 1)
+        finally:
+            connection.close()
 
     def test_settings_preserve_explicit_null(self):
         saved = db.put_settings({"optionalValue": None}, self.db_path)
