@@ -749,18 +749,22 @@ Expected:
 - no whitespace errors;
 - only source, tests, and the listed current-fact documentation changed.
 
-- [ ] **Step 6: Manually exercise the fake-source acceptance flow**
+- [ ] **Step 6: Exercise the fake-source lifecycle and browser surface**
 
-Use the focused HTTP integration test’s injected fake resolver/fetcher while exercising the browser against its test server, not a live website:
+Use two complementary offline checks. Do not contact a live website:
 
-1. Confirm a creative brief and open the model gate.
-2. Paste the fixture’s supported original link.
-3. Verify evidence badges and snapshot metadata.
-4. Approve one official claim, reject one claim, add an exact version manually, and save.
-5. Review and activate the new immutable version.
-6. Confirm it appears in the model selector and generic fallback warnings remain visible.
-7. Reopen the project and confirm the brief and selected `profileVersionId` survive.
-8. Attempt a private/localhost link and confirm the fixture fetcher records zero calls.
+1. In the HTTP integration suite, inject the fake resolver/fetcher/clock and run
+   research → evidence claims → approve/reject decisions → manual exact identity →
+   immutable save → review → activation → catalog refresh → recovery GETs.
+2. In the same integration boundary, submit a private/localhost resolution and
+   assert the fixture fetcher call count does not increase.
+3. In the production browser surface, confirm the model-research form, URL field,
+   snapshot/claim result region, save note, reviewer note, and activation controls
+   exist, use the expected accessible labels/live-region semantics, and do not add
+   horizontal overflow at the desktop minimum width.
+4. Record HTTP lifecycle results and browser observations separately. Never describe
+   the HTTP fixture lifecycle as a live-browser fetch, and never describe a real
+   official page as tested.
 
 - [ ] **Step 7: Commit documentation**
 
