@@ -90,6 +90,11 @@ from model_profiles import (
 )
 import model_profile_store
 import model_research
+import creative_intake
+from model_adapted_decomposition import (
+    DecompositionError,
+    generate_model_adapted_decomposition,
+)
 from random_sampler import (
     CatalogBoundaryError,
     LockedConflictError,
@@ -116,6 +121,10 @@ from prompt_engine import (
     expand_text_prompt,
     generate_random_text_prompt,
     probe_text_provider,
+    apply_provider_request_options,
+    default_transport,
+    resolve_text_provider,
+    response_content,
     regenerate_prompt_block,
     regenerate_prompt_blocks,
     translate_pending_items,
@@ -747,6 +756,103 @@ def process_creative_director_request(
     )
 
 
+def configured_decomposition_provider(
+    settings: dict,
+    provider_id: str,
+    *,
+    transport=None,
+):
+    """Build the server-owned OpenAI-compatible provider boundary."""
+    def provider(messages: list[dict]) -> object:
+        config = resolve_text_provider(settings, provider_id)
+        caller = transport or default_transport
+        body = apply_provider_request_options(
+            config,
+            {
+                "model": config["model"],
+                "messages": messages,
+                "temperature": 0,
+                "max_tokens": 8_192,
+                "stream": False,
+            },
+        )
+        response = caller(config["url"], body, config["headers"], 120)
+        return response_content(response)
+
+    return provider
+
+
+def process_model_adapted_decomposition_request(
+    payload: dict,
+    *,
+    provider,
+    db_path,
+    snapshot_loader=model_profile_store.get_activated_profile_snapshot,
+) -> dict:
+    """Resolve trusted model evidence and authoritatively install one draft."""
+    if not isinstance(payload, dict):
+        raise DecompositionError(
+            "decomposition preview request must be an object",
+            code="invalid_request",
+        )
+    allowed = {
+        "current",
+        "profileVersionId",
+        "profileContentSha256",
+    }
+    unknown = sorted(set(payload) - allowed)
+    if unknown or set(payload) != allowed:
+        raise DecompositionError(
+            "decomposition preview request fields are invalid",
+            code="invalid_request",
+        )
+    try:
+        current = creative_intake.normalize_creative_intake(payload["current"])
+    except CreativeIntakeValidationError as error:
+        raise DecompositionError(
+            "canonical creative intake is invalid",
+            code="invalid_request",
+        ) from error
+    if (
+        current["stage"] != "model_selected"
+        or current["brief"] is None
+        or current["brief"].get("status") != "confirmed"
+        or not current["selectedModelProfileId"]
+    ):
+        raise DecompositionError(
+            "creative intake no longer permits a decomposition preview",
+            code="stale_intake",
+        )
+
+    snapshot = snapshot_loader(
+        current["selectedModelProfileId"],
+        payload["profileVersionId"],
+        payload["profileContentSha256"],
+        db_path=db_path,
+    )
+    draft = generate_model_adapted_decomposition(
+        intake=current,
+        profile_snapshot=snapshot,
+        provider=provider,
+    )
+    item = apply_creative_intake_transition(
+        current,
+        {
+            "type": "set_decomposition_draft",
+            "decomposition": draft,
+        },
+    )
+    return {
+        "item": item,
+        "profile": {
+            "profileId": snapshot["profileId"],
+            "profileVersionId": snapshot["profileVersionId"],
+            "profileContentSha256": snapshot["profileContentSha256"],
+        },
+        "warnings": deepcopy(snapshot.get("warnings", [])),
+    }
+
+
 def process_text_random_request(
     payload: dict,
     settings_payload: dict | None = None,
@@ -1232,6 +1338,7 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
     research_fetcher = staticmethod(model_research.production_fetcher)
     research_resolver = staticmethod(model_research.default_resolver)
     research_clock = staticmethod(prompt_db.now_iso)
+    decomposition_provider = None
 
     def __init__(self, *args, **kwargs):
         self._response_started = False
@@ -1797,6 +1904,8 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             return self.handle_creative_intake_transition()
         if parsed.path == "/api/creative-intake/director":
             return self.handle_creative_director()
+        if parsed.path == "/api/creative-intake/decomposition-preview":
+            return self.handle_model_adapted_decomposition()
         if parsed.path == "/api/model-research":
             return self.handle_model_research_create()
         research_version_parts = parsed.path.split("/")
@@ -2446,6 +2555,51 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             return self.send_json(
                 {"error": message, "code": code},
                 status=status,
+            )
+        self.send_json(result)
+
+    def handle_model_adapted_decomposition(self) -> None:
+        try:
+            provider = self.decomposition_provider
+            if provider is None:
+                settings = {**DEFAULT_TEXT_SETTINGS, **get_settings()}
+                provider = configured_decomposition_provider(
+                    settings,
+                    settings.get("textProvider") or "local",
+                )
+            result = process_model_adapted_decomposition_request(
+                self.read_json(),
+                provider=provider,
+                db_path=prompt_db.DEFAULT_DB_PATH,
+                snapshot_loader=model_profile_store.get_activated_profile_snapshot,
+            )
+        except model_profile_store.ProfileStoreError as error:
+            status = 409 if error.code in {
+                "unknown_version",
+                "profile_version_mismatch",
+                "profile_not_activated",
+                "profile_hash_mismatch",
+            } else 400
+            return self.send_json(
+                {"error": "目标模型档案不可用于当前预览", "code": error.code},
+                status=status,
+            )
+        except DecompositionError as error:
+            statuses = {
+                "invalid_request": 400,
+                "stale_intake": 409,
+                "locked_fact_changed": 422,
+                "invalid_provider_output": 502,
+                "provider_failed": 502,
+            }
+            return self.send_json(
+                {"error": "模型适配拆解预览失败", "code": error.code},
+                status=statuses.get(error.code, 422),
+            )
+        except PromptEngineError as error:
+            return self.send_json(
+                {"error": "文本推理来源不可用", "code": error.code},
+                status=error.status,
             )
         self.send_json(result)
 

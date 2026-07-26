@@ -30,6 +30,7 @@ from server import (  # noqa: E402
     map_artist,
     map_character,
     normalize_search_result,
+    process_model_adapted_decomposition_request,
     process_edit_apply_request,
     process_edit_preview_request,
     process_text_decompose_request,
@@ -46,13 +47,212 @@ import db  # noqa: E402
 import creative_director  # noqa: E402
 import creative_intake  # noqa: E402
 import model_research  # noqa: E402
+import model_profile_store  # noqa: E402
+from model_adapted_decomposition import DecompositionError  # noqa: E402
 from prompt_engine import PromptEngineError  # noqa: E402
+from recipe import BLOCK_DEFINITIONS  # noqa: E402
 
 
 def make_png_bytes() -> bytes:
     output = io.BytesIO()
     Image.new("RGB", (2, 2), color=(12, 34, 56)).save(output, format="PNG")
     return output.getvalue()
+
+
+def decomposition_current() -> dict:
+    current = creative_intake.empty_creative_intake()
+    current = creative_intake.apply_creative_intake_transition(
+        current,
+        {"type": "replace_inputs", "text": "雨夜侦探", "images": []},
+    )
+    current = creative_intake.apply_creative_intake_transition(
+        current,
+        {
+            "type": "set_directions",
+            "directions": [
+                {
+                    "id": "direction-main",
+                    "label": "雨夜追踪",
+                    "summary": "侦探在雨夜街道追踪线索",
+                }
+            ],
+        },
+    )
+    current = creative_intake.apply_creative_intake_transition(
+        current,
+        {"type": "select_direction", "directionId": "direction-main"},
+    )
+    current = creative_intake.apply_creative_intake_transition(
+        current,
+        {
+            "type": "set_brief_draft",
+            "brief": {
+                "status": "draft",
+                "summary": "一名成年女性侦探",
+                "items": [
+                    {
+                        "id": "brief-identity",
+                        "category": "identity",
+                        "text": "一名成年女性侦探",
+                        "source": {"type": "user", "refId": None},
+                        "locked": True,
+                    }
+                ],
+                "aiAdditions": [],
+                "openQuestions": [],
+            },
+        },
+    )
+    current = creative_intake.apply_creative_intake_transition(
+        current,
+        {"type": "confirm_brief"},
+    )
+    return creative_intake.apply_creative_intake_transition(
+        current,
+        {"type": "select_model", "modelProfileId": "profile-anima"},
+    )
+
+
+def decomposition_provider_output() -> dict:
+    blocks = []
+    for definition in BLOCK_DEFINITIONS:
+        identity = definition.id == "identity"
+        blocks.append(
+            {
+                "id": definition.id,
+                "category": definition.label,
+                "zh": "一名成年女性侦探" if identity else "",
+                "en": "",
+                "source": (
+                    {"type": "user", "refId": None}
+                    if identity
+                    else {"type": "ai", "refId": None}
+                ),
+                "locked": identity,
+                "approved": False,
+                "reason": "",
+                "risks": [],
+                "ruleRefs": [],
+                "semanticItemIds": ["brief-identity"] if identity else [],
+            }
+        )
+    return {"blocks": blocks}
+
+
+def activated_snapshot() -> dict:
+    return {
+        "profileId": "profile-anima",
+        "profileVersionId": "profile-version-7",
+        "profileContentSha256": "a" * 64,
+        "profile": {"id": "profile-anima", "displayName": "Anima"},
+        "approvedRules": [],
+        "warnings": [
+            {
+                "claimId": "claim-pending",
+                "decision": "proposed",
+                "message": "Unapproved model claim was not applied.",
+            }
+        ],
+    }
+
+
+class ModelAdaptedDecompositionProcessorTests(unittest.TestCase):
+    def legal_payload(self) -> dict:
+        return {
+            "current": decomposition_current(),
+            "profileVersionId": "profile-version-7",
+            "profileContentSha256": "a" * 64,
+        }
+
+    def test_processor_resolves_exact_snapshot_and_authoritatively_sets_draft(self):
+        payload = self.legal_payload()
+        original = json.loads(json.dumps(payload, ensure_ascii=False))
+        calls = []
+
+        def snapshot_loader(profile_id, version_id, content_hash, *, db_path):
+            calls.append((profile_id, version_id, content_hash, db_path))
+            return activated_snapshot()
+
+        result = process_model_adapted_decomposition_request(
+            payload,
+            provider=lambda messages: decomposition_provider_output(),
+            db_path="unit-test.db",
+            snapshot_loader=snapshot_loader,
+        )
+
+        self.assertEqual(payload, original)
+        self.assertEqual(
+            calls,
+            [("profile-anima", "profile-version-7", "a" * 64, "unit-test.db")],
+        )
+        self.assertEqual(result["item"]["stage"], "decomposition_draft")
+        self.assertEqual(len(result["item"]["decomposition"]["blocks"]), 13)
+        self.assertEqual(result["profile"], {
+            "profileId": "profile-anima",
+            "profileVersionId": "profile-version-7",
+            "profileContentSha256": "a" * 64,
+        })
+        self.assertEqual(result["warnings"], activated_snapshot()["warnings"])
+
+    def test_processor_rejects_client_controlled_provider_material(self):
+        forbidden = (
+            "provider",
+            "profile",
+            "claims",
+            "snapshots",
+            "brief",
+            "apiKey",
+        )
+        for field in forbidden:
+            with self.subTest(field=field):
+                payload = self.legal_payload()
+                payload[field] = "client-controlled"
+                with self.assertRaisesRegex(DecompositionError, "field"):
+                    process_model_adapted_decomposition_request(
+                        payload,
+                        provider=lambda messages: self.fail("provider called"),
+                        db_path="unit-test.db",
+                    )
+
+    def test_processor_rejects_stale_stage_before_snapshot_or_provider(self):
+        payload = self.legal_payload()
+        payload["current"] = creative_intake.apply_creative_intake_transition(
+            payload["current"],
+            {"type": "reopen_brief"},
+        )
+        with self.assertRaises(DecompositionError) as context:
+            process_model_adapted_decomposition_request(
+                payload,
+                provider=lambda messages: self.fail("provider called"),
+                db_path="unit-test.db",
+                snapshot_loader=lambda *args, **kwargs: self.fail("snapshot loaded"),
+            )
+        self.assertEqual(context.exception.code, "stale_intake")
+
+    def test_snapshot_and_provider_failures_do_not_mutate_canonical_input(self):
+        for failure in (
+            model_profile_store.ProfileStoreError(
+                "profile_hash_mismatch", "wrong hash"
+            ),
+            DecompositionError("provider unavailable", code="provider_failed"),
+        ):
+            with self.subTest(code=failure.code):
+                payload = self.legal_payload()
+                original = json.loads(json.dumps(payload, ensure_ascii=False))
+                if isinstance(failure, model_profile_store.ProfileStoreError):
+                    loader = lambda *args, **kwargs: (_ for _ in ()).throw(failure)
+                    provider = lambda messages: self.fail("provider called")
+                else:
+                    loader = lambda *args, **kwargs: activated_snapshot()
+                    provider = lambda messages: (_ for _ in ()).throw(failure)
+                with self.assertRaises((model_profile_store.ProfileStoreError, DecompositionError)):
+                    process_model_adapted_decomposition_request(
+                        payload,
+                        provider=provider,
+                        db_path="unit-test.db",
+                        snapshot_loader=loader,
+                    )
+                self.assertEqual(payload, original)
 
 
 class AnimaDexAdapterTests(unittest.TestCase):
@@ -1032,6 +1232,79 @@ class PromptStudioServerTests(unittest.TestCase):
         )
         with urlopen(request) as response:
             return response.status, json.loads(response.read().decode("utf-8"))
+
+    def test_decomposition_preview_uses_fake_provider_and_returns_draft(self):
+        with (
+            patch(
+                "model_profile_store.get_activated_profile_snapshot",
+                return_value=activated_snapshot(),
+            ),
+            patch.object(
+                PromptStudioHandler,
+                "decomposition_provider",
+                staticmethod(lambda messages: decomposition_provider_output()),
+                create=True,
+            ),
+        ):
+            status, body = self.json_request(
+                "/api/creative-intake/decomposition-preview",
+                {
+                    "current": decomposition_current(),
+                    "profileVersionId": "profile-version-7",
+                    "profileContentSha256": "a" * 64,
+                },
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(body["item"]["stage"], "decomposition_draft")
+        self.assertEqual(len(body["item"]["decomposition"]["blocks"]), 13)
+
+    def test_decomposition_preview_maps_public_error_codes(self):
+        cases = (
+            (DecompositionError("bad request", code="invalid_request"), 400),
+            (DecompositionError("stale", code="stale_intake"), 409),
+            (
+                model_profile_store.ProfileStoreError(
+                    "profile_version_mismatch", "wrong profile"
+                ),
+                409,
+            ),
+            (
+                model_profile_store.ProfileStoreError(
+                    "profile_not_activated", "inactive"
+                ),
+                409,
+            ),
+            (
+                model_profile_store.ProfileStoreError(
+                    "profile_hash_mismatch", "wrong hash"
+                ),
+                409,
+            ),
+            (DecompositionError("changed", code="locked_fact_changed"), 422),
+            (
+                DecompositionError(
+                    "invalid output", code="invalid_provider_output"
+                ),
+                502,
+            ),
+            (DecompositionError("failed", code="provider_failed"), 502),
+        )
+        for error, expected_status in cases:
+            with self.subTest(code=error.code):
+                with patch(
+                    "server.process_model_adapted_decomposition_request",
+                    side_effect=error,
+                ):
+                    response = self.assert_http_error_json(
+                        Request(
+                            f"{self.base_url}/api/creative-intake/decomposition-preview",
+                            data=b"{}",
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        ),
+                        expected_status,
+                    )
+                self.assertEqual(response["code"], error.code)
 
     @staticmethod
     def creative_director_response(
