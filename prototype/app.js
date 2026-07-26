@@ -2270,6 +2270,7 @@
           "reason",
           "risks",
           "ruleRefs",
+          "semanticItems",
         ])
       );
       if (
@@ -2301,6 +2302,19 @@
             ),
           };
         }),
+        semanticItems: array(item.semanticItems || [], 200).map((entry) => {
+          const semantic = object(
+            entry,
+            new Set(["id", "text", "source", "locked"])
+          );
+          if (typeof semantic.locked !== "boolean") fail();
+          return {
+            id: identifier(semantic.id),
+            text: text(semantic.text, 200_000),
+            source: sourceItem(semantic.source, imageIds),
+            locked: semantic.locked,
+          };
+        }),
       };
     }
 
@@ -2318,6 +2332,39 @@
       );
       const status = text(item.status, 32, false);
       if (!new Set(["draft", "confirmed"]).has(status)) fail();
+      const rawBlocks = array(item.blocks, 200);
+      const versioned = item.profileVersionId !== undefined;
+      if (
+        versioned &&
+        rawBlocks.some(
+          (block) =>
+            !block ||
+            typeof block !== "object" ||
+            !Object.hasOwn(block, "semanticItems") ||
+            !Object.hasOwn(block, "ruleRefs")
+        )
+      ) {
+        fail();
+      }
+      const blocks = unique(
+        rawBlocks.map((entry) =>
+          decompositionBlock(entry, imageIds)
+        ),
+        (entry) => entry.id
+      );
+      if (
+        versioned &&
+        (
+          !/^[0-9a-f]{64}$/.test(String(item.briefContentSha256 || "")) ||
+          !/^[0-9a-f]{64}$/.test(String(item.profileContentSha256 || "")) ||
+          blocks.length !== DECOMPOSITION_BLOCK_IDS.length ||
+          blocks.some(
+            (block, index) => block.id !== DECOMPOSITION_BLOCK_IDS[index]
+          )
+        )
+      ) {
+        fail();
+      }
       return {
         status,
         ...(item.briefContentSha256 === undefined
@@ -2335,12 +2382,7 @@
                 false
               ),
             }),
-        blocks: unique(
-          array(item.blocks, 200).map((entry) =>
-            decompositionBlock(entry, imageIds)
-          ),
-          (entry) => entry.id
-        ),
+        blocks,
       };
     }
 
@@ -4828,12 +4870,106 @@
     }
   }
 
+  function canonicalJson(value) {
+    if (Array.isArray(value)) {
+      return `[${value.map(canonicalJson).join(",")}]`;
+    }
+    if (value && typeof value === "object") {
+      return `{${Object.keys(value)
+        .sort()
+        .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+        .join(",")}}`;
+    }
+    return JSON.stringify(value);
+  }
+
+  async function sha256Hex(value) {
+    const subtle = root.crypto?.subtle;
+    if (!subtle) throw new Error("SHA-256 is unavailable");
+    const bytes = new TextEncoder().encode(value);
+    const digest = await subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0")
+    ).join("");
+  }
+
+  async function validateDecompositionPreviewResponse(result, guard, state) {
+    const invalid = () => {
+      throw new Error("Invalid decomposition preview response");
+    };
+    let item;
+    try {
+      item = normalizeCreativeIntake(result?.item);
+    } catch {
+      return invalid();
+    }
+    const decomposition = item.decomposition;
+    if (
+      item.stage !== "decomposition_draft" ||
+      item.revision !== guard.creativeIntakeRevision + 1 ||
+      item.selectedModelProfileId !== guard.selectedModelProfileId ||
+      decomposition?.status !== "draft" ||
+      decomposition.profileVersionId !== guard.profileVersionId ||
+      decomposition.profileContentSha256 !== guard.profileContentSha256 ||
+      decomposition.blocks.length !== DECOMPOSITION_BLOCK_IDS.length ||
+      decomposition.blocks.some(
+        (block, index) => block.id !== DECOMPOSITION_BLOCK_IDS[index]
+      )
+    ) {
+      return invalid();
+    }
+    const briefHash = await sha256Hex(canonicalJson(state.creativeIntake.brief));
+    if (decomposition.briefContentSha256 !== briefHash) return invalid();
+    const expected = new Map(
+      (state.creativeIntake.brief?.items || []).map((entry) => [
+        entry.id,
+        {
+          id: entry.id,
+          text: entry.text,
+          source: entry.source,
+          locked: entry.locked,
+        },
+      ])
+    );
+    (state.creativeIntake.brief?.aiAdditions || []).forEach((text, index) => {
+      expected.set(`ai-addition-${index}`, {
+        id: `ai-addition-${index}`,
+        text,
+        source: { type: "ai", refId: null },
+        locked: false,
+      });
+    });
+    const semanticItems = decomposition.blocks.flatMap(
+      (block) => block.semanticItems
+    );
+    if (
+      semanticItems.length !== expected.size ||
+      new Set(semanticItems.map((entry) => entry.id)).size !==
+        semanticItems.length ||
+      semanticItems.some(
+        (entry) =>
+          JSON.stringify(entry) !== JSON.stringify(expected.get(entry.id))
+      ) ||
+      decomposition.blocks.some(
+        (block) =>
+          new Set(block.ruleRefs.map((rule) => rule.claimId)).size !==
+          block.ruleRefs.length
+      )
+    ) {
+      return invalid();
+    }
+    return item;
+  }
+
   async function performDecompositionPreviewRequest({
     getState,
     sessionId,
     guard,
     apiCall,
     persist,
+    apply,
+    rollback,
+    isPersistedCurrent,
     signal,
   }) {
     if (!isDecompositionPreviewCurrent(guard, sessionId, getState())) {
@@ -4851,12 +4987,32 @@
     if (!isDecompositionPreviewCurrent(guard, sessionId, getState())) {
       return { accepted: false, stale: true };
     }
-    const item = normalizeCreativeIntake(result.item);
-    const persisted = await persist(item);
+    const item = await validateDecompositionPreviewResponse(
+      result,
+      guard,
+      getState()
+    );
+    if (!isDecompositionPreviewCurrent(guard, sessionId, getState())) {
+      return { accepted: false, stale: true };
+    }
+    if (apply) apply(item);
+    const currentAfterApply = () =>
+      isPersistedCurrent
+        ? isPersistedCurrent(item)
+        : isDecompositionPreviewCurrent(guard, sessionId, getState());
+    if (!currentAfterApply()) return { accepted: false, stale: true };
+    let persisted;
+    try {
+      persisted = await persist(item);
+    } catch (error) {
+      if (currentAfterApply() && rollback) rollback(error);
+      throw error;
+    }
     if (!persisted) {
+      if (currentAfterApply() && rollback) rollback();
       throw new Error("Decomposition preview could not be saved");
     }
-    if (!isDecompositionPreviewCurrent(guard, sessionId, getState())) {
+    if (!currentAfterApply()) {
       return { accepted: false, stale: true };
     }
     return {
@@ -4950,6 +5106,7 @@
     isDecompositionPreviewCurrent,
     buildDecompositionBlockReviewAction,
     canConfirmDecomposition,
+    validateDecompositionPreviewResponse,
     performDecompositionPreviewRequest,
     randomVariantBlockIds: Array.from(RANDOM_VARIANT_BLOCKS),
   };
@@ -6412,7 +6569,7 @@
     }
   }
 
-  async function generateDecompositionPreview() {
+  async function generateDecompositionPreviewLegacy() {
     activeDecompositionPreviewAbort?.abort();
     const controller = new AbortController();
     activeDecompositionPreviewAbort = controller;
@@ -6493,6 +6650,89 @@
       render();
       return false;
     } finally {
+      if (activeDecompositionPreviewAbort === controller) {
+        activeDecompositionPreviewAbort = null;
+      }
+    }
+  }
+
+  async function generateDecompositionPreview() {
+    activeDecompositionPreviewAbort?.abort();
+    const controller = new AbortController();
+    activeDecompositionPreviewAbort = controller;
+    let guard;
+    try {
+      guard = app.decompositionPreviewGuard(state, workspaceSessionId);
+    } catch (error) {
+      state = app.reduceState(state, {
+        type: "DECOMPOSITION_PREVIEW_FAILED",
+        error: error.message,
+      });
+      render();
+      return false;
+    }
+    const durableState = state;
+    let acceptedProjectRevision = null;
+    state = app.reduceState(state, { type: "DECOMPOSITION_PREVIEW_STARTED" });
+    workspaceRequestAborts.add(controller);
+    render();
+    try {
+      const result = await app.performDecompositionPreviewRequest({
+        getState: () => state,
+        sessionId: workspaceSessionId,
+        guard,
+        apiCall: apiJson,
+        signal: controller.signal,
+        apply: (item) => {
+          state = app.reduceState(state, {
+            type: "CREATIVE_INTAKE_REPLACED",
+            item,
+          });
+          acceptedProjectRevision = state.projectRevision;
+          render();
+        },
+        isPersistedCurrent: (item) =>
+          guard.sessionId === workspaceSessionId &&
+          state.projectRevision === acceptedProjectRevision &&
+          state.creativeIntake.revision === item.revision &&
+          state.creativeIntake.selectedModelProfileId ===
+            guard.selectedModelProfileId &&
+          state.creativeIntake.decomposition?.profileVersionId ===
+            guard.profileVersionId &&
+          state.creativeIntake.decomposition?.profileContentSha256 ===
+            guard.profileContentSha256,
+        persist: () =>
+          persistAcceptedCreativeIntake(acceptedProjectRevision),
+        rollback: () => {
+          state = app.rollbackCreativeIntakeAfterPersistenceFailure(
+            durableState,
+            state,
+            "拆解预览保存失败，已保留上一个有效版本"
+          );
+        },
+      });
+      if (!result.accepted) return false;
+      state = app.reduceState(state, {
+        type: "DECOMPOSITION_PREVIEW_SUCCEEDED",
+        warnings: result.warnings,
+      });
+      render();
+      return true;
+    } catch (error) {
+      if (
+        isAbortError(error) ||
+        guard.sessionId !== workspaceSessionId
+      ) {
+        return false;
+      }
+      state = app.reduceState(state, {
+        type: "DECOMPOSITION_PREVIEW_FAILED",
+        error: error.message || "拆解预览生成失败，请明确重试",
+      });
+      render();
+      return false;
+    } finally {
+      workspaceRequestAborts.delete(controller);
       if (activeDecompositionPreviewAbort === controller) {
         activeDecompositionPreviewAbort = null;
       }

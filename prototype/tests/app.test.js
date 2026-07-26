@@ -82,6 +82,7 @@ const {
   buildDecompositionBlockReviewAction,
   canConfirmDecomposition,
   performDecompositionPreviewRequest,
+  validateDecompositionPreviewResponse,
 } = require("../app.js");
 
 const DECOMPOSITION_BLOCK_IDS = [
@@ -95,7 +96,7 @@ function decompositionIntakeFixture() {
   intake.revision = 8;
   intake.decomposition = {
     status: "draft",
-    briefContentSha256: "b".repeat(64),
+    briefContentSha256: "66b3b59f58a3be61bb10747317781e905b8dd117c3d52d763a026350568b1c67",
     profileVersionId: "profile-version-7",
     profileContentSha256: "a".repeat(64),
     blocks: DECOMPOSITION_BLOCK_IDS.map((id) => ({
@@ -103,12 +104,20 @@ function decompositionIntakeFixture() {
       category: id,
       zh: `${id} semantic`,
       en: `${id} adapted`,
-      source: { type: "user", refId: null },
-      locked: id === "identity",
+      source: id === "clothing"
+        ? { type: "user", refId: null }
+        : { type: "ai", refId: null },
+      locked: id === "clothing",
       approved: false,
       reason: "approved model adaptation",
       risks: [],
       ruleRefs: [],
+      semanticItems: id === "clothing" ? [{
+        id: "item-outfit",
+        text: "red dress",
+        source: { type: "user", refId: null },
+        locked: true,
+      }] : [],
     })),
   };
   intake.stage = "decomposition_draft";
@@ -6003,6 +6012,10 @@ test("decomposition block review permits only adaptation review fields", () => {
   assert.equal(accepted.type, "set_decomposition_draft");
   assert.equal(accepted.decomposition.blocks[0].approved, true);
   assert.equal(accepted.decomposition.blocks[1].approved, false);
+  assert.deepEqual(
+    accepted.decomposition.blocks[2].semanticItems,
+    intake.decomposition.blocks[2].semanticItems
+  );
   const edited = buildDecompositionBlockReviewAction(intake, "identity", {
     en: "edited identity", reason: "manual wording correction", approved: false,
   });
@@ -6026,7 +6039,9 @@ test("decomposition preview request uses exact body, persists before success, an
     getState: () => state, sessionId: "session-1", guard,
     apiCall: async (url, options) => {
       calls.push([url, JSON.parse(options.body)]);
-      return { item: decompositionIntakeFixture(), warnings: ["generic fallback"] };
+      const item = decompositionIntakeFixture();
+      item.revision = state.creativeIntake.revision + 1;
+      return { item, warnings: ["generic fallback"] };
     },
     persist: async (item) => { calls.push(["persist", item.revision]); return true; },
   });
@@ -6040,4 +6055,104 @@ test("decomposition preview request uses exact body, persists before success, an
     persist: async () => { throw new Error("must not persist"); },
   });
   assert.deepEqual(stale, { accepted: false, stale: true });
+});
+
+test("decomposition preview response rejects wrong successor lineage and block shape", async () => {
+  const state = createInitialState();
+  state.projectRevision = 4;
+  state.creativeIntake = creativeIntakeStageFixture("model_selected");
+  state.modelProfiles = [{ profileId: "anima-1.1-v1", profileVersionId: "profile-version-7", contentSha256: "a".repeat(64) }];
+  const guard = decompositionPreviewGuard(state, "session-1");
+  const valid = decompositionIntakeFixture();
+  valid.revision = state.creativeIntake.revision + 1;
+  await assert.doesNotReject(() => validateDecompositionPreviewResponse({ item: valid }, guard, state));
+  for (const mutate of [
+    (item) => { item.revision += 1; },
+    (item) => { item.selectedModelProfileId = "other"; },
+    (item) => { item.decomposition.profileVersionId = "wrong-version"; },
+    (item) => { item.decomposition.profileContentSha256 = "c".repeat(64); },
+    (item) => { item.decomposition.briefContentSha256 = "d".repeat(64); },
+    (item) => { item.decomposition.blocks.reverse(); },
+    (item) => { delete item.decomposition.blocks[2].semanticItems; },
+  ]) {
+    const item = structuredClone(valid);
+    mutate(item);
+    await assert.rejects(
+      () => validateDecompositionPreviewResponse({ item }, guard, state),
+      /Invalid decomposition preview response/
+    );
+  }
+});
+
+test("decomposition preview becomes inert across workspace changes during API and persistence", async () => {
+  const makeState = () => {
+    const state = createInitialState();
+    state.projectRevision = 4;
+    state.creativeIntake = creativeIntakeStageFixture("model_selected");
+    state.modelProfiles = [{ profileId: "anima-1.1-v1", profileVersionId: "profile-version-7", contentSha256: "a".repeat(64) }];
+    return state;
+  };
+  let state = makeState();
+  let guard = decompositionPreviewGuard(state, "session-1");
+  let resolveApi;
+  const apiPending = new Promise((resolve) => { resolveApi = resolve; });
+  const duringApi = performDecompositionPreviewRequest({
+    getState: () => state, sessionId: "session-1", guard,
+    apiCall: () => apiPending,
+    persist: async () => true,
+  });
+  state.projectRevision += 1;
+  resolveApi({ item: decompositionIntakeFixture(), warnings: [] });
+  assert.deepEqual(await duringApi, { accepted: false, stale: true });
+
+  state = makeState();
+  guard = decompositionPreviewGuard(state, "session-1");
+  let resolvePersist;
+  const persistPending = new Promise((resolve) => { resolvePersist = resolve; });
+  const duringPersist = performDecompositionPreviewRequest({
+    getState: () => state, sessionId: "session-1", guard,
+    apiCall: async () => {
+      const item = decompositionIntakeFixture();
+      item.revision = state.creativeIntake.revision + 1;
+      return { item, warnings: [] };
+    },
+    persist: () => persistPending,
+  });
+  await new Promise(setImmediate);
+  state.projectRevision += 1;
+  resolvePersist(true);
+  assert.deepEqual(await duringPersist, { accepted: false, stale: true });
+});
+
+test("decomposition preview persistence failure rolls back only the current accepted workspace", async () => {
+  let state = createInitialState();
+  state.projectRevision = 4;
+  state.creativeIntake = creativeIntakeStageFixture("model_selected");
+  state.modelProfiles = [{ profileId: "anima-1.1-v1", profileVersionId: "profile-version-7", contentSha256: "a".repeat(64) }];
+  const durable = structuredClone(state);
+  const guard = decompositionPreviewGuard(state, "session-1");
+  let acceptedRevision = null;
+  let rolledBack = false;
+  await assert.rejects(
+    () => performDecompositionPreviewRequest({
+      getState: () => state, sessionId: "session-1", guard,
+      apiCall: async () => {
+        const item = decompositionIntakeFixture();
+        item.revision = state.creativeIntake.revision + 1;
+        return { item, warnings: [] };
+      },
+      apply: (item) => {
+        state = reduceState(state, { type: "CREATIVE_INTAKE_REPLACED", item });
+        acceptedRevision = state.projectRevision;
+      },
+      isPersistedCurrent: (item) =>
+        state.projectRevision === acceptedRevision &&
+        state.creativeIntake.revision === item.revision,
+      persist: async () => { throw new Error("disk unavailable"); },
+      rollback: () => { state = durable; rolledBack = true; },
+    }),
+    /disk unavailable/
+  );
+  assert.equal(rolledBack, true);
+  assert.equal(state.creativeIntake.stage, "model_selected");
 });
