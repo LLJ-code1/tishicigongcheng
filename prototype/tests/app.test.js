@@ -494,6 +494,25 @@ test("multi-image canonical replacement and file binding follow the accepted res
     rejectedController.bind(references[1].id, file);
   }
   assert.equal(rejectedController.size(), 0);
+
+  const sameIdRejectedReplacement = {
+    ...references[0],
+    name: "rejected-replacement.png",
+  };
+  assert.equal(
+    shouldBindDirectorImageFile({
+      transitionAccepted: false,
+      reference: sameIdRejectedReplacement,
+      current: {
+        ...current,
+        inputs: {
+          text: current.inputs.text,
+          images: [references[0]],
+        },
+      },
+    }),
+    false
+  );
 });
 
 test("accepted canonical image still binds its File when metadata persistence fails", () => {
@@ -1921,6 +1940,9 @@ test("failed creative intake persistence restores the last durable canonical sta
     item: creativeIntakeStageFixture("model_selected"),
   });
   advanced.directorBusy = true;
+  advanced.modelProfilesStatus = "ready";
+  advanced.modelProfiles = [{ profileId: "loaded-while-saving" }];
+  advanced.projects = [{ id: "new-list-item" }];
 
   const restored = rollbackCreativeIntakeAfterPersistenceFailure(
     durable,
@@ -1933,6 +1955,9 @@ test("failed creative intake persistence restores the last durable canonical sta
   assert.equal(restored.directorBusy, false);
   assert.equal(restored.directorError, "save failed");
   assert.equal(buildDirectorRenderModel(restored).canContinue, false);
+  assert.equal(restored.modelProfilesStatus, "ready");
+  assert.equal(restored.modelProfiles[0].profileId, "loaded-while-saving");
+  assert.equal(restored.projects[0].id, "new-list-item");
   assert.equal(advanced.creativeIntake.stage, "model_selected");
 });
 
@@ -3290,6 +3315,13 @@ test("director homepage exposes one local-analysis image with use chips and reco
   const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
   const source = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
   const css = fs.readFileSync(path.join(__dirname, "..", "styles.css"), "utf8");
+  const bootstrap = source.slice(source.indexOf("(function bootstrapBrowser"));
+  assert.match(bootstrap, /createDirectorImageCollectionController/);
+  assert.doesNotMatch(bootstrap, /createSingleImagePreviewController/);
+  assert.match(
+    bootstrap,
+    /directorImageCollectionController\.reconcile\(\s*state\.creativeIntake\.inputs\.images/
+  );
 
   for (const id of [
     "directorImagePreviewImage",

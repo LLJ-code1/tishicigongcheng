@@ -434,7 +434,17 @@
     } catch {
       return false;
     }
-    return canonical.inputs.images.some((image) => image.id === reference.id);
+    const image = canonical.inputs.images.find(
+      (candidate) => candidate.id === reference.id
+    );
+    return Boolean(
+      image &&
+      image.name === reference.name &&
+      image.mimeType === reference.mimeType &&
+      image.status === reference.status &&
+      JSON.stringify(image.requestedUses) ===
+        JSON.stringify(reference.requestedUses)
+    );
   }
 
   function createSingleImagePreviewController({
@@ -2255,14 +2265,38 @@
     failedState,
     error
   ) {
-    const restored = reduceState(durableState, {
+    const restoredBase = clone(failedState);
+    for (const key of [
+      "creativeIntake",
+      "directorMessages",
+      "directorImageEvidence",
+      "directorImageAnalysisStatus",
+      "directorImageAnalysisFailures",
+      "directorRequestRevision",
+      "view",
+      "draftInput",
+      "blocks",
+      "appliedBlocks",
+      "dirtyBlockIds",
+      "previewOutput",
+      "output",
+      "outputChecks",
+      "pendingEditPreview",
+      "pendingChange",
+      "recipeHash",
+      "randomPlan",
+      "instructionHistory",
+      "selectedVariantBlockIds",
+      "hasUnsavedChanges",
+      "hasUnsavedProjectChanges",
+      "projectRevision",
+    ]) {
+      restoredBase[key] = clone(durableState[key]);
+    }
+    const restored = reduceState(restoredBase, {
       type: "DIRECTOR_REQUEST_FAILED",
       error,
     });
-    restored.saveError =
-      typeof failedState?.saveError === "string"
-        ? failedState.saveError
-        : "";
     return restored;
   }
 
@@ -3927,8 +3961,8 @@
   const workspaceRequestAborts = new Set();
   let uploadedImageFile = null;
   let imagePreviewUrl = "";
-  const directorImagePreviewController =
-    app.createSingleImagePreviewController({
+  const directorImageCollectionController =
+    app.createDirectorImageCollectionController({
       createObjectURL: (file) => URL.createObjectURL(file),
       revokeObjectURL: (url) => URL.revokeObjectURL(url),
     });
@@ -4296,7 +4330,7 @@
       advanceWorkspaceSession();
       uploadedImageFile = null;
       releaseImagePreview();
-      directorImagePreviewController.remove();
+      directorImageCollectionController.clear();
       dispatch({ type: "PROJECT_OPENED", item: result.item || {} });
     } catch (error) {
       if (requestId !== projectOpenRequestId) return;
@@ -4313,7 +4347,7 @@
     projectOpenRequestId += 1;
     uploadedImageFile = null;
     releaseImagePreview();
-    directorImagePreviewController.remove();
+    directorImageCollectionController.clear();
     dispatch({ type: "NEW_PROJECT" });
   }
 
@@ -4622,10 +4656,11 @@
   }
 
   function syncDirectorImageAttachmentWithCanonical() {
-    const attachment = directorImagePreviewController.current();
-    const reference = state.creativeIntake.inputs.images[0] || null;
-    if (attachment && attachment.reference.id !== reference?.id) {
-      directorImagePreviewController.remove();
+    const previousSize = directorImageCollectionController.size();
+    directorImageCollectionController.reconcile(
+      state.creativeIntake.inputs.images
+    );
+    if (directorImageCollectionController.size() !== previousSize) {
       activeDirectorImageAbort?.abort();
       clearDirectorImageEvidence("idle");
     }
@@ -4637,7 +4672,9 @@
       clearDirectorImageEvidence("idle");
       return true;
     }
-    const currentAttachment = directorImagePreviewController.current();
+    const currentAttachment = directorImageCollectionController.get(
+      reference.id
+    );
     if (
       app.shouldReuseDirectorImageEvidence(
         reference,
@@ -4648,8 +4685,7 @@
       return true;
     }
     if (
-      !currentAttachment ||
-      currentAttachment.reference.id !== reference.id
+      !currentAttachment
     ) {
       state = app.reduceState(state, {
         type: "DIRECTOR_IMAGE_EVIDENCE_SET",
@@ -4789,10 +4825,13 @@
     ) {
       return false;
     }
-    directorImagePreviewController.attach(file, {
-      confirmReplace: () => true,
-      createId: () => reference.id,
-    });
+    const previousAttachment =
+      directorImageCollectionController.get(reference.id);
+    if (previousAttachment) {
+      directorImageCollectionController.replace(reference.id, file);
+    } else {
+      directorImageCollectionController.bind(reference.id, file);
+    }
     clearDirectorImageEvidence("idle");
     render();
     return true;
@@ -4810,7 +4849,7 @@
     );
     if (!accepted) return false;
     activeDirectorImageAbort?.abort();
-    directorImagePreviewController.remove();
+    directorImageCollectionController.remove(reference.id);
     clearDirectorImageEvidence("idle");
     render();
     return true;
@@ -4939,6 +4978,7 @@
       const persisted = await persistAcceptedCreativeIntake(
         acceptedProjectRevision
       );
+      if (request.guard.sessionId !== workspaceSessionId) return false;
       if (!persisted) {
         state = app.rollbackCreativeIntakeAfterPersistenceFailure(
           durableState,
@@ -5048,6 +5088,7 @@
       const persisted = await persistAcceptedCreativeIntake(
         acceptedProjectRevision
       );
+      if (request.guard.sessionId !== workspaceSessionId) return false;
       if (!persisted) {
         state = app.rollbackCreativeIntakeAfterPersistenceFailure(
           durableState,
@@ -6674,9 +6715,11 @@
     const imagePreview = $("#directorImagePreview");
     if (imagePreview) {
       const reference = state.creativeIntake.inputs.images[0] || null;
-      const attachment = directorImagePreviewController.current();
+      const attachment = reference
+        ? directorImageCollectionController.get(reference.id)
+        : null;
       const hasLocalFile =
-        Boolean(reference) && attachment?.reference.id === reference.id;
+        Boolean(reference) && Boolean(attachment);
       const previewImage = $("#directorImagePreviewImage");
       const placeholder = imagePreview.querySelector(
         ".director-preview-placeholder"
@@ -6685,9 +6728,9 @@
         previewImage.classList.toggle("hidden", !hasLocalFile);
         if (
           hasLocalFile &&
-          previewImage.src !== attachment.previewUrl
+          previewImage.src !== attachment.objectUrl
         ) {
-          previewImage.src = attachment.previewUrl;
+          previewImage.src = attachment.objectUrl;
         } else if (!hasLocalFile) {
           previewImage.removeAttribute("src");
         }
@@ -8759,7 +8802,7 @@
     event.returnValue = "";
   });
   window.addEventListener("pagehide", () => {
-    directorImagePreviewController.remove();
+    directorImageCollectionController.clear();
   });
 
   $("#expandBtn").addEventListener("click", expandTextPrompt);
