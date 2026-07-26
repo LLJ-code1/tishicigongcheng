@@ -110,10 +110,30 @@ class ResearchRequest:
 class FetchRequest:
     url: str
     headers: Mapping[str, str]
+    resolved_addresses: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "url", _required_text(self.url, "url", maximum=2048))
         object.__setattr__(self, "headers", _freeze_headers(self.headers))
+        if not isinstance(self.resolved_addresses, (tuple, list)):
+            raise ResearchError(
+                "invalid_contract", "resolved_addresses must be a sequence"
+            )
+        normalized_addresses: list[str] = []
+        for address in self.resolved_addresses:
+            if not isinstance(address, str):
+                raise ResearchError(
+                    "invalid_contract", "resolved_addresses must contain strings"
+                )
+            try:
+                normalized_addresses.append(str(ipaddress.ip_address(address)))
+            except ValueError as exc:
+                raise ResearchError(
+                    "invalid_contract", "resolved_addresses contains an invalid IP"
+                ) from exc
+        object.__setattr__(
+            self, "resolved_addresses", tuple(dict.fromkeys(normalized_addresses))
+        )
 
 
 @dataclass(frozen=True)
@@ -173,6 +193,13 @@ class SourceSnapshot:
 class ResearchResult:
     snapshot: SourceSnapshot
     claims: tuple["EvidenceClaim", ...]
+
+
+@dataclass(frozen=True)
+class ValidatedFetchTarget:
+    url: str
+    hostname: str
+    addresses: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -540,8 +567,8 @@ def default_resolver(host: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(answer[4][0] for answer in answers))
 
 
-def validate_fetch_url(url: str, resolver: Resolver) -> str:
-    """Validate one outbound HTTPS hop and all of its DNS answers."""
+def _validate_fetch_target(url: str, resolver: Resolver) -> ValidatedFetchTarget:
+    """Resolve and validate one outbound HTTPS hop as one atomic policy step."""
     try:
         parsed = urlsplit(url)
         port = parsed.port
@@ -574,10 +601,11 @@ def validate_fetch_url(url: str, resolver: Resolver) -> str:
         raise ResearchError("dns_failed", "source hostname could not be resolved") from exc
     if not addresses:
         raise ResearchError("dns_failed", "source hostname returned no addresses")
+    normalized_addresses: list[str] = []
     for address_text in addresses:
         try:
             address = ipaddress.ip_address(address_text)
-        except ValueError as exc:
+        except (TypeError, ValueError) as exc:
             raise ResearchError("dns_failed", "resolver returned an invalid address") from exc
         if (
             not address.is_global
@@ -589,9 +617,19 @@ def validate_fetch_url(url: str, resolver: Resolver) -> str:
             or address.is_unspecified
         ):
             raise ResearchError("unsafe_address", "source hostname resolved unsafely")
+        normalized_addresses.append(str(address))
     hostname = host.casefold()
     authority = hostname if port is None else f"{hostname}:{port}"
-    return urlunsplit(("https", authority, parsed.path or "/", parsed.query, ""))
+    return ValidatedFetchTarget(
+        url=urlunsplit(("https", authority, parsed.path or "/", parsed.query, "")),
+        hostname=hostname,
+        addresses=tuple(dict.fromkeys(normalized_addresses)),
+    )
+
+
+def validate_fetch_url(url: str, resolver: Resolver) -> str:
+    """Validate one outbound HTTPS hop and return its canonical URL."""
+    return _validate_fetch_target(url, resolver).url
 
 
 def _header(headers: Mapping[str, str], name: str) -> str | None:
@@ -636,7 +674,8 @@ def fetch_snapshot(
     """Fetch an adapter-owned page with validation before every network hop."""
     if not adapter.supports(request.url):
         raise ResearchError("unsupported_source", "request is not owned by its adapter")
-    requested_url = validate_fetch_url(request.url, resolver)
+    target = _validate_fetch_target(request.url, resolver)
+    requested_url = target.url
     current_url = requested_url
     headers = dict(request.headers)
     retrieved_at = _required_text(clock(), "retrieved_at")
@@ -645,7 +684,9 @@ def fetch_snapshot(
         if not adapter.supports(current_url):
             raise ResearchError("unsupported_source", "redirect left the source adapter")
         try:
-            response = fetcher(FetchRequest(current_url, headers))
+            response = fetcher(
+                FetchRequest(current_url, headers, target.addresses)
+            )
         except ResearchError:
             raise
         except Exception:
@@ -664,7 +705,9 @@ def fetch_snapshot(
             target = urljoin(current_url, location)
             if not adapter.supports(target):
                 raise ResearchError("unsupported_source", "redirect left the source adapter")
-            current_url = validate_fetch_url(target, resolver)
+            validated_target = _validate_fetch_target(target, resolver)
+            current_url = validated_target.url
+            target = validated_target
             continue
         if not 200 <= response.status <= 299:
             raise ResearchError("unexpected_status", "source returned a non-success status")
@@ -709,15 +752,69 @@ def fetch_snapshot(
     raise ResearchError("too_many_redirects", "redirect limit exceeded")
 
 
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS connection whose TCP peer is an audited numeric address."""
+
+    def __init__(
+        self,
+        hostname: str,
+        pinned_address: str,
+        port: int,
+        timeout: float,
+    ):
+        self._pinned_address = pinned_address
+        super().__init__(hostname, port=port, timeout=timeout)
+
+    def connect(self) -> None:
+        if self._tunnel_host:
+            raise ResearchError("proxy_forbidden", "proxy tunnels are forbidden")
+        address = ipaddress.ip_address(self._pinned_address)
+        family = socket.AF_INET6 if address.version == 6 else socket.AF_INET
+        raw_socket = socket.socket(family, socket.SOCK_STREAM)
+        try:
+            raw_socket.settimeout(self.timeout)
+            if self.source_address:
+                raw_socket.bind(self.source_address)
+            raw_socket.connect((str(address), self.port))
+            self.sock = self._context.wrap_socket(
+                raw_socket,
+                server_hostname=self.host,
+            )
+        except BaseException:
+            raw_socket.close()
+            raise
+
+
 def production_fetcher(
     request: FetchRequest,
     *,
-    connection_factory: Callable[..., http.client.HTTPSConnection] = http.client.HTTPSConnection,
+    connection_factory: Callable[
+        [str, str, int, float], http.client.HTTPSConnection
+    ] = _PinnedHTTPSConnection,
 ) -> FetchResponse:
     """Perform exactly one HTTPS request; redirects remain caller-controlled."""
     parsed = urlsplit(request.url)
     if parsed.scheme != "https" or not parsed.hostname:
         raise ResearchError("https_required", "transport accepts HTTPS only")
+    if not request.resolved_addresses:
+        raise ResearchError(
+            "missing_validated_address",
+            "transport requires an address from the URL policy",
+        )
+    for address_text in request.resolved_addresses:
+        address = ipaddress.ip_address(address_text)
+        if (
+            not address.is_global
+            or address.is_multicast
+            or address.is_reserved
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_private
+            or address.is_unspecified
+        ):
+            raise ResearchError(
+                "unsafe_address", "transport received an unsafe address"
+            )
     forbidden = {
         "accept-encoding",
         "authorization",
@@ -732,7 +829,10 @@ def production_fetcher(
     }
     headers["Accept-Encoding"] = "identity"
     connection = connection_factory(
-        parsed.hostname, parsed.port or 443, timeout=REQUEST_TIMEOUT_SECONDS
+        parsed.hostname,
+        request.resolved_addresses[0],
+        parsed.port or 443,
+        REQUEST_TIMEOUT_SECONDS,
     )
     try:
         target = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))

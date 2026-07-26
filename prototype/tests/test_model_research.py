@@ -3,6 +3,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -459,14 +460,19 @@ class ModelResearchFetchPolicyTests(unittest.TestCase):
 
     def test_successful_response_is_bounded_utf8_snapshot(self):
         body = '{"name":"Example"}'.encode()
+        seen_addresses = []
         snapshot = self.fetch(
-            lambda request: model_research.FetchResponse(
-                request.url,
-                200,
-                {"content-type": "application/json; charset=UTF-8"},
-                body,
+            lambda request: (
+                seen_addresses.append(request.resolved_addresses)
+                or model_research.FetchResponse(
+                    request.url,
+                    200,
+                    {"content-type": "application/json; charset=UTF-8"},
+                    body,
+                )
             )
         )
+        self.assertEqual(seen_addresses, [("93.184.216.34",)])
         self.assertEqual(snapshot.fetch_status, "succeeded")
         self.assertEqual(snapshot.requested_url, self.url)
         self.assertEqual(snapshot.final_url, self.url)
@@ -517,8 +523,8 @@ class ModelResearchFetchPolicyTests(unittest.TestCase):
                 return b""
 
         class Connection:
-            def __init__(self, host, port, timeout):
-                self.init = (host, port, timeout)
+            def __init__(self, host, pinned_address, port, timeout):
+                self.init = (host, pinned_address, port, timeout)
                 self.response = Response()
                 connections.append(self)
 
@@ -541,11 +547,14 @@ class ModelResearchFetchPolicyTests(unittest.TestCase):
                     "Cookie": "secret",
                     "accept-encoding": "gzip",
                 },
+                ("93.184.216.34",),
             ),
             connection_factory=Connection,
         )
         connection = connections[0]
-        self.assertEqual(connection.init, ("civitai.com", 443, 15))
+        self.assertEqual(
+            connection.init, ("civitai.com", "93.184.216.34", 443, 15)
+        )
         self.assertEqual(connection.sent[0:2], ("GET", "/models/1?version=2"))
         sent_headers = {key.casefold(): value for key, value in connection.sent[2].items()}
         self.assertNotIn("authorization", sent_headers)
@@ -554,6 +563,91 @@ class ModelResearchFetchPolicyTests(unittest.TestCase):
         self.assertEqual(connection.response.amount, 2 * 1024 * 1024 + 1)
         self.assertTrue(connection.closed)
         self.assertEqual(response.status, 302)
+
+    def test_fetch_to_production_transport_pins_the_single_audited_dns_answer(self):
+        resolve_calls = []
+        connections = []
+
+        class Response:
+            status = 200
+
+            def getheaders(self):
+                return [("Content-Type", "text/html")]
+
+            def read(self, amount):
+                return b"ok"
+
+        class Connection:
+            def __init__(self, host, pinned_address, port, timeout):
+                connections.append((host, pinned_address, port, timeout))
+
+            def request(self, method, target, headers):
+                pass
+
+            def getresponse(self):
+                return Response()
+
+            def close(self):
+                pass
+
+        def resolver(host):
+            resolve_calls.append(host)
+            if len(resolve_calls) == 1:
+                return ["93.184.216.34"]
+            return ["127.0.0.1"]
+
+        snapshot = model_research.fetch_snapshot(
+            self.request,
+            adapter=self.adapter,
+            resolver=resolver,
+            fetcher=lambda request: model_research.production_fetcher(
+                request, connection_factory=Connection
+            ),
+            clock=self.clock,
+        )
+
+        self.assertEqual(snapshot.fetch_status, "succeeded")
+        self.assertEqual(resolve_calls, ["civitai.com"])
+        self.assertEqual(
+            connections,
+            [("civitai.com", "93.184.216.34", 443, 15)],
+        )
+
+    def test_pinned_connection_uses_numeric_tcp_peer_and_original_tls_sni(self):
+        class RawSocket:
+            def settimeout(self, timeout):
+                self.timeout = timeout
+
+            def connect(self, address):
+                self.address = address
+
+            def close(self):
+                self.closed = True
+
+        class Context:
+            def wrap_socket(self, raw_socket, *, server_hostname):
+                self.wrapped = (raw_socket, server_hostname)
+                return "tls-socket"
+
+        raw_socket = RawSocket()
+        context = Context()
+        connection = model_research._PinnedHTTPSConnection(
+            "civitai.com", "93.184.216.34", 443, 15
+        )
+        connection._context = context
+
+        with mock.patch.object(
+            model_research.socket, "socket", return_value=raw_socket
+        ) as socket_factory:
+            connection.connect()
+
+        socket_factory.assert_called_once_with(
+            model_research.socket.AF_INET, model_research.socket.SOCK_STREAM
+        )
+        self.assertEqual(raw_socket.timeout, 15)
+        self.assertEqual(raw_socket.address, ("93.184.216.34", 443))
+        self.assertEqual(context.wrapped, (raw_socket, "civitai.com"))
+        self.assertEqual(connection.sock, "tls-socket")
 
 
 if __name__ == "__main__":
