@@ -37,6 +37,10 @@ from creative_intake import (
     CreativeIntakeValidationError,
     apply_creative_intake_transition,
 )
+from creative_director import (
+    CreativeDirectorError,
+    run_creative_director_turn,
+)
 from db import (
     IdempotencyConflictError,
     ProjectConflictError,
@@ -131,6 +135,7 @@ MAX_JSON_BODY_BYTES = 1024 * 1024
 MAX_VISION_JSON_BODY_BYTES = 30 * 1024 * 1024
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_PIXELS = 50_000_000
+MAX_CREATIVE_DIRECTOR_SKILL_OVERRIDE_CHARACTERS = 100_000
 REQUEST_BODY_TIMEOUT_SECONDS = 2.0
 VISION_REQUEST_BODY_TIMEOUT_SECONDS = 30.0
 CONNECTION_TIMEOUT_SECONDS = 5.0
@@ -152,6 +157,9 @@ STRING_SETTING_LIMITS = {
     "apiTextUrl": 4_096,
     "apiTextModel": 512,
     "apiTextKey": 8_192,
+    "creativeDirectorSkillOverride": (
+        MAX_CREATIVE_DIRECTOR_SKILL_OVERRIDE_CHARACTERS
+    ),
 }
 ENUM_SETTING_VALUES = {
     "textProvider": {"local", "api"},
@@ -308,11 +316,26 @@ def is_same_origin(origin: str, host_header: str) -> bool:
 def redact_settings(settings: dict) -> dict:
     """Return settings without ever exposing saved provider credentials."""
 
-    redacted = {
-        key: value
-        for key, value in settings.items()
-        if key in ALLOWED_SETTING_KEYS and key not in SENSITIVE_SETTING_KEYS
-    }
+    redacted = {}
+    for key, value in settings.items():
+        if key in SENSITIVE_SETTING_KEYS:
+            continue
+        if key in STRING_SETTING_LIMITS:
+            if not isinstance(value, str) or len(value) > STRING_SETTING_LIMITS[key]:
+                continue
+            try:
+                value.encode("utf-8")
+            except UnicodeEncodeError:
+                continue
+            redacted[key] = value
+        elif (
+            key in ENUM_SETTING_VALUES
+            and isinstance(value, str)
+            and value in ENUM_SETTING_VALUES[key]
+        ):
+            redacted[key] = value
+        elif key in BOOLEAN_SETTING_KEYS and isinstance(value, bool):
+            redacted[key] = value
     for key in SENSITIVE_SETTING_KEYS:
         redacted[f"{key}Configured"] = bool(settings.get(key))
         redacted[key] = ""
@@ -340,18 +363,69 @@ def validate_settings_update(payload: dict) -> dict:
         raise ValueError("设置包含不支持的字段")
     validated = dict(payload)
     for key, max_length in STRING_SETTING_LIMITS.items():
-        if key in validated and (
+        if key not in validated:
+            continue
+        if (
             not isinstance(validated[key], str)
             or len(validated[key]) > max_length
         ):
             raise ValueError(f"{key} 必须是长度不超过 {max_length} 的字符串")
+        try:
+            validated[key].encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise ValueError(f"{key} 必须是有效的 UTF-8 字符串") from error
     for key, values in ENUM_SETTING_VALUES.items():
-        if key in validated and validated[key] not in values:
+        if key in validated and (
+            not isinstance(validated[key], str)
+            or validated[key] not in values
+        ):
             raise ValueError(f"{key} 的值无效")
     for key in BOOLEAN_SETTING_KEYS:
         if key in validated and not isinstance(validated[key], bool):
             raise ValueError(f"{key} 必须是布尔值")
     return validated
+
+
+def validate_creative_director_skill_override(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) > MAX_CREATIVE_DIRECTOR_SKILL_OVERRIDE_CHARACTERS
+    ):
+        raise CreativeDirectorError(
+            "creative director Skill override must be UTF-8 text no longer "
+            "than 100000 characters",
+            code="invalid_creative_director_request",
+            status=400,
+        )
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise CreativeDirectorError(
+            "creative director Skill override must be valid UTF-8 text",
+            code="invalid_creative_director_request",
+            status=400,
+        ) from error
+    return value
+
+
+def validate_creative_director_request_utf8(value: object) -> None:
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, str):
+            try:
+                item.encode("utf-8")
+            except UnicodeEncodeError as error:
+                raise CreativeDirectorError(
+                    "creative director request must contain valid UTF-8 text",
+                    code="invalid_creative_director_request",
+                    status=400,
+                ) from error
+        elif isinstance(item, dict):
+            pending.extend(item.keys())
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
 
 
 def strict_json_object_pairs(pairs: list[tuple[str, object]]) -> dict:
@@ -615,6 +689,59 @@ def process_text_expand_request(
         target_model,
         context,
         expansion_level,
+    )
+
+
+def process_creative_director_request(
+    payload: dict,
+    settings_payload: dict | None = None,
+    engine=None,
+    transport=None,
+) -> dict:
+    allowed = {
+        "current",
+        "message",
+        "imageEvidence",
+        "provider",
+        "skillOverride",
+    }
+    if set(payload) - allowed or not {"current", "message"} <= set(payload):
+        raise CreativeDirectorError(
+            "creative director request fields are invalid",
+            code="invalid_creative_director_request",
+            status=400,
+        )
+    validate_creative_director_request_utf8(payload)
+
+    saved_settings = (
+        settings_payload if settings_payload is not None else get_settings()
+    )
+    if not isinstance(saved_settings, dict):
+        raise CreativeDirectorError(
+            "creative director settings are invalid",
+            code="invalid_creative_director_request",
+            status=400,
+        )
+    settings = {**DEFAULT_TEXT_SETTINGS, **saved_settings}
+    skill_override = validate_creative_director_skill_override(
+        payload.get(
+            "skillOverride",
+            settings.get("creativeDirectorSkillOverride", ""),
+        )
+    )
+    image_evidence = payload.get("imageEvidence")
+    if image_evidence is None:
+        image_evidence = []
+
+    caller = engine or run_creative_director_turn
+    return caller(
+        current=payload["current"],
+        user_message=payload["message"],
+        image_evidence=image_evidence,
+        provider=payload.get("provider") or settings.get("textProvider") or "local",
+        settings=settings,
+        skill_override=skill_override,
+        transport=transport,
     )
 
 
@@ -1614,6 +1741,8 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             return self.handle_workspace_commit()
         if parsed.path == "/api/creative-intake/transition":
             return self.handle_creative_intake_transition()
+        if parsed.path == "/api/creative-intake/director":
+            return self.handle_creative_director()
         if parsed.path == "/api/backups/inspect":
             return self.handle_backup_inspect(parsed.query)
         if parsed.path == "/api/backups/stage-restore":
@@ -1908,6 +2037,45 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             )
         self.send_json({"item": item})
 
+    def handle_creative_director(self) -> None:
+        try:
+            result = process_creative_director_request(self.read_json())
+        except CreativeIntakeValidationError as error:
+            return self.send_json(
+                {
+                    "error": "创作状态转换被拒绝",
+                    "code": error.code,
+                },
+                status=400,
+            )
+        except PromptEngineError as error:
+            safe_errors = {
+                "invalid_creative_director_request": (
+                    "创意导演请求无效",
+                    400,
+                ),
+                "unsupported_provider": ("文本推理来源不受支持", 400),
+                "provider_not_configured": ("文本推理来源尚未配置完整", 400),
+                "upstream_http_error": ("创意导演模型请求失败", 502),
+                "model_unavailable": ("创意导演模型暂时不可用", 503),
+                "upstream_invalid_response": (
+                    "创意导演模型返回无效响应",
+                    502,
+                ),
+                "invalid_model_output": ("创意导演模型输出无效", 502),
+                "provider_secret_echo": ("创意导演模型输出被安全策略拒绝", 502),
+            }
+            code = error.code if error.code in safe_errors else "creative_director_error"
+            message, status = safe_errors.get(
+                code,
+                ("创意导演请求失败", 500),
+            )
+            return self.send_json(
+                {"error": message, "code": code},
+                status=status,
+            )
+        self.send_json(result)
+
     def handle_edit_preview(self) -> None:
         item = process_edit_preview_request(self.read_json())
         self.send_json({"item": item})
@@ -2154,7 +2322,18 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         settings_update = validate_settings_update(
             preserve_saved_setting_keys(payload)
         )
-        saved_settings = put_settings(settings_update)
+        reset_keys = set()
+        skill_override = settings_update.get("creativeDirectorSkillOverride")
+        if isinstance(skill_override, str) and not skill_override.strip():
+            settings_update.pop("creativeDirectorSkillOverride")
+            reset_keys.add("creativeDirectorSkillOverride")
+        if reset_keys:
+            saved_settings = put_settings(
+                settings_update,
+                reset_keys=reset_keys,
+            )
+        else:
+            saved_settings = put_settings(settings_update)
         self.send_json({"settings": redact_settings(saved_settings)})
 
     def handle_status(self) -> None:

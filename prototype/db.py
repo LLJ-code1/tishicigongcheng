@@ -1995,11 +1995,30 @@ def get_settings(db_path: Path | str | None = None) -> dict:
     return {row["key"]: json_loads(row["value_json"], None) for row in rows}
 
 
-def put_settings(payload: dict, db_path: Path | str | None = None) -> dict:
+def put_settings(
+    payload: dict,
+    db_path: Path | str | None = None,
+    *,
+    reset_keys: set[str] | tuple[str, ...] | list[str] = (),
+) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("设置必须是对象")
+    if not isinstance(reset_keys, (set, tuple, list)):
+        raise ValueError("重置设置键必须是集合")
+    normalized_reset_keys = set(reset_keys)
+    if set(payload) & normalized_reset_keys:
+        raise ValueError("同一个设置键不能同时更新和重置")
+    for key in normalized_reset_keys:
+        if isinstance(key, str) and key.startswith(INTERNAL_SETTINGS_PREFIX):
+            raise ValueError("设置键使用了保留的内部前缀")
+        if not isinstance(key, str) or not key or len(key) > 128:
+            raise ValueError("设置键无效")
     timestamp = now_iso()
     with database(db_path) as connection:
+        connection.executemany(
+            "DELETE FROM settings WHERE key = ?",
+            [(key,) for key in sorted(normalized_reset_keys)],
+        )
         for key, value in payload.items():
             if isinstance(key, str) and key.startswith(INTERNAL_SETTINGS_PREFIX):
                 raise ValueError("设置键使用了保留的内部前缀")

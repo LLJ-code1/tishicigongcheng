@@ -43,7 +43,9 @@ from server import (  # noqa: E402
     read_prompt_template,
 )
 import db  # noqa: E402
+import creative_director  # noqa: E402
 import creative_intake  # noqa: E402
+from prompt_engine import PromptEngineError  # noqa: E402
 
 
 def make_png_bytes() -> bytes:
@@ -659,6 +661,328 @@ class PromptStudioServerTests(unittest.TestCase):
         with urlopen(request) as response:
             return response.status, json.loads(response.read().decode("utf-8"))
 
+    @staticmethod
+    def creative_director_response(
+        *,
+        message: str = "优先推荐电影感方向。",
+        action: dict | None = None,
+    ) -> dict:
+        proposal = {
+            "message": message,
+            "action": action
+            or {
+                "type": "set_directions",
+                "directions": [
+                    {
+                        "id": "recommended",
+                        "label": "电影感",
+                        "summary": "雨夜叙事",
+                    }
+                ],
+            },
+        }
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(proposal, ensure_ascii=False)
+                    }
+                }
+            ]
+        }
+
+    def test_creative_director_calls_configured_local_or_external_provider(self):
+        db.put_settings(
+            {
+                "creativeDirectorSkillOverride": "保持低饱和电影感",
+                "apiTextUrl": "https://text.example/v1",
+                "apiTextModel": "api-model",
+                "apiTextKey": "HTTP-API-SECRET",
+            },
+            self.api_db_path,
+        )
+        calls = []
+
+        def transport(url, body, headers, timeout):
+            calls.append((url, body, headers, timeout))
+            return self.creative_director_response()
+
+        with patch("creative_director.default_transport", side_effect=transport):
+            for provider, expected_url, expected_model in (
+                (
+                    "local",
+                    "http://127.0.0.1:8080/v1/chat/completions",
+                    "Huihui-Qwen3-14B-abliterated-v2.Q4_K_M.gguf",
+                ),
+                ("api", "https://text.example/v1/chat/completions", "api-model"),
+            ):
+                with self.subTest(provider=provider):
+                    status, payload = self.json_request(
+                        "/api/creative-intake/director",
+                        {
+                            "current": creative_intake.empty_creative_intake(),
+                            "message": "红裙，奔跑",
+                            "imageEvidence": None,
+                            "provider": provider,
+                        },
+                    )
+
+                    self.assertEqual(status, 200)
+                    self.assertEqual(payload["item"]["revision"], 1)
+                    self.assertEqual(payload["message"], "优先推荐电影感方向。")
+                    url, body, headers, _timeout = calls[-1]
+                    self.assertEqual(url, expected_url)
+                    self.assertEqual(body["model"], expected_model)
+                    self.assertIn(
+                        "保持低饱和电影感",
+                        body["messages"][0]["content"],
+                    )
+                    if provider == "api":
+                        self.assertEqual(
+                            headers["Authorization"],
+                            "Bearer HTTP-API-SECRET",
+                        )
+                    else:
+                        self.assertNotIn("Authorization", headers)
+                    self.assertNotIn(
+                        "HTTP-API-SECRET",
+                        json.dumps(payload, ensure_ascii=False),
+                    )
+
+    def test_creative_director_rejects_invalid_request_shapes_with_stable_code(self):
+        cases = (
+            (
+                "missing current",
+                {"message": "继续"},
+            ),
+            (
+                "missing message",
+                {"current": creative_intake.empty_creative_intake()},
+            ),
+            (
+                "unknown field",
+                {
+                    "current": creative_intake.empty_creative_intake(),
+                    "message": "继续",
+                    "unexpected": True,
+                },
+            ),
+            (
+                "invalid image evidence",
+                {
+                    "current": creative_intake.empty_creative_intake(),
+                    "message": "继续",
+                    "imageEvidence": {"imageId": "image-1"},
+                },
+            ),
+            (
+                "invalid skill override",
+                {
+                    "current": creative_intake.empty_creative_intake(),
+                    "message": "继续",
+                    "skillOverride": {"nested": "rule"},
+                },
+            ),
+            (
+                "oversized skill override",
+                {
+                    "current": creative_intake.empty_creative_intake(),
+                    "message": "继续",
+                    "skillOverride": "界" * 100_001,
+                },
+            ),
+        )
+        with patch("creative_director.default_transport") as transport:
+            for label, request_payload in cases:
+                with self.subTest(label=label):
+                    response = self.assert_http_error_json(
+                        Request(
+                            f"{self.base_url}/api/creative-intake/director",
+                            data=json.dumps(
+                                request_payload,
+                                ensure_ascii=False,
+                            ).encode("utf-8"),
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        ),
+                        400,
+                    )
+                    self.assertEqual(
+                        response["code"],
+                        "invalid_creative_director_request",
+                    )
+        transport.assert_not_called()
+
+    def test_creative_director_rejects_invalid_unicode_before_provider_call(self):
+        cases = (
+            (
+                "message",
+                {
+                    "current": creative_intake.empty_creative_intake(),
+                    "message": "bad\ud800message",
+                    "imageEvidence": [],
+                },
+            ),
+            (
+                "nested image evidence",
+                {
+                    "current": creative_intake.empty_creative_intake(),
+                    "message": "继续",
+                    "imageEvidence": [
+                        {
+                            "imageId": "image-1",
+                            "summary": "bad\ud800summary",
+                        }
+                    ],
+                },
+            ),
+        )
+        with patch("creative_director.default_transport") as transport:
+            for label, payload in cases:
+                with self.subTest(label=label):
+                    response = self.assert_http_error_json(
+                        Request(
+                            f"{self.base_url}/api/creative-intake/director",
+                            data=json.dumps(
+                                payload,
+                                ensure_ascii=True,
+                            ).encode("utf-8"),
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        ),
+                        400,
+                    )
+                    self.assertEqual(
+                        response["code"],
+                        "invalid_creative_director_request",
+                    )
+        transport.assert_not_called()
+
+    def test_creative_director_sanitizes_provider_and_model_failures(self):
+        provider_secret = "HTTP-API-SECRET"
+        upstream_body = "RAW-UPSTREAM-RESPONSE-BODY"
+        db.put_settings(
+            {
+                "apiTextUrl": "https://text.example/v1",
+                "apiTextModel": "api-model",
+                "apiTextKey": provider_secret,
+            },
+            self.api_db_path,
+        )
+
+        def failing_transport(*_args):
+            raise PromptEngineError(
+                f"upstream failed: {provider_secret} {upstream_body}",
+                code="upstream_http_error",
+                status=502,
+            )
+
+        cases = (
+            (
+                "provider failure",
+                failing_transport,
+                "upstream_http_error",
+            ),
+            (
+                "invalid model JSON",
+                lambda *_args: {
+                    "choices": [{"message": {"content": "not json"}}]
+                },
+                "invalid_model_output",
+            ),
+        )
+        for label, transport, expected_code in cases:
+            with self.subTest(label=label):
+                with patch(
+                    "creative_director.default_transport",
+                    side_effect=transport,
+                ):
+                    response = self.assert_http_error_json(
+                        Request(
+                            f"{self.base_url}/api/creative-intake/director",
+                            data=json.dumps(
+                                {
+                                    "current": (
+                                        creative_intake.empty_creative_intake()
+                                    ),
+                                    "message": "继续",
+                                    "imageEvidence": [],
+                                    "provider": "api",
+                                }
+                            ).encode("utf-8"),
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        ),
+                        502,
+                    )
+                encoded = json.dumps(response, ensure_ascii=False)
+                self.assertEqual(response["code"], expected_code)
+                self.assertNotIn(provider_secret, encoded)
+                self.assertNotIn(upstream_body, encoded)
+
+    def test_creative_director_sanitizes_domain_transition_failure(self):
+        api_secret = "DOMAIN-ERROR-SECRET"
+        db.put_settings(
+            {
+                "apiTextUrl": "https://text.example/v1",
+                "apiTextModel": "api-model",
+                "apiTextKey": api_secret,
+            },
+            self.api_db_path,
+        )
+        current = creative_intake.apply_creative_intake_transition(
+            creative_intake.empty_creative_intake(),
+            {
+                "type": "set_directions",
+                "directions": [
+                    {
+                        "id": "recommended",
+                        "label": "电影感",
+                        "summary": "雨夜叙事",
+                    }
+                ],
+            },
+        )
+        current = creative_intake.apply_creative_intake_transition(
+            current,
+            {"type": "select_direction", "directionId": "recommended"},
+        )
+        action = {
+            "type": "set_brief_draft",
+            "brief": {
+                "status": "draft",
+                "summary": "",
+                "items": [],
+                "aiAdditions": [],
+                "openQuestions": [],
+                api_secret: "model-controlled unknown key",
+            },
+        }
+        with patch(
+            "creative_director.default_transport",
+            return_value=self.creative_director_response(action=action),
+        ):
+            response = self.assert_http_error_json(
+                Request(
+                    f"{self.base_url}/api/creative-intake/director",
+                    data=json.dumps(
+                        {
+                            "current": current,
+                            "message": "直接给简报",
+                            "imageEvidence": [],
+                            "provider": "api",
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                ),
+                400,
+            )
+
+        encoded = json.dumps(response, ensure_ascii=False)
+        self.assertEqual(response["code"], "unsupported_fields")
+        self.assertNotIn(api_secret, encoded)
+
     def test_creative_intake_transition_returns_server_normalized_state(self):
         status, payload = self.json_request(
             "/api/creative-intake/transition",
@@ -1033,12 +1357,131 @@ class PromptStudioServerTests(unittest.TestCase):
         self.assertEqual(payload["settings"]["apiTextKey"], "")
         self.assertTrue(payload["settings"]["apiTextKeyConfigured"])
 
+    def test_settings_put_get_preserves_creative_director_skill_override(self):
+        override = "保留用户明确要求，偏好低饱和电影感"
+        db.put_settings({"apiTextKey": "SETTINGS-API-SECRET"}, self.api_db_path)
+
+        status, saved = self.json_request(
+            "/api/settings",
+            {"creativeDirectorSkillOverride": override},
+            method="PUT",
+        )
+        with urlopen(f"{self.base_url}/api/settings") as response:
+            raw_body = response.read()
+            loaded = json.loads(raw_body.decode("utf-8"))
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            saved["settings"]["creativeDirectorSkillOverride"],
+            override,
+        )
+        self.assertEqual(
+            loaded["settings"]["creativeDirectorSkillOverride"],
+            override,
+        )
+        self.assertEqual(loaded["settings"]["apiTextKey"], "")
+        self.assertTrue(loaded["settings"]["apiTextKeyConfigured"])
+        self.assertNotIn(b"SETTINGS-API-SECRET", raw_body)
+
+    def test_settings_blank_skill_override_resets_to_builtin_default(self):
+        db.put_settings(
+            {
+                "creativeDirectorSkillOverride": "temporary override",
+                "apiTextKey": "PRESERVED-API-SECRET",
+            },
+            self.api_db_path,
+        )
+
+        status, payload = self.json_request(
+            "/api/settings",
+            {"creativeDirectorSkillOverride": " \n "},
+            method="PUT",
+        )
+        stored = db.get_settings(self.api_db_path)
+
+        self.assertEqual(status, 200)
+        self.assertNotIn("creativeDirectorSkillOverride", stored)
+        self.assertNotIn(
+            "creativeDirectorSkillOverride",
+            payload["settings"],
+        )
+        self.assertEqual(stored["apiTextKey"], "PRESERVED-API-SECRET")
+        self.assertEqual(payload["settings"]["apiTextKey"], "")
+        self.assertTrue(payload["settings"]["apiTextKeyConfigured"])
+
+    def test_settings_skill_override_enforces_utf8_character_limit(self):
+        status, payload = self.json_request(
+            "/api/settings",
+            {"creativeDirectorSkillOverride": "界" * 100_000},
+            method="PUT",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            len(payload["settings"]["creativeDirectorSkillOverride"]),
+            100_000,
+        )
+
+        invalid_values = (
+            "界" * 100_001,
+            "bad\ud800unicode",
+            {"apiTextKey": "NESTED-SECRET"},
+        )
+        for value in invalid_values:
+            with self.subTest(value_type=type(value).__name__):
+                body = json.dumps(
+                    {"creativeDirectorSkillOverride": value},
+                    ensure_ascii=True,
+                ).encode("utf-8")
+                response = self.assert_http_error_json(
+                    Request(
+                        f"{self.base_url}/api/settings",
+                        data=body,
+                        headers={"Content-Type": "application/json"},
+                        method="PUT",
+                    ),
+                    400,
+                )
+                self.assertNotIn("NESTED-SECRET", json.dumps(response))
+
+    def test_settings_get_strips_unknown_or_nested_sensitive_values(self):
+        with patch(
+            "server.get_settings",
+            return_value={
+                "creativeDirectorSkillOverride": {
+                    "apiTextKey": "NESTED-API-SECRET",
+                },
+                "unknownNested": {
+                    "localTextKey": "NESTED-LOCAL-SECRET",
+                },
+                "textProvider": {
+                    "apiTextKey": "NESTED-PROVIDER-SECRET",
+                },
+                "apiTextKey": "TOP-LEVEL-API-SECRET",
+            },
+        ):
+            with urlopen(f"{self.base_url}/api/settings") as response:
+                raw_body = response.read()
+                payload = json.loads(raw_body.decode("utf-8"))
+
+        self.assertNotIn(b"NESTED-API-SECRET", raw_body)
+        self.assertNotIn(b"NESTED-LOCAL-SECRET", raw_body)
+        self.assertNotIn(b"NESTED-PROVIDER-SECRET", raw_body)
+        self.assertNotIn(b"TOP-LEVEL-API-SECRET", raw_body)
+        self.assertNotIn(
+            "creativeDirectorSkillOverride",
+            payload["settings"],
+        )
+        self.assertNotIn("unknownNested", payload["settings"])
+        self.assertNotIn("textProvider", payload["settings"])
+        self.assertTrue(payload["settings"]["apiTextKeyConfigured"])
+
     def test_settings_put_rejects_unknown_fields_and_wrong_types(self):
         invalid_payloads = (
             {"apiTextKeyConfigured": True},
             {"unknownSecret": "must-not-store"},
             {"autoCombine": "yes"},
             {"textProvider": "unknown"},
+            {"textProvider": {"apiTextKey": "nested-secret"}},
             {"apiTextModel": {"nested": "model"}},
         )
         for payload in invalid_payloads:

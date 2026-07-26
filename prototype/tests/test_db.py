@@ -555,6 +555,25 @@ class PromptStudioDatabaseTests(unittest.TestCase):
         self.assertEqual(saved["textProvider"], "local")
         self.assertTrue(loaded["autoCombine"])
 
+    def test_settings_can_atomically_reset_selected_keys(self):
+        db.put_settings(
+            {
+                "creativeDirectorSkillOverride": "temporary override",
+                "apiTextKey": "preserved-secret",
+            },
+            self.db_path,
+        )
+
+        saved = db.put_settings(
+            {"textProvider": "api"},
+            self.db_path,
+            reset_keys={"creativeDirectorSkillOverride"},
+        )
+
+        self.assertNotIn("creativeDirectorSkillOverride", saved)
+        self.assertEqual(saved["apiTextKey"], "preserved-secret")
+        self.assertEqual(saved["textProvider"], "api")
+
     def test_project_rejects_unsafe_ids_and_wrong_field_types(self):
         invalid_payloads = [
             {"id": "slash/id"},
