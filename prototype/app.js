@@ -285,11 +285,141 @@
   }
 
   function buildDirectorImageReplaceAction(intake, reference = null) {
+    return buildDirectorImagesReplaceAction(
+      intake,
+      reference ? [reference] : []
+    );
+  }
+
+  function buildDirectorImagesReplaceAction(intake, references) {
     const current = normalizeCreativeIntake(intake);
+    if (!Array.isArray(references)) {
+      throw new TypeError("director image replacement requires an image list");
+    }
     return {
       type: "replace_inputs",
       text: current.inputs.text,
-      images: reference ? [clone(reference)] : [],
+      images: clone(references),
+    };
+  }
+
+  function createDirectorImageCollectionController({
+    createObjectURL,
+    revokeObjectURL,
+  }) {
+    if (
+      typeof createObjectURL !== "function" ||
+      typeof revokeObjectURL !== "function"
+    ) {
+      throw new TypeError(
+        "multi-image attachments require object URL functions"
+      );
+    }
+    const entries = new Map();
+
+    function safeEntry(entry) {
+      if (!entry) return null;
+      return {
+        ...entry,
+        evidence: entry.evidence == null ? null : clone(entry.evidence),
+        failures: clone(entry.failures),
+      };
+    }
+
+    function validateBinding(imageId, file) {
+      if (!SAFE_DIRECTOR_IMAGE_ID.test(String(imageId || ""))) {
+        return { ok: false, error: "director image reference ID is invalid" };
+      }
+      return validateDirectorImageFile(file);
+    }
+
+    function release(entry) {
+      if (entry?.objectUrl) revokeObjectURL(entry.objectUrl);
+    }
+
+    function makeEntry(file, options = {}) {
+      return {
+        file,
+        objectUrl: createObjectURL(file),
+        evidence:
+          options.evidence == null ? null : clone(options.evidence),
+        failures: Array.isArray(options.failures)
+          ? clone(options.failures)
+          : [],
+        status: String(options.status || "idle"),
+      };
+    }
+
+    return {
+      bind(imageId, file, options = {}) {
+        const validation = validateBinding(imageId, file);
+        if (!validation.ok) {
+          return { accepted: false, error: validation.error };
+        }
+        if (entries.has(imageId)) {
+          return {
+            accepted: false,
+            error: "director image reference ID is already bound",
+          };
+        }
+        if (entries.size >= 8) {
+          return {
+            accepted: false,
+            error: "director images cannot exceed eight attachments",
+          };
+        }
+        const entry = makeEntry(file, options);
+        entries.set(imageId, entry);
+        return { accepted: true, entry: safeEntry(entry) };
+      },
+      replace(imageId, file, options = {}) {
+        const validation = validateBinding(imageId, file);
+        if (!validation.ok) {
+          return { accepted: false, error: validation.error };
+        }
+        const previous = entries.get(imageId);
+        if (!previous) {
+          return {
+            accepted: false,
+            error: "director image reference is not bound",
+          };
+        }
+        const entry = makeEntry(file, options);
+        entries.set(imageId, entry);
+        release(previous);
+        return { accepted: true, entry: safeEntry(entry) };
+      },
+      remove(imageId) {
+        const previous = entries.get(imageId);
+        if (!previous) return null;
+        entries.delete(imageId);
+        release(previous);
+        return safeEntry(previous);
+      },
+      clear() {
+        const previous = Array.from(entries.values());
+        entries.clear();
+        previous.forEach(release);
+      },
+      reconcile(references) {
+        if (!Array.isArray(references)) {
+          throw new TypeError(
+            "director image reconciliation requires an image list"
+          );
+        }
+        const canonicalIds = new Set(
+          references.map((reference) => String(reference?.id || ""))
+        );
+        for (const imageId of Array.from(entries.keys())) {
+          if (!canonicalIds.has(imageId)) this.remove(imageId);
+        }
+      },
+      get(imageId) {
+        return safeEntry(entries.get(imageId));
+      },
+      size() {
+        return entries.size;
+      },
     };
   }
 
@@ -304,12 +434,7 @@
     } catch {
       return false;
     }
-    const image = canonical.inputs.images[0] || null;
-    return Boolean(
-      image &&
-        canonical.inputs.images.length === 1 &&
-        image.id === reference.id
-    );
+    return canonical.inputs.images.some((image) => image.id === reference.id);
   }
 
   function createSingleImagePreviewController({
@@ -3716,7 +3841,9 @@
     createDirectorImageReference,
     setDirectorImageRequestedUses,
     buildDirectorImageReplaceAction,
+    buildDirectorImagesReplaceAction,
     shouldBindDirectorImageFile,
+    createDirectorImageCollectionController,
     createSingleImagePreviewController,
     buildDirectorImageEvidence,
     performDirectorImageAnalysis,
@@ -4898,7 +5025,17 @@
         });
       }
       render();
-      await persistAcceptedCreativeIntake(acceptedProjectRevision);
+      const persisted = await persistAcceptedCreativeIntake(
+        acceptedProjectRevision
+      );
+      if (!persisted) {
+        state = app.reduceState(state, {
+          type: "DIRECTOR_REQUEST_FAILED",
+          error: "创作阶段已更新，但保存失败，请重试",
+        });
+        render();
+        return false;
+      }
       state = app.reduceState(state, {
         type: "DIRECTOR_REQUEST_SUCCEEDED",
       });

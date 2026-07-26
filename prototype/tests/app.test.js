@@ -51,6 +51,8 @@ const {
   createDirectorImageReference,
   setDirectorImageRequestedUses,
   buildDirectorImageReplaceAction,
+  buildDirectorImagesReplaceAction,
+  createDirectorImageCollectionController,
   createSingleImagePreviewController,
   buildDirectorImageEvidence,
   performDirectorImageAnalysis,
@@ -339,6 +341,158 @@ test("single-image requested-use chips are allowlisted and AI suggestion means n
     () => setDirectorImageRequestedUses(reference, ["hidden_multi_image"]),
     /requested image use/
   );
+});
+
+test("multi-image attachment controller owns files independently and rejects duplicate or ninth IDs", () => {
+  const created = [];
+  const revoked = [];
+  const controller = createDirectorImageCollectionController({
+    createObjectURL(file) {
+      const url = `blob:${file.name}:${created.length + 1}`;
+      created.push(url);
+      return url;
+    },
+    revokeObjectURL(url) {
+      revoked.push(url);
+    },
+  });
+  const files = Array.from({ length: 9 }, (_, index) => ({
+    name: `reference-${index + 1}.png`,
+    type: "image/png",
+    size: 100 + index,
+  }));
+
+  for (let index = 0; index < 8; index += 1) {
+    const result = controller.bind(`image-${index + 1}`, files[index]);
+    assert.equal(result.accepted, true);
+  }
+  assert.equal(controller.size(), 8);
+  assert.equal(
+    controller.bind("image-1", files[8]).accepted,
+    false,
+    "stable IDs cannot be rebound accidentally"
+  );
+  assert.equal(controller.bind("image-9", files[8]).accepted, false);
+  assert.equal(created.length, 8, "rejected files never allocate object URLs");
+
+  const replacement = {
+    name: "replacement.webp",
+    type: "image/webp",
+    size: 900,
+  };
+  assert.equal(controller.replace("image-2", replacement).accepted, true);
+  assert.equal(controller.get("image-2").file, replacement);
+  assert.deepEqual(revoked, ["blob:reference-2.png:2"]);
+
+  controller.remove("image-1");
+  assert.equal(controller.get("image-1"), null);
+  assert.equal(controller.get("image-2").file, replacement);
+  assert.deepEqual(revoked, [
+    "blob:reference-2.png:2",
+    "blob:reference-1.png:1",
+  ]);
+
+  controller.clear();
+  assert.equal(controller.size(), 0);
+  assert.equal(new Set(revoked).size, 9);
+  assert.equal(revoked.length, 9, "every owned URL is revoked exactly once");
+});
+
+test("multi-image controller keeps per-ID evidence state and reconciles only removed canonical IDs", () => {
+  const revoked = [];
+  const controller = createDirectorImageCollectionController({
+    createObjectURL: (file) => `blob:${file.name}`,
+    revokeObjectURL: (url) => revoked.push(url),
+  });
+  const actionFile = { name: "action.png", type: "image/png", size: 100 };
+  const outfitFile = { name: "outfit.png", type: "image/png", size: 101 };
+  controller.bind("image-action", actionFile, {
+    evidence: { imageId: "image-action", summary: "running" },
+    failures: [],
+    status: "ready",
+  });
+  controller.bind("image-outfit", outfitFile, {
+    evidence: null,
+    failures: ["analyzer unavailable"],
+    status: "failed",
+  });
+
+  assert.equal(controller.get("image-action").status, "ready");
+  assert.deepEqual(controller.get("image-outfit").failures, [
+    "analyzer unavailable",
+  ]);
+  controller.reconcile([{ id: "image-outfit" }]);
+
+  assert.equal(controller.get("image-action"), null);
+  assert.equal(controller.get("image-outfit").file, outfitFile);
+  assert.deepEqual(revoked, ["blob:action.png"]);
+});
+
+test("multi-image canonical replacement and file binding follow the accepted response", () => {
+  const current = {
+    ...emptyCreativeIntake(),
+    inputs: {
+      text: "keep this idea",
+      images: [],
+    },
+  };
+  const references = [
+    {
+      id: "image-action",
+      name: "action.png",
+      mimeType: "image/png",
+      status: "local_reference_not_embedded",
+      requestedUses: ["action"],
+    },
+    {
+      id: "image-outfit",
+      name: "outfit.png",
+      mimeType: "image/png",
+      status: "local_reference_not_embedded",
+      requestedUses: ["outfit"],
+    },
+  ];
+  assert.deepEqual(buildDirectorImagesReplaceAction(current, references), {
+    type: "replace_inputs",
+    text: "keep this idea",
+    images: references,
+  });
+  assert.deepEqual(current.inputs.images, [], "builder does not mutate canonical state");
+
+  const controller = createDirectorImageCollectionController({
+    createObjectURL: (file) => `blob:${file.name}`,
+    revokeObjectURL() {},
+  });
+  const file = { name: "outfit.png", type: "image/png", size: 101 };
+  const acceptedDespiteSaveFailure = {
+    ...current,
+    inputs: { text: current.inputs.text, images: references },
+  };
+  if (
+    shouldBindDirectorImageFile({
+      transitionAccepted: false,
+      reference: references[1],
+      current: acceptedDespiteSaveFailure,
+    })
+  ) {
+    controller.bind(references[1].id, file);
+  }
+  assert.equal(controller.get("image-outfit").file, file);
+
+  const rejectedController = createDirectorImageCollectionController({
+    createObjectURL: (item) => `blob:${item.name}`,
+    revokeObjectURL() {},
+  });
+  if (
+    shouldBindDirectorImageFile({
+      transitionAccepted: false,
+      reference: references[1],
+      current,
+    })
+  ) {
+    rejectedController.bind(references[1].id, file);
+  }
+  assert.equal(rejectedController.size(), 0);
 });
 
 test("accepted canonical image still binds its File when metadata persistence fails", () => {
@@ -1735,6 +1889,26 @@ test("creative intake persistence does not retry a failed frozen save", async ()
   assert.equal(result, null);
   assert.equal(waits, 1);
   assert.equal(metadataSaves, 0);
+});
+
+test("every accepted director transition gates success on metadata persistence", () => {
+  const script = fs.readFileSync(
+    path.join(__dirname, "..", "app.js"),
+    "utf8"
+  );
+  const transitionBody = script.slice(
+    script.indexOf("async function transitionCreativeIntake(action)"),
+    script.indexOf("async function saveSettings()")
+  );
+
+  assert.match(
+    transitionBody,
+    /const persisted = await persistAcceptedCreativeIntake\([\s\S]*?if \(!persisted\)[\s\S]*?return false;/
+  );
+  assert.doesNotMatch(
+    transitionBody,
+    /await persistAcceptedCreativeIntake\([^;]+;\s*state = app\.reduceState\(state, \{\s*type: "DIRECTOR_REQUEST_SUCCEEDED"/
+  );
 });
 
 test("creative intake persistence bypasses dirty Recipe gates and only clears project metadata", async () => {
