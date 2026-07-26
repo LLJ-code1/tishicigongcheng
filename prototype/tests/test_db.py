@@ -71,6 +71,10 @@ class PromptStudioDatabaseTests(unittest.TestCase):
         connection = sqlite3.connect(path)
         try:
             connection.executescript(db.SCHEMA)
+            connection.execute("DROP TABLE model_profile_versions")
+            connection.execute("DROP TABLE model_evidence_claims")
+            connection.execute("DROP TABLE model_evidence_snapshots")
+            connection.execute("DROP TABLE model_research_runs")
             connection.execute(
                 """
                 INSERT INTO projects (
@@ -104,8 +108,19 @@ class PromptStudioDatabaseTests(unittest.TestCase):
         finally:
             connection.close()
 
-    def test_new_database_is_initialized_as_schema_v1_without_snapshot(self):
-        path = Path(self.tempdir.name) / "new-v1.db"
+    @classmethod
+    def create_v1_database(cls, path: Path) -> None:
+        cls.create_legacy_database(path)
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute("PRAGMA user_version = 1")
+            connection.execute(f"PRAGMA application_id = {db.APPLICATION_ID}")
+            connection.commit()
+        finally:
+            connection.close()
+
+    def test_new_database_is_initialized_as_schema_v2_without_snapshot(self):
+        path = Path(self.tempdir.name) / "new-v2.db"
 
         missing_status = db.get_database_status(path)
         self.assertFalse(missing_status["exists"])
@@ -131,6 +146,102 @@ class PromptStudioDatabaseTests(unittest.TestCase):
         self.assertTrue(status["compatible"])
         self.assertEqual(status["integrity"], "ok")
         self.assertFalse(db.recovery_directory(path).exists())
+
+    def test_v1_database_is_snapshotted_and_additively_migrated_to_v2(self):
+        path = Path(self.tempdir.name) / "v1.db"
+        self.create_v1_database(path)
+        before = db.get_database_status(path)
+        self.assertEqual(before["state"], "v1")
+        self.assertTrue(before["needsMigration"])
+        self.assertTrue(before["compatible"])
+
+        db.init_db(path)
+
+        connection = sqlite3.connect(path)
+        try:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT name FROM projects WHERE id = 'legacy-project'"
+                ).fetchone()[0],
+                "Legacy project",
+            )
+            self.assertEqual(
+                connection.execute(
+                    """
+                    SELECT positive_en FROM prompt_versions
+                    WHERE id = 'legacy-version'
+                    """
+                ).fetchone()[0],
+                "1girl",
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT value_json FROM settings WHERE key = 'apiTextKey'"
+                ).fetchone()[0],
+                '"legacy-secret"',
+            )
+            tables = {
+                row[0] for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            self.assertIn("model_profile_versions", tables)
+        finally:
+            connection.close()
+        snapshots = list(db.recovery_directory(path).glob("*.db"))
+        self.assertEqual(len(snapshots), 1)
+        snapshot = sqlite3.connect(snapshots[0])
+        try:
+            self.assertEqual(snapshot.execute("PRAGMA user_version").fetchone()[0], 1)
+            self.assertEqual(
+                snapshot.execute(
+                    "SELECT name FROM projects WHERE id = 'legacy-project'"
+                ).fetchone()[0],
+                "Legacy project",
+            )
+        finally:
+            snapshot.close()
+
+    def test_v1_migration_failure_rolls_back_schema_and_version(self):
+        path = Path(self.tempdir.name) / "v1-rollback.db"
+        self.create_v1_database(path)
+
+        with patch.object(
+            db, "_migrate_to_v2", side_effect=RuntimeError("migration failed")
+        ), self.assertRaisesRegex(RuntimeError, "migration failed"):
+            db.init_db(path)
+
+        connection = sqlite3.connect(path)
+        try:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 1)
+            self.assertIsNone(
+                connection.execute(
+                    """
+                    SELECT name FROM sqlite_master
+                    WHERE type = 'table' AND name = 'model_research_runs'
+                    """
+                ).fetchone()
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT name FROM projects WHERE id = 'legacy-project'"
+                ).fetchone()[0],
+                "Legacy project",
+            )
+        finally:
+            connection.close()
+
+    def test_concurrent_v1_initialization_runs_one_migration_and_snapshot(self):
+        path = Path(self.tempdir.name) / "v1-concurrent.db"
+        self.create_v1_database(path)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            results = list(executor.map(lambda _: db.init_db(path), range(4)))
+
+        self.assertEqual(results, [path] * 4)
+        self.assertEqual(len(list(db.recovery_directory(path).glob("*.db"))), 1)
+        self.assertEqual(db.get_database_status(path)["schemaVersion"], 2)
 
     def test_now_iso_keeps_microsecond_precision(self):
         self.assertRegex(
@@ -965,7 +1076,7 @@ class PromptStudioDatabaseTests(unittest.TestCase):
         )
         self.assertEqual(stored_metadata, malformed_metadata)
 
-    def test_creative_intake_commit_keeps_database_schema_at_v1(self):
+    def test_creative_intake_commit_keeps_database_schema_at_v2(self):
         db.commit_workspace(
             {
                 "operationId": "save-intake-schema-v1",
@@ -982,7 +1093,7 @@ class PromptStudioDatabaseTests(unittest.TestCase):
 
         connection = sqlite3.connect(self.db_path)
         try:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 1)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
         finally:
             connection.close()
 
@@ -1018,6 +1129,54 @@ class PromptStudioDatabaseTests(unittest.TestCase):
 
         status = db.get_database_status(self.db_path)
         self.assertFalse(status["compatible"])
+
+    def test_model_research_foreign_keys_are_required_by_schema_integrity(self):
+        mutations = {
+            "snapshot_run": (
+                "CREATE TABLE IF NOT EXISTS model_evidence_snapshots (\n"
+                "    id TEXT PRIMARY KEY,\n"
+                "    run_id TEXT NOT NULL REFERENCES model_research_runs(id),",
+                "CREATE TABLE IF NOT EXISTS model_evidence_snapshots (\n"
+                "    id TEXT PRIMARY KEY,\n"
+                "    run_id TEXT NOT NULL,",
+            ),
+            "claim_run": (
+                "CREATE TABLE IF NOT EXISTS model_evidence_claims (\n"
+                "    id TEXT PRIMARY KEY,\n"
+                "    run_id TEXT NOT NULL REFERENCES model_research_runs(id),",
+                "CREATE TABLE IF NOT EXISTS model_evidence_claims (\n"
+                "    id TEXT PRIMARY KEY,\n"
+                "    run_id TEXT NOT NULL,",
+            ),
+            "profile_parent": (
+                "parent_version_id TEXT REFERENCES model_profile_versions(id),",
+                "parent_version_id TEXT,",
+            ),
+            "profile_run": (
+                "research_run_id TEXT REFERENCES model_research_runs(id),",
+                "research_run_id TEXT,",
+            ),
+        }
+        for label, (old, new) in mutations.items():
+            with self.subTest(foreign_key=label):
+                path = Path(self.tempdir.name) / f"missing-{label}.db"
+                broken_schema = db.SCHEMA.replace(old, new, 1)
+                self.assertNotEqual(broken_schema, db.SCHEMA)
+                connection = sqlite3.connect(path)
+                try:
+                    connection.executescript(broken_schema)
+                    connection.execute(
+                        f"PRAGMA user_version = {db.SCHEMA_VERSION}"
+                    )
+                    connection.execute(
+                        f"PRAGMA application_id = {db.APPLICATION_ID}"
+                    )
+                    connection.commit()
+                finally:
+                    connection.close()
+
+                status = db.get_database_status(path)
+                self.assertFalse(status["compatible"])
 
     def test_settings_preserve_explicit_null(self):
         saved = db.put_settings({"optionalValue": None}, self.db_path)

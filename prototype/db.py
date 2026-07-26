@@ -21,7 +21,7 @@ DEFAULT_DB_PATH = Path(
     os.environ.get("PROMPT_STUDIO_DB", ROOT / "data" / "prompt_studio.db")
 )
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 APPLICATION_ID = 0x41505354  # "APST"
 RECOVERY_DIRECTORY_NAME = ".prompt-studio-recovery"
 _INIT_LOCK = threading.Lock()
@@ -292,6 +292,33 @@ EXPECTED_INDEX_COLUMNS = {
     "idx_resources_type": ("type",),
     "idx_favorites_type_created": ("type", "created_at"),
     "idx_model_profile_one_active": ("profile_id",),
+}
+
+V1_TABLE_NAMES = frozenset(
+    {"projects", "prompt_versions", "resources", "favorites", "settings"}
+)
+V1_INDEX_NAMES = frozenset(
+    {
+        "idx_prompt_versions_project",
+        "idx_resources_type",
+        "idx_favorites_type_created",
+    }
+)
+
+EXPECTED_FOREIGN_KEYS = {
+    "prompt_versions": {
+        ("projects", "project_id", "id", "CASCADE"),
+    },
+    "model_evidence_snapshots": {
+        ("model_research_runs", "run_id", "id", "NO ACTION"),
+    },
+    "model_evidence_claims": {
+        ("model_research_runs", "run_id", "id", "NO ACTION"),
+    },
+    "model_profile_versions": {
+        ("model_profile_versions", "parent_version_id", "id", "NO ACTION"),
+        ("model_research_runs", "research_run_id", "id", "NO ACTION"),
+    },
 }
 
 
@@ -767,7 +794,9 @@ def _assert_database_integrity(connection: sqlite3.Connection) -> None:
         raise DatabaseSchemaError("数据库完整性检查未通过")
 
 
-def _validate_schema(connection: sqlite3.Connection) -> None:
+def _validate_schema(
+    connection: sqlite3.Connection, *, schema_version: int = SCHEMA_VERSION
+) -> None:
     executable_schema_objects = connection.execute(
         """
         SELECT type, name FROM sqlite_master
@@ -781,8 +810,26 @@ def _validate_schema(connection: sqlite3.Connection) -> None:
         )
         raise DatabaseSchemaError(f"数据库包含不允许的触发器或视图：{labels}")
 
+    expected_columns_by_table = (
+        {
+            name: columns
+            for name, columns in EXPECTED_SCHEMA_COLUMNS.items()
+            if name in V1_TABLE_NAMES
+        }
+        if schema_version in {0, 1}
+        else EXPECTED_SCHEMA_COLUMNS
+    )
+    expected_indexes = (
+        {
+            name: columns
+            for name, columns in EXPECTED_INDEX_COLUMNS.items()
+            if name in V1_INDEX_NAMES
+        }
+        if schema_version in {0, 1}
+        else EXPECTED_INDEX_COLUMNS
+    )
     tables = _user_tables(connection)
-    expected_tables = set(EXPECTED_SCHEMA_COLUMNS)
+    expected_tables = set(expected_columns_by_table)
     if tables != expected_tables:
         missing = sorted(expected_tables - tables)
         extra = sorted(tables - expected_tables)
@@ -793,7 +840,7 @@ def _validate_schema(connection: sqlite3.Connection) -> None:
             details.append(f"未知表：{', '.join(extra)}")
         raise DatabaseSchemaError("数据库结构不兼容（" + "；".join(details) + "）")
 
-    for table_name, expected_columns in EXPECTED_SCHEMA_COLUMNS.items():
+    for table_name, expected_columns in expected_columns_by_table.items():
         rows = connection.execute(f'PRAGMA table_info("{table_name}")').fetchall()
         actual_columns = tuple(
             (
@@ -807,7 +854,7 @@ def _validate_schema(connection: sqlite3.Connection) -> None:
         if actual_columns != expected_columns:
             raise DatabaseSchemaError(f"数据库表 {table_name} 的字段结构不兼容")
 
-    for index_name, expected_columns in EXPECTED_INDEX_COLUMNS.items():
+    for index_name, expected_columns in expected_indexes.items():
         index_row = connection.execute(
             "SELECT tbl_name FROM sqlite_master WHERE type = 'index' AND name = ?",
             (index_name,),
@@ -836,13 +883,14 @@ def _validate_schema(connection: sqlite3.Connection) -> None:
         " ",
         active_index_sql_row["sql"] if active_index_sql_row else "",
     ).casefold()
-    if (
-        active_index is None
-        or int(active_index["unique"]) != 1
-        or int(active_index["partial"]) != 1
-        or "where lifecycle_status = 'active'" not in active_index_sql
-    ):
-        raise DatabaseSchemaError("model active-version index is incompatible")
+    if schema_version >= 2:
+        if (
+            active_index is None
+            or int(active_index["unique"]) != 1
+            or int(active_index["partial"]) != 1
+            or "where lifecycle_status = 'active'" not in active_index_sql
+        ):
+            raise DatabaseSchemaError("model active-version index is incompatible")
 
     unique_version_index = False
     for row in connection.execute('PRAGMA index_list("prompt_versions")').fetchall():
@@ -854,6 +902,25 @@ def _validate_schema(connection: sqlite3.Connection) -> None:
             break
     if not unique_version_index:
         raise DatabaseSchemaError("提示词版本唯一约束缺失")
+
+    for table_name, expected_constraints in EXPECTED_FOREIGN_KEYS.items():
+        if table_name not in expected_tables:
+            continue
+        actual_constraints = {
+            (
+                row["table"],
+                row["from"],
+                row["to"],
+                str(row["on_delete"]).upper(),
+            )
+            for row in connection.execute(
+                f'PRAGMA foreign_key_list("{table_name}")'
+            ).fetchall()
+        }
+        if actual_constraints != expected_constraints:
+            raise DatabaseSchemaError(
+                f"database foreign keys for {table_name} are incompatible"
+            )
 
     foreign_keys = connection.execute(
         'PRAGMA foreign_key_list("prompt_versions")'
@@ -880,7 +947,7 @@ def _classify_database(connection: sqlite3.Connection) -> dict:
         raise UnsupportedDatabaseVersionError(
             f"数据库版本 {schema_version} 高于当前支持版本 {SCHEMA_VERSION}"
         )
-    if schema_version not in {0, SCHEMA_VERSION}:
+    if schema_version not in {0, 1, SCHEMA_VERSION}:
         raise UnsupportedDatabaseVersionError(f"不支持数据库版本 {schema_version}")
     if application_id not in {0, APPLICATION_ID}:
         raise DatabaseSchemaError("数据库不是 Anima Prompt Studio 数据库")
@@ -895,10 +962,18 @@ def _classify_database(connection: sqlite3.Connection) -> dict:
             }
         raise DatabaseSchemaError("数据库已标记版本，但缺少业务表")
 
-    _validate_schema(connection)
+    _validate_schema(connection, schema_version=schema_version)
     if schema_version == 0:
         return {
             "kind": "legacy",
+            "schemaVersion": schema_version,
+            "applicationId": application_id,
+        }
+    if schema_version == 1:
+        if application_id != APPLICATION_ID:
+            raise DatabaseSchemaError("v1 database is missing the application identifier")
+        return {
+            "kind": "v1",
             "schemaVersion": schema_version,
             "applicationId": application_id,
         }
@@ -931,12 +1006,13 @@ def recovery_directory(db_path: Path | str | None = None) -> Path:
     return get_db_path(db_path).parent / RECOVERY_DIRECTORY_NAME
 
 
-def _create_recovery_snapshot(path: Path) -> Path:
+def _create_recovery_snapshot(path: Path, expected_kind: str) -> Path:
     target_directory = recovery_directory(path)
     target_directory.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     target = target_directory / (
-        f"{path.stem}.pre-v0-to-v{SCHEMA_VERSION}.{timestamp}.{uuid.uuid4().hex[:8]}.db"
+        f"{path.stem}.pre-{expected_kind}-to-v{SCHEMA_VERSION}."
+        f"{timestamp}.{uuid.uuid4().hex[:8]}.db"
     )
     temporary = target.with_name(f"{target.name}.part")
     source: sqlite3.Connection | None = None
@@ -948,7 +1024,7 @@ def _create_recovery_snapshot(path: Path) -> Path:
         destination.execute("PRAGMA foreign_keys = ON")
         source.backup(destination)
         snapshot_state = _classify_database(destination)
-        if snapshot_state["kind"] != "legacy":
+        if snapshot_state["kind"] != expected_kind:
             raise DatabaseSchemaError("迁移前回滚快照版本不正确")
         destination.close()
         destination = None
@@ -967,6 +1043,21 @@ def _create_recovery_snapshot(path: Path) -> Path:
         if source is not None:
             source.close()
         temporary.unlink(missing_ok=True)
+
+
+def _migrate_to_v2(connection: sqlite3.Connection) -> None:
+    """Apply the additive research schema inside the caller's transaction."""
+
+    model_objects = (
+        "model_research_runs",
+        "model_evidence_snapshots",
+        "model_evidence_claims",
+        "model_profile_versions",
+        "idx_model_profile_one_active",
+    )
+    for statement in _schema_statements():
+        if any(object_name in statement for object_name in model_objects):
+            connection.execute(statement)
 
 
 @contextmanager
@@ -997,8 +1088,9 @@ def init_db(db_path: Path | str | None = None) -> Path:
             if state["kind"] == "current":
                 connection.rollback()
                 return path
-            if state["kind"] == "legacy":
-                _create_recovery_snapshot(path)
+            if state["kind"] in {"legacy", "v1"}:
+                _create_recovery_snapshot(path, state["kind"])
+                _migrate_to_v2(connection)
             elif state["kind"] == "empty":
                 for statement in _schema_statements():
                     connection.execute(statement)
@@ -1060,7 +1152,7 @@ def get_database_status(db_path: Path | str | None = None) -> dict:
         )
         state = _classify_database(connection)
         status["initialized"] = state["kind"] == "current"
-        status["needsMigration"] = state["kind"] in {"legacy", "empty"}
+        status["needsMigration"] = state["kind"] in {"legacy", "v1", "empty"}
         status["integrity"] = "ok"
         status["state"] = state["kind"]
     except (DatabaseSchemaError, sqlite3.DatabaseError) as error:
