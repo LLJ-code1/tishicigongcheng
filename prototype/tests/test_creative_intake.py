@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import creative_intake  # noqa: E402
+from recipe import BLOCK_IDS  # noqa: E402
 
 
 class PromptStudioCreativeIntakeTests(unittest.TestCase):
@@ -512,6 +513,96 @@ class PromptStudioCreativeIntakeTests(unittest.TestCase):
         self.assertIsNone(selected["decomposition"])
         self.assertEqual(selected["recipeStatus"], "stale")
 
+    def test_versioned_decomposition_normalizes_exact_recipe_order_and_lineage(self):
+        value = state_with_decomposition()
+
+        normalized = creative_intake.normalize_creative_intake(value)
+
+        decomposition = normalized["decomposition"]
+        self.assertEqual(tuple(block["id"] for block in decomposition["blocks"]), BLOCK_IDS)
+        self.assertEqual(
+            decomposition["briefContentSha256"],
+            creative_intake.canonical_brief_sha256(normalized["brief"]),
+        )
+        self.assertEqual(decomposition["profileVersionId"], "profile-version-7")
+        self.assertEqual(decomposition["profileContentSha256"], "a" * 64)
+        self.assertEqual(decomposition["blocks"][0]["ruleRefs"], [])
+        self.assertEqual(
+            decomposition["blocks"][1]["ruleRefs"],
+            [{
+                "claimId": "claim-prompt-language",
+                "fieldPath": "prompting.language",
+                "evidenceRefs": ["snapshot-official"],
+            }],
+        )
+
+    def test_versioned_decomposition_rejects_bad_lineage_order_and_rule_refs(self):
+        cases = []
+        bad = state_with_decomposition()
+        bad["decomposition"]["blocks"].reverse()
+        cases.append(("canonical order", bad))
+        bad = state_with_decomposition()
+        bad["decomposition"]["briefContentSha256"] = "0" * 64
+        cases.append(("brief", bad))
+        bad = state_with_decomposition()
+        bad["decomposition"]["profileVersionId"] = ""
+        cases.append(("profileVersionId", bad))
+        bad = state_with_decomposition()
+        bad["decomposition"]["profileContentSha256"] = "A" * 64
+        cases.append(("profileContentSha256", bad))
+        bad = state_with_decomposition()
+        bad["decomposition"]["blocks"][0]["ruleRefs"] = [
+            rule_ref("claim-one"),
+            rule_ref("claim-one"),
+        ]
+        cases.append(("duplicate", bad))
+        bad = state_with_decomposition()
+        bad["decomposition"]["blocks"][0]["ruleRefs"] = [
+            {**rule_ref("claim-one"), "surprise": True}
+        ]
+        cases.append(("unsupported fields", bad))
+        bad = state_with_decomposition()
+        bad["decomposition"]["blocks"][0]["ruleRefs"] = [
+            {**rule_ref("claim-one"), "evidenceRefs": ["unsafe ref"]}
+        ]
+        cases.append(("whitespace", bad))
+
+        for message, value in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(
+                creative_intake.CreativeIntakeValidationError, message
+            ):
+                creative_intake.normalize_creative_intake(value)
+
+    def test_locked_decomposition_block_must_retain_confirmed_brief_source(self):
+        state = state_at_model_selected()
+        decomposition = approved_decomposition(state["brief"])
+        decomposition["blocks"][0]["locked"] = True
+        decomposition["blocks"][0]["source"] = {"type": "ai", "refId": None}
+
+        with self.assertRaisesRegex(
+            creative_intake.CreativeIntakeValidationError, "locked.*source"
+        ):
+            creative_intake.apply_creative_intake_transition(
+                state,
+                {"type": "set_decomposition_draft", "decomposition": decomposition},
+            )
+
+    def test_draft_approval_can_change_but_confirmation_requires_all_thirteen(self):
+        state = state_at_model_selected()
+        decomposition = approved_decomposition(state["brief"])
+        decomposition["blocks"][-1]["approved"] = False
+        draft = creative_intake.apply_creative_intake_transition(
+            state,
+            {"type": "set_decomposition_draft", "decomposition": decomposition},
+        )
+        self.assertFalse(draft["decomposition"]["blocks"][-1]["approved"])
+        with self.assertRaisesRegex(
+            creative_intake.CreativeIntakeValidationError, "approved"
+        ):
+            creative_intake.apply_creative_intake_transition(
+                draft, {"type": "confirm_decomposition"}
+            )
+
     def test_failed_transition_leaves_source_untouched(self):
         state = creative_intake.empty_creative_intake()
         snapshot = creative_intake.normalize_creative_intake(state)
@@ -556,17 +647,26 @@ def conflict(identifier):
     }
 
 
-def decomposition_block(identifier):
+def rule_ref(claim_id):
+    return {
+        "claimId": claim_id,
+        "fieldPath": "prompting.language",
+        "evidenceRefs": ["snapshot-official"],
+    }
+
+
+def decomposition_block(identifier, *, source=None, locked=False):
     return {
         "id": identifier,
         "category": "action",
         "zh": "奔跑",
         "en": "running",
-        "source": {"type": "user", "refId": None},
-        "locked": False,
+        "source": source or {"type": "user", "refId": None},
+        "locked": locked,
         "approved": False,
         "reason": "From the brief.",
         "risks": [],
+        "ruleRefs": [] if identifier == BLOCK_IDS[0] else [rule_ref("claim-prompt-language")],
     }
 
 
@@ -591,7 +691,8 @@ def state_with_decomposition():
     value["brief"]["status"] = "confirmed"
     value["brief"]["items"][0]["locked"] = True
     value["selectedModelProfileId"] = "anima-1.1-v1"
-    value["decomposition"] = {"status": "draft", "blocks": [decomposition_block("block-1")]}
+    value["decomposition"] = approved_decomposition(value["brief"])
+    value["decomposition"]["status"] = "draft"
     value["recipeStatus"] = "stale"
     return value
 
@@ -641,15 +742,35 @@ def draft_brief(locked=False):
     }
 
 
-def approved_decomposition():
+def approved_decomposition(brief=None):
+    brief = brief or confirmed_brief()
+    blocks = []
+    for index, identifier in enumerate(BLOCK_IDS):
+        source = brief["items"][0]["source"] if index == 0 else {"type": "ai", "refId": None}
+        blocks.append({
+            **decomposition_block(identifier, source=source, locked=index == 0),
+            "approved": True,
+        })
     return {
         "status": "draft",
-        "blocks": [{**decomposition_block("block-1"), "approved": True}],
+        "briefContentSha256": creative_intake.canonical_brief_sha256(brief),
+        "profileVersionId": "profile-version-7",
+        "profileContentSha256": "a" * 64,
+        "blocks": blocks,
     }
 
 
 def draft_decomposition():
-    return {"status": "draft", "blocks": [decomposition_block("block-1")]}
+    value = approved_decomposition()
+    for block in value["blocks"]:
+        block["approved"] = False
+    return value
+
+
+def confirmed_brief():
+    value = draft_brief(locked=True)
+    value["status"] = "confirmed"
+    return value
 
 
 def state_at_brief_draft():

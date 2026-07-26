@@ -1,5 +1,10 @@
 import copy
+import hashlib
+import json
+import re
 from collections.abc import Mapping
+
+from recipe import BLOCK_IDS
 
 
 SCHEMA_VERSION = 1
@@ -40,6 +45,7 @@ _RECIPE_STATUSES = {"missing", "stale", "ready"}
 _SOURCE_TYPES = {"user", "image", "ai", "model_rule"}
 _DECOMPOSITION_STATUSES = {"draft", "confirmed"}
 _CONFLICT_STATUSES = {"open", "resolved"}
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _error(code: str, message: str) -> None:
@@ -110,6 +116,23 @@ def _unique_text_array(value: object, label: str, *, maximum: int) -> list[str]:
     if len(normalized) != len(set(normalized)):
         _error("duplicate_value", f"{label} contains duplicate values")
     return normalized
+
+
+def _sha256(value: object, label: str) -> str:
+    digest = _text(value, label, maximum=64, allow_empty=False)
+    if not _SHA256_PATTERN.fullmatch(digest):
+        _error("invalid_sha256", f"{label} must be a lowercase SHA-256 digest")
+    return digest
+
+
+def canonical_brief_sha256(brief: Mapping[str, object]) -> str:
+    payload = json.dumps(
+        brief,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _source(value: object, image_ids: set[str], label: str) -> dict:
@@ -199,11 +222,59 @@ def _brief(value: object, image_ids: set[str]) -> dict | None:
     }
 
 
-def _decomposition(value: object, image_ids: set[str]) -> dict | None:
+def _rule_refs(value: object, label: str) -> list[dict]:
+    raw_rules = _array(value, label, maximum=200)
+    rules = []
+    for index, value in enumerate(raw_rules):
+        path = f"{label}[{index}]"
+        rule = _mapping(value, path)
+        _reject_unknown_keys(
+            rule, {"claimId", "fieldPath", "evidenceRefs"}, path
+        )
+        raw_refs = _array(
+            rule.get("evidenceRefs"), f"{path}.evidenceRefs", maximum=200
+        )
+        evidence_refs = [
+            _identifier(ref, f"{path}.evidenceRefs[{ref_index}]")
+            for ref_index, ref in enumerate(raw_refs)
+        ]
+        if len(evidence_refs) != len(set(evidence_refs)):
+            _error("duplicate_id", f"{path}.evidenceRefs contains duplicate IDs")
+        rules.append(
+            {
+                "claimId": _identifier(rule.get("claimId"), f"{path}.claimId"),
+                "fieldPath": _text(
+                    rule.get("fieldPath"),
+                    f"{path}.fieldPath",
+                    maximum=512,
+                    allow_empty=False,
+                ),
+                "evidenceRefs": evidence_refs,
+            }
+        )
+    claim_ids = [rule["claimId"] for rule in rules]
+    if len(claim_ids) != len(set(claim_ids)):
+        _error("duplicate_id", f"{label} contains duplicate claim IDs")
+    return rules
+
+
+def _decomposition(
+    value: object, image_ids: set[str], brief: dict | None
+) -> dict | None:
     if value is None:
         return None
     decomposition = _mapping(value, "decomposition")
-    _reject_unknown_keys(decomposition, {"status", "blocks"}, "decomposition")
+    _reject_unknown_keys(
+        decomposition,
+        {
+            "status",
+            "briefContentSha256",
+            "profileVersionId",
+            "profileContentSha256",
+            "blocks",
+        },
+        "decomposition",
+    )
     status = _text(
         decomposition.get("status"), "decomposition.status", maximum=32, allow_empty=False
     )
@@ -215,7 +286,10 @@ def _decomposition(value: object, image_ids: set[str]) -> dict | None:
         block = _mapping(value, f"decomposition.blocks[{index}]")
         _reject_unknown_keys(
             block,
-            {"id", "category", "zh", "en", "source", "locked", "approved", "reason", "risks"},
+            {
+                "id", "category", "zh", "en", "source", "locked", "approved",
+                "reason", "risks", "ruleRefs",
+            },
             f"decomposition.blocks[{index}]",
         )
         locked = block.get("locked")
@@ -233,10 +307,59 @@ def _decomposition(value: object, image_ids: set[str]) -> dict | None:
                 "approved": approved,
                 "reason": _text(block.get("reason"), f"decomposition.blocks[{index}].reason", maximum=200_000),
                 "risks": _unique_text_array(block.get("risks"), f"decomposition.blocks[{index}].risks", maximum=100),
+                "ruleRefs": _rule_refs(
+                    block.get("ruleRefs", []), f"decomposition.blocks[{index}].ruleRefs"
+                ),
             }
         )
     _unique_identifiers(blocks, "decomposition.blocks")
-    return {"status": status, "blocks": blocks}
+    if brief is not None and tuple(block["id"] for block in blocks) != BLOCK_IDS:
+        _error(
+            "invalid_block_order",
+            "decomposition.blocks must contain all thirteen blocks in canonical order",
+        )
+    brief_hash = (
+        "0" * 64
+        if brief is None
+        else _sha256(
+            decomposition.get("briefContentSha256"),
+            "decomposition.briefContentSha256",
+        )
+    )
+    if brief is not None and brief_hash != canonical_brief_sha256(brief):
+        _error(
+            "brief_lineage_mismatch",
+            "decomposition.briefContentSha256 does not match the current brief",
+        )
+    brief_sources = [] if brief is None else [item["source"] for item in brief["items"]]
+    if brief is not None and any(
+        block["locked"] and block["source"] not in brief_sources for block in blocks
+    ):
+        _error(
+            "locked_source_mismatch",
+            "locked decomposition blocks must retain a confirmed brief source",
+        )
+    return {
+        "status": status,
+        "briefContentSha256": brief_hash,
+        "profileVersionId": (
+            "__invalid_stage__"
+            if brief is None
+            else _identifier(
+                decomposition.get("profileVersionId"),
+                "decomposition.profileVersionId",
+            )
+        ),
+        "profileContentSha256": (
+            "0" * 64
+            if brief is None
+            else _sha256(
+                decomposition.get("profileContentSha256"),
+                "decomposition.profileContentSha256",
+            )
+        ),
+        "blocks": blocks,
+    }
 
 
 def _conflicts(value: object) -> list[dict]:
@@ -416,7 +539,7 @@ def normalize_creative_intake(value: object) -> dict:
     selected_model_profile_id = intake.get("selectedModelProfileId")
     if selected_model_profile_id is not None:
         selected_model_profile_id = _identifier(selected_model_profile_id, "selectedModelProfileId")
-    decomposition = _decomposition(intake.get("decomposition"), image_ids)
+    decomposition = _decomposition(intake.get("decomposition"), image_ids, brief)
     recipe_status = _text(intake.get("recipeStatus"), "recipeStatus", maximum=32, allow_empty=False)
     if recipe_status not in _RECIPE_STATUSES:
         _error("unsupported_recipe_status", "recipeStatus is unsupported")
@@ -636,7 +759,9 @@ def _set_decomposition_draft(state: dict, command: Mapping[str, object]) -> dict
     if state["selectedModelProfileId"] is None:
         _error("missing_model", "model selection is required before setting a decomposition draft")
     image_ids = {image["id"] for image in state["inputs"]["images"]}
-    decomposition = _decomposition(command.get("decomposition"), image_ids)
+    decomposition = _decomposition(
+        command.get("decomposition"), image_ids, state["brief"]
+    )
     if decomposition is None:
         _error("invalid_decomposition", "action.decomposition must be an object")
     if decomposition["status"] != "draft":
@@ -726,6 +851,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "STAGES",
     "apply_creative_intake_transition",
+    "canonical_brief_sha256",
     "empty_creative_intake",
     "normalize_creative_intake",
 ]
