@@ -3219,6 +3219,29 @@ select:focus {
   line-height: 1.5;
 }
 
+.creative-director-skill-settings > p,
+.creative-director-skill-settings > small {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.creative-director-skill-settings textarea {
+  width: 100%;
+  min-height: 210px;
+  resize: vertical;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.skill-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .director-model-profile-status {
   padding: 8px;
   border: 1px solid var(--line);

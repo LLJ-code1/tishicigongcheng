@@ -903,6 +903,33 @@
             </div>
           </section>
 
+          <section class="settings-section creative-director-skill-settings">
+            <div class="mini-heading">
+              <h3>创作总监 Skill</h3>
+              <span id="creativeDirectorSkillCount">0 / 100000</span>
+            </div>
+            <p>
+              默认 Skill 保持只读并随程序更新；这里保存的内容仅作为覆盖版本，用于调整追问策略与表达方式。
+            </p>
+            <label for="creativeDirectorSkillEditor">自定义覆盖</label>
+            <textarea
+              id="creativeDirectorSkillEditor"
+              rows="12"
+              maxlength="100000"
+              spellcheck="false"
+              placeholder="留空时使用内置默认 Skill"
+            ></textarea>
+            <div class="skill-editor-actions">
+              <button id="creativeDirectorSkillReset" class="secondary-button" type="button">
+                恢复默认
+              </button>
+              <button id="creativeDirectorSkillSave" class="primary-button" type="button">
+                保存 Skill
+              </button>
+            </div>
+            <small>Skill 内容不会包含或显示 API Key；保存后从下一次创作总监请求开始生效。</small>
+          </section>
+
           <section class="settings-section">
             <h3>图片推理来源</h3>
             <div class="segmented" data-setting-group="visionProvider">

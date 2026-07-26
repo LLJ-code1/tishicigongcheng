@@ -182,6 +182,15 @@
     return payload;
   }
 
+  function normalizeCreativeDirectorSkillOverride(value) {
+    if (typeof value !== "string") return "";
+    const length = Array.from(value).length;
+    if (length > 100_000) {
+      throw new TypeError("creative director Skill override exceeds 100000 characters");
+    }
+    return value.trim() ? value : "";
+  }
+
   function enqueueByKey(queue, key, task) {
     const previous = queue.get(key) || Promise.resolve();
     const current = previous.catch(() => undefined).then(task);
@@ -3602,6 +3611,7 @@
     statusLabel,
     projectSettingsMetadata,
     settingsWritePayload,
+    normalizeCreativeDirectorSkillOverride,
     enqueueByKey,
     isWorkspaceRequestCurrent,
     isCreativeIntakeResponseCurrent,
@@ -7472,6 +7482,13 @@
       }
     });
 
+    const skillEditor = $("#creativeDirectorSkillEditor");
+    if (skillEditor && document.activeElement !== skillEditor) {
+      skillEditor.value =
+        state.settings.creativeDirectorSkillOverride || "";
+    }
+    updateCreativeDirectorSkillCount();
+
     $("#drawerModelList").innerHTML = Object.values(state.analyzers)
       .filter((model) => model.id !== "external")
       .map(
@@ -7491,6 +7508,13 @@
       ["ready", "running", "waiting"].includes(model.status)
     ).length;
     $("#memoryEstimate").textContent = `预计显存 ${loaded ? (loaded * 2.4).toFixed(1) : "0"} GB`;
+  }
+
+  function updateCreativeDirectorSkillCount() {
+    const editor = $("#creativeDirectorSkillEditor");
+    const counter = $("#creativeDirectorSkillCount");
+    if (!editor || !counter) return;
+    counter.textContent = `${Array.from(editor.value).length} / 100000`;
   }
 
   function renderResourceDialog() {
@@ -7787,6 +7811,45 @@
   document.addEventListener("click", (event) => {
     const button = event.target.closest("button");
     if (!button) return;
+
+    if (button.id === "creativeDirectorSkillSave") {
+      const editor = $("#creativeDirectorSkillEditor");
+      if (!editor) return;
+      try {
+        state = app.reduceState(state, {
+          type: "SET_SETTING",
+          key: "creativeDirectorSkillOverride",
+          value: app.normalizeCreativeDirectorSkillOverride(editor.value),
+        });
+        state.toast = state.settings.creativeDirectorSkillOverride
+          ? "创作总监 Skill 覆盖已保存。"
+          : "已使用内置默认 Skill。";
+        saveSettings();
+        render();
+      } catch (error) {
+        state.toast = error.message;
+        renderToast();
+      }
+      return;
+    }
+    if (button.id === "creativeDirectorSkillReset") {
+      if (
+        !window.confirm(
+          "确定恢复内置默认 Skill？当前自定义覆盖将被清空。"
+        )
+      ) {
+        return;
+      }
+      state = app.reduceState(state, {
+        type: "SET_SETTING",
+        key: "creativeDirectorSkillOverride",
+        value: "",
+      });
+      state.toast = "已恢复内置默认 Skill。";
+      saveSettings();
+      render();
+      return;
+    }
 
     if (button.dataset.openProject) {
       openProject(button.dataset.openProject);
@@ -8174,6 +8237,8 @@
       }, 260);
     } else if (event.target.id === "promptTemplateContent") {
       promptTemplateDialog.content = event.target.value;
+    } else if (event.target.id === "creativeDirectorSkillEditor") {
+      updateCreativeDirectorSkillCount();
     } else if (event.target.dataset.mixWeight) {
       const id = event.target.dataset.mixWeight;
       if (artistMix.has(id)) {

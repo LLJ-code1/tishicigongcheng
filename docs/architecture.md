@@ -14,14 +14,15 @@ Prompt Studio 本地后端 :57913
   └─ 本地视觉 worker（WD14 / Florence / JoyCaption / Qwen3-VL）
 ```
 
-## 创意意图数据基础（本阶段）
+## 统一创意导演工作流
 
-本阶段增加的是可版本化、可校验的创意意图会话数据基础，不是新的统一首页或
-导演交互界面。数据流如下：
+统一首页、创意导演调用、单图本地证据、需求卡、模型选择闸门和工作台交接已经接通。
+数据流如下：
 
 ```text
-后续统一输入 UI
-  -> POST /api/creative-intake/transition
+统一文字/单图输入 UI
+  -> POST /api/creative-intake/director（模型仅提出候选动作）
+  -> POST /api/creative-intake/transition（服务器权威转换）
   -> prototype/creative_intake.py（规范化、阶段校验、锁与冲突规则）
   -> 前端接收服务器规范化后的会话
   -> POST /api/workspace/commit
@@ -30,16 +31,17 @@ Prompt Studio 本地后端 :57913
 
 `creative_intake.py` 是创意意图状态转换的唯一权威：调用方可提交一个动作，但
 不能自行确认阶段或绕过已锁定的 brief 条目。服务端返回完整的规范化会话；当前前端
-状态层已实现会话 normalizer、项目保存/恢复和 `isCreativeIntakeResponseCurrent` guard
-helper。统一输入 UI 尚未接线该转换 API；后续接线时必须调用该 guard，按会话修订号
-拒绝过期响应。
+状态层已实现会话 normalizer、项目保存/恢复和多维过期响应 guard。模型返回的展示文案
+不是真实状态；只有经过 `creative_intake.py` 校验的动作才能改变 canonical session。
 
 会话仍跟随现有项目元数据，通过 `workspace/commit` 的同一原子事务保存，因此不会
 增加 SQLite 表或修改 `PRAGMA user_version = 1`。项目重新打开、逻辑备份和隔离恢复
 会保留该元数据；历史项目缺少或带有无效 `creativeIntake` 时，前端安全地回退为空会话。
 
-本阶段**尚未**实现统一首页替换、AI 导演调用、多图交互、模型网页研究，或按模型
-适配的十三块拆解预览 UI；这些能力必须在后续独立阶段消费本会话和转换 API。
+单图字节只发送给本地 `/api/vision/analyze`，外部文本提供商最多接收有界文字证据。
+设置中的 `creativeDirectorSkillOverride` 是内置只读 Skill 的可选覆盖层，最大
+100,000 字符；空字符串表示恢复默认。多图交互、模型网页研究和按模型适配的十三块
+拆解预览仍由后续独立阶段消费本会话和转换 API。
 
 ## 数据边界
 

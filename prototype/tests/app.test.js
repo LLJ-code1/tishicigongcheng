@@ -28,6 +28,7 @@ const {
   statusLabel,
   projectSettingsMetadata,
   settingsWritePayload,
+  normalizeCreativeDirectorSkillOverride,
   enqueueByKey,
   isWorkspaceRequestCurrent,
   emptyCreativeIntake,
@@ -3802,6 +3803,46 @@ test("settings writes omit masked or blank keys but keep newly entered keys", ()
 
   const source = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
   assert.match(source, /已配置；留空保持不变/);
+});
+
+test("creative director Skill override preserves bounded text and uses blank as reset", () => {
+  assert.equal(
+    normalizeCreativeDirectorSkillOverride("每轮只问一个关键问题。\n保留用户已锁定语义。"),
+    "每轮只问一个关键问题。\n保留用户已锁定语义。"
+  );
+  assert.equal(normalizeCreativeDirectorSkillOverride("   \n "), "");
+  assert.throws(
+    () => normalizeCreativeDirectorSkillOverride("x".repeat(100_001)),
+    /100000/
+  );
+  assert.deepEqual(
+    settingsWritePayload({
+      creativeDirectorSkillOverride: "",
+      apiTextKey: "",
+    }),
+    { creativeDirectorSkillOverride: "" }
+  );
+});
+
+test("advanced settings exposes explicit save and confirmed reset for the director Skill", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const source = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+
+  for (const id of [
+    "creativeDirectorSkillEditor",
+    "creativeDirectorSkillCount",
+    "creativeDirectorSkillSave",
+    "creativeDirectorSkillReset",
+  ]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  assert.match(html, /默认 Skill 保持只读/);
+  assert.match(source, /normalizeCreativeDirectorSkillOverride/);
+  assert.match(source, /creativeDirectorSkillReset/);
+  assert.match(source, /window\.confirm/);
+  assert.match(source, /creativeDirectorSkillOverride:\s*""/);
+  assert.match(source, /saveSettings\(\)/);
+  assert.doesNotMatch(source, /creativeDirectorSkillEditor[\s\S]{0,500}apiTextKey/);
 });
 
 test("favorite persistence keeps the server-generated deletion id", () => {

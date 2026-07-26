@@ -1,5 +1,17 @@
 # 数据模型
 
+## 创意导演会话与 Skill 覆盖
+
+`projects.metadata_json.creativeIntake` 保存服务器规范化的创作会话，包括阶段、输入的
+安全图片引用、方向、需求卡、来源、锁、冲突、模型档案选择和下游失效状态。图片二进制、
+本地路径、API Key 和模型返回的临时展示消息不进入该字段。需求卡和模型选择通过
+metadata-only workspace commit 保存，不会伪造 Recipe 版本。
+
+`settings.creativeDirectorSkillOverride` 是全局设置，不属于项目或 Recipe。值为空时使用
+`prototype/prompts/creative_director.md`；非空值在下一次导演请求中覆盖默认 Skill。
+服务器限制其为不超过 100,000 字符的字符串，并继续执行固定的结构化输出、动作白名单、
+密钥回显和服务器权威转换约束，因此自定义 Skill 不能解除安全边界。
+
 ## 数据库结构版本
 
 Prompt Studio SQLite 当前为 schema v1，并使用专用 `application_id` 防止把其他

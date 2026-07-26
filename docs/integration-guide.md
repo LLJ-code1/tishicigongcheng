@@ -1,5 +1,20 @@
 # Prompt Studio API 接入指南
 
+## 创意导演接入
+
+`POST /api/creative-intake/director` 接收当前 canonical session、用户文字、推理来源、
+可选的 Skill 覆盖和有界本地图像文字证据。外部文本提供商不得接收图片字节、文件路径
+或 API Key。模型响应只允许 `message` 和一个候选 `action`；确认需求卡、选择模型等
+越权动作会被拒绝。
+
+客户端随后把候选动作提交到 `POST /api/creative-intake/transition`。只有该接口返回的
+完整规范会话可以替换本地 canonical session，并且响应修订号必须恰好增加 1。保存使用
+metadata-only `POST /api/workspace/commit`，与尚未保存的 Recipe 编辑相互隔离。
+
+全局 `PUT /api/settings` 可写 `creativeDirectorSkillOverride`。空字符串恢复
+`prototype/prompts/creative_director.md`；最大长度 100,000 字符。`GET /api/settings`
+永不回显 API Key，Skill 编辑器也不读取或展示密钥字段。
+
 本文面向需要调用本地 Prompt Studio HTTP 服务的前端或脚本。默认地址为
 `http://127.0.0.1:57913`；所有写接口只接受同源的 UTF-8
 `application/json`，备份上传接口除外。
