@@ -51,6 +51,68 @@ function confirmedBriefFixture() {
   };
 }
 
+function creativeIntakeStageFixture(stage) {
+  const value = {
+    ...emptyCreativeIntake(),
+    revision: [
+      "intake",
+      "direction_selected",
+      "brief_draft",
+      "brief_confirmed",
+      "model_selected",
+      "decomposition_draft",
+      "decomposition_confirmed",
+    ].indexOf(stage),
+    stage,
+  };
+  if (stage === "intake") return value;
+
+  value.directions = [
+    { id: "direction-one", label: "Runway", summary: "A runway study." },
+  ];
+  value.selectedDirectionId = "direction-one";
+  if (stage === "direction_selected") return value;
+
+  value.brief = {
+    ...confirmedBriefFixture(),
+    status: "draft",
+    items: confirmedBriefFixture().items.map((item) => ({
+      ...item,
+      locked: false,
+    })),
+  };
+  if (stage === "brief_draft") return value;
+
+  value.brief = confirmedBriefFixture();
+  if (stage === "brief_confirmed") return value;
+
+  value.selectedModelProfileId = "anima-1.1-v1";
+  value.recipeStatus = "stale";
+  if (stage === "model_selected") return value;
+
+  value.decomposition = {
+    status: "draft",
+    blocks: [
+      {
+        id: "block-one",
+        category: "outfit",
+        zh: "红裙",
+        en: "red dress",
+        source: { type: "user", refId: null },
+        locked: false,
+        approved: true,
+        reason: "From the confirmed brief.",
+        risks: [],
+      },
+    ],
+  };
+  if (stage === "decomposition_draft") return value;
+
+  value.decomposition.status = "confirmed";
+  value.recipeStatus = "ready";
+  return value;
+}
+
 function createGeneratedState() {
   const blockIds = [
     "quality",
@@ -227,13 +289,88 @@ test("creative intake fails closed when decomposition precedes model_selected", 
   });
 });
 
+test("creative intake normalization enforces exact cross-field stage invariants", () => {
+  const intakeWithSelection = creativeIntakeStageFixture("intake");
+  intakeWithSelection.directions = [
+    { id: "direction-one", label: "Runway", summary: "A runway study." },
+  ];
+  intakeWithSelection.selectedDirectionId = "direction-one";
+
+  const directionWithBrief = creativeIntakeStageFixture("direction_selected");
+  directionWithBrief.brief = {
+    ...confirmedBriefFixture(),
+    status: "draft",
+  };
+
+  const briefWithoutDraft = creativeIntakeStageFixture("brief_draft");
+  briefWithoutDraft.brief = null;
+
+  const confirmedWithDraft = creativeIntakeStageFixture("brief_confirmed");
+  confirmedWithDraft.brief.status = "draft";
+
+  const modelWithoutSelection = creativeIntakeStageFixture("model_selected");
+  modelWithoutSelection.selectedModelProfileId = null;
+
+  const modelWithDecomposition = creativeIntakeStageFixture("model_selected");
+  modelWithDecomposition.decomposition = {
+    status: "draft",
+    blocks: [],
+  };
+
+  const decompositionWithoutDraft =
+    creativeIntakeStageFixture("decomposition_draft");
+  decompositionWithoutDraft.decomposition = null;
+
+  const confirmedWithDraftDecomposition = creativeIntakeStageFixture(
+    "decomposition_confirmed"
+  );
+  confirmedWithDraftDecomposition.decomposition.status = "draft";
+
+  const confirmedWithStaleRecipe = creativeIntakeStageFixture(
+    "decomposition_confirmed"
+  );
+  confirmedWithStaleRecipe.recipeStatus = "stale";
+
+  const confirmedWithUnlockedItem =
+    creativeIntakeStageFixture("brief_confirmed");
+  confirmedWithUnlockedItem.brief.items[0].locked = false;
+
+  for (const malformed of [
+    intakeWithSelection,
+    directionWithBrief,
+    briefWithoutDraft,
+    confirmedWithDraft,
+    modelWithoutSelection,
+    modelWithDecomposition,
+    decompositionWithoutDraft,
+    confirmedWithDraftDecomposition,
+    confirmedWithStaleRecipe,
+    confirmedWithUnlockedItem,
+  ]) {
+    assert.deepEqual(normalizeCreativeIntake(malformed), emptyCreativeIntake());
+  }
+});
+
+test("creative intake normalization rejects incomplete decomposition draft state", () => {
+  const malformed = {
+    ...emptyCreativeIntake(),
+    revision: 9,
+    stage: "decomposition_draft",
+    directions: [
+      { id: "direction-one", label: "Runway", summary: "A runway study." },
+    ],
+    selectedDirectionId: "direction-one",
+    decomposition: creativeIntakeStageFixture("decomposition_draft").decomposition,
+  };
+
+  assert.deepEqual(normalizeCreativeIntake(malformed), emptyCreativeIntake());
+});
+
 test("persists creative intake in project metadata but not Recipe v1", () => {
   const state = createInitialState();
   state.creativeIntake = {
-    ...emptyCreativeIntake(),
+    ...creativeIntakeStageFixture("brief_confirmed"),
     revision: 4,
-    stage: "brief_confirmed",
-    brief: confirmedBriefFixture(),
   };
 
   assert.deepEqual(
@@ -253,10 +390,8 @@ test("hydrates creative intake from current project metadata", () => {
     metadata: {
       workspaceBaseVersion: 0,
       creativeIntake: {
-        ...emptyCreativeIntake(),
+        ...creativeIntakeStageFixture("brief_confirmed"),
         revision: 4,
-        stage: "brief_confirmed",
-        brief: confirmedBriefFixture(),
       },
     },
     versions: [],

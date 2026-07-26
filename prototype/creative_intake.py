@@ -266,6 +266,89 @@ def _conflicts(value: object) -> list[dict]:
     return conflicts
 
 
+def _validate_stage_invariants(
+    stage: str,
+    selected_direction_id: str | None,
+    brief: dict | None,
+    selected_model_profile_id: str | None,
+    decomposition: dict | None,
+    recipe_status: str,
+) -> None:
+    stage_index = STAGES.index(stage)
+    direction_required = stage_index >= STAGES.index("direction_selected")
+    if (selected_direction_id is not None) != direction_required:
+        requirement = "requires" if direction_required else "does not allow"
+        _error(
+            "direction_stage_mismatch",
+            f"stage {stage} {requirement} a selected direction",
+        )
+
+    if stage_index < STAGES.index("brief_draft"):
+        expected_brief_status = None
+    elif stage == "brief_draft":
+        expected_brief_status = "draft"
+    else:
+        expected_brief_status = "confirmed"
+    if expected_brief_status is None:
+        if brief is not None:
+            _error("brief_stage_mismatch", f"stage {stage} does not allow a brief")
+    elif brief is None or brief["status"] != expected_brief_status:
+        _error(
+            "brief_stage_mismatch",
+            f"stage {stage} requires a {expected_brief_status} brief",
+        )
+    elif expected_brief_status == "confirmed" and any(
+        not item["locked"] for item in brief["items"]
+    ):
+        _error(
+            "brief_lock_mismatch",
+            f"stage {stage} requires every confirmed brief item to be locked",
+        )
+
+    model_required = stage_index >= STAGES.index("model_selected")
+    if (selected_model_profile_id is not None) != model_required:
+        requirement = "requires" if model_required else "does not allow"
+        _error(
+            "model_stage_mismatch",
+            f"stage {stage} {requirement} a selected model",
+        )
+
+    if stage_index < STAGES.index("decomposition_draft"):
+        expected_decomposition_status = None
+    elif stage == "decomposition_draft":
+        expected_decomposition_status = "draft"
+    else:
+        expected_decomposition_status = "confirmed"
+    if expected_decomposition_status is None:
+        if decomposition is not None:
+            _error(
+                "decomposition_stage_mismatch",
+                f"stage {stage} does not allow a decomposition",
+            )
+    elif (
+        decomposition is None
+        or decomposition["status"] != expected_decomposition_status
+    ):
+        _error(
+            "decomposition_stage_mismatch",
+            f"stage {stage} requires a {expected_decomposition_status} decomposition",
+        )
+
+    if stage_index <= STAGES.index("direction_selected"):
+        allowed_recipe_statuses = {"missing"}
+    elif stage_index <= STAGES.index("brief_confirmed"):
+        allowed_recipe_statuses = {"missing", "stale"}
+    elif stage_index <= STAGES.index("decomposition_draft"):
+        allowed_recipe_statuses = {"stale"}
+    else:
+        allowed_recipe_statuses = {"ready"}
+    if recipe_status not in allowed_recipe_statuses:
+        _error(
+            "recipe_stage_mismatch",
+            f"recipeStatus {recipe_status} is invalid for stage {stage}",
+        )
+
+
 def normalize_creative_intake(value: object) -> dict:
     """Return the canonical Creative-Intake v1 state or raise a typed error."""
 
@@ -320,10 +403,14 @@ def normalize_creative_intake(value: object) -> dict:
         _error("unsupported_recipe_status", "recipeStatus is unsupported")
     conflicts = _conflicts(intake.get("conflicts"))
 
-    if brief is not None and brief["status"] == "confirmed" and STAGES.index(stage) < STAGES.index("brief_confirmed"):
-        _error("brief_stage_mismatch", "a confirmed brief requires stage brief_confirmed or later")
-    if decomposition is not None and STAGES.index(stage) < STAGES.index("model_selected"):
-        _error("decomposition_stage_mismatch", "decomposition requires stage model_selected or later")
+    _validate_stage_invariants(
+        stage,
+        selected_direction_id,
+        brief,
+        selected_model_profile_id,
+        decomposition,
+        recipe_status,
+    )
 
     return {
         "schemaVersion": SCHEMA_VERSION,
@@ -402,6 +489,7 @@ def _locked_brief_item_value(item: dict) -> tuple:
         item["text"],
         source["type"],
         source["refId"],
+        item["locked"],
     )
 
 
@@ -493,6 +581,8 @@ def _confirm_brief(state: dict, command: Mapping[str, object]) -> dict:
         _error("open_questions", "brief confirmation requires no open questions")
     if any(conflict["status"] == "open" for conflict in state["conflicts"]):
         _error("unresolved_conflicts", "brief confirmation requires no unresolved conflicts")
+    for item in state["brief"]["items"]:
+        item["locked"] = True
     state["brief"]["status"] = "confirmed"
     state["stage"] = "brief_confirmed"
     return state
@@ -544,7 +634,20 @@ def _confirm_decomposition(state: dict, command: Mapping[str, object]) -> dict:
         "a decomposition draft is required before decomposition confirmation",
     )
     _reject_unknown_keys(command, {"type"}, "action")
-    if state["decomposition"] is None:
+    if state["brief"] is None or state["brief"]["status"] != "confirmed":
+        _error(
+            "missing_brief_confirmation",
+            "a confirmed brief is required before decomposition confirmation",
+        )
+    if state["selectedModelProfileId"] is None:
+        _error(
+            "missing_model",
+            "model selection is required before decomposition confirmation",
+        )
+    if (
+        state["decomposition"] is None
+        or state["decomposition"]["status"] != "draft"
+    ):
         _error("missing_decomposition", "a decomposition draft is required before decomposition confirmation")
     if any(not block["approved"] for block in state["decomposition"]["blocks"]):
         _error("unapproved_decomposition", "all decomposition blocks must be approved")

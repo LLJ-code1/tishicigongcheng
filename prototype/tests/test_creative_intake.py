@@ -40,6 +40,8 @@ class PromptStudioCreativeIntakeTests(unittest.TestCase):
     def test_normalize_preserves_source_and_lock_provenance(self):
         value = creative_intake.empty_creative_intake()
         value["inputs"]["images"] = [image("image-1")]
+        value["directions"] = [direction("main")]
+        value["selectedDirectionId"] = "main"
         value["brief"] = {
             "status": "draft",
             "summary": "红裙女孩在雨夜奔跑",
@@ -116,13 +118,75 @@ class PromptStudioCreativeIntakeTests(unittest.TestCase):
         value = state_with_brief()
         value["brief"]["status"] = "confirmed"
         value["stage"] = "brief_draft"
-        with self.assertRaisesRegex(creative_intake.CreativeIntakeValidationError, "brief_confirmed"):
+        with self.assertRaisesRegex(
+            creative_intake.CreativeIntakeValidationError,
+            "requires a draft brief",
+        ):
             creative_intake.normalize_creative_intake(value)
 
         value = state_with_decomposition()
         value["stage"] = "brief_confirmed"
-        with self.assertRaisesRegex(creative_intake.CreativeIntakeValidationError, "model_selected"):
+        value["selectedModelProfileId"] = None
+        with self.assertRaisesRegex(
+            creative_intake.CreativeIntakeValidationError,
+            "does not allow a decomposition",
+        ):
             creative_intake.normalize_creative_intake(value)
+
+    def test_normalize_requires_exact_cross_field_state_for_each_stage(self):
+        intake_with_selection = state_for_stage("intake")
+        intake_with_selection["directions"] = [direction("main")]
+        intake_with_selection["selectedDirectionId"] = "main"
+
+        direction_with_brief = state_for_stage("direction_selected")
+        direction_with_brief["brief"] = draft_brief()
+
+        brief_without_draft = state_for_stage("brief_draft")
+        brief_without_draft["brief"] = None
+
+        confirmed_with_draft = state_for_stage("brief_confirmed")
+        confirmed_with_draft["brief"]["status"] = "draft"
+
+        model_without_selection = state_for_stage("model_selected")
+        model_without_selection["selectedModelProfileId"] = None
+
+        model_with_decomposition = state_for_stage("model_selected")
+        model_with_decomposition["decomposition"] = approved_decomposition()
+
+        decomposition_without_draft = state_for_stage("decomposition_draft")
+        decomposition_without_draft["decomposition"] = None
+
+        confirmed_with_draft_decomposition = state_for_stage(
+            "decomposition_confirmed"
+        )
+        confirmed_with_draft_decomposition["decomposition"]["status"] = "draft"
+
+        confirmed_with_stale_recipe = state_for_stage("decomposition_confirmed")
+        confirmed_with_stale_recipe["recipeStatus"] = "stale"
+
+        confirmed_with_unlocked_item = state_for_stage("brief_confirmed")
+        confirmed_with_unlocked_item["brief"]["items"][0]["locked"] = False
+
+        cases = (
+            ("intake selected direction", intake_with_selection),
+            ("direction selected with brief", direction_with_brief),
+            ("brief draft without brief", brief_without_draft),
+            ("brief confirmed with draft status", confirmed_with_draft),
+            ("model selected without model", model_without_selection),
+            ("model selected with decomposition", model_with_decomposition),
+            ("decomposition draft without decomposition", decomposition_without_draft),
+            (
+                "decomposition confirmed with draft status",
+                confirmed_with_draft_decomposition,
+            ),
+            ("decomposition confirmed with stale recipe", confirmed_with_stale_recipe),
+            ("confirmed brief with unlocked item", confirmed_with_unlocked_item),
+        )
+        for label, value in cases:
+            with self.subTest(label=label), self.assertRaises(
+                creative_intake.CreativeIntakeValidationError
+            ):
+                creative_intake.normalize_creative_intake(value)
 
     def test_normalize_rejects_unknown_enums_keys_nonfinite_numbers_and_invalid_unicode(self):
         cases = (
@@ -266,6 +330,60 @@ class PromptStudioCreativeIntakeTests(unittest.TestCase):
         self.assertEqual(updated["brief"]["items"][0]["text"], "sprint")
         self.assertNotIn("approvedLockedItemIds", updated)
 
+    def test_locked_item_cannot_be_downgraded_then_changed_without_approval(self):
+        locked_state = state_at_brief_draft()
+        locked_state["brief"]["items"][0]["locked"] = True
+
+        def attempt_two_step_bypass():
+            downgraded = creative_intake.apply_creative_intake_transition(
+                locked_state,
+                {
+                    "type": "set_brief_draft",
+                    "brief": draft_brief(locked=False),
+                    "approvedLockedItemIds": [],
+                },
+            )
+            changed = draft_brief(locked=False)
+            changed["items"][0]["text"] = "silently changed"
+            return creative_intake.apply_creative_intake_transition(
+                downgraded,
+                {
+                    "type": "set_brief_draft",
+                    "brief": changed,
+                    "approvedLockedItemIds": [],
+                },
+            )
+
+        with self.assertRaisesRegex(
+            creative_intake.CreativeIntakeValidationError,
+            "locked item",
+        ):
+            attempt_two_step_bypass()
+
+        approved_downgrade = creative_intake.apply_creative_intake_transition(
+            locked_state,
+            {
+                "type": "set_brief_draft",
+                "brief": draft_brief(locked=False),
+                "approvedLockedItemIds": ["item-1"],
+            },
+        )
+        self.assertFalse(approved_downgrade["brief"]["items"][0]["locked"])
+
+    def test_confirm_brief_locks_every_confirmed_item(self):
+        state = state_at_brief_draft()
+        state["brief"]["items"].append(brief_item("item-2"))
+
+        try:
+            confirmed = creative_intake.apply_creative_intake_transition(
+                state, {"type": "confirm_brief"}
+            )
+        except creative_intake.CreativeIntakeValidationError as error:
+            self.fail(f"confirm_brief rejected an unlocked draft: {error}")
+
+        self.assertEqual(confirmed["brief"]["status"], "confirmed")
+        self.assertTrue(all(item["locked"] for item in confirmed["brief"]["items"]))
+
     def test_transitions_reject_invalid_gates_and_unresolved_confirmation(self):
         intake = creative_intake.empty_creative_intake()
         with self.assertRaisesRegex(creative_intake.CreativeIntakeValidationError, "brief confirmation"):
@@ -298,6 +416,21 @@ class PromptStudioCreativeIntakeTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(creative_intake.CreativeIntakeValidationError, "approved"):
             creative_intake.apply_creative_intake_transition(state, {"type": "confirm_decomposition"})
+
+    def test_confirm_decomposition_rejects_incomplete_draft_stage(self):
+        state = creative_intake.empty_creative_intake()
+        state["stage"] = "decomposition_draft"
+        state["directions"] = [direction("main")]
+        state["selectedDirectionId"] = "main"
+        state["decomposition"] = approved_decomposition()
+
+        with self.assertRaisesRegex(
+            creative_intake.CreativeIntakeValidationError,
+            "confirmed brief",
+        ):
+            creative_intake.apply_creative_intake_transition(
+                state, {"type": "confirm_decomposition"}
+            )
 
     def test_reopen_and_model_change_invalidate_downstream_data(self):
         state = state_at_model_selected()
@@ -386,6 +519,8 @@ def decomposition_block(identifier):
 def state_with_brief():
     value = creative_intake.empty_creative_intake()
     value["stage"] = "brief_draft"
+    value["directions"] = [direction("main")]
+    value["selectedDirectionId"] = "main"
     value["brief"] = {
         "status": "draft",
         "summary": "A woman runs in rain.",
@@ -398,10 +533,47 @@ def state_with_brief():
 
 def state_with_decomposition():
     value = state_with_brief()
-    value["stage"] = "model_selected"
+    value["stage"] = "decomposition_draft"
     value["brief"]["status"] = "confirmed"
+    value["brief"]["items"][0]["locked"] = True
     value["selectedModelProfileId"] = "anima-1.1-v1"
     value["decomposition"] = {"status": "draft", "blocks": [decomposition_block("block-1")]}
+    value["recipeStatus"] = "stale"
+    return value
+
+
+def state_for_stage(stage):
+    value = creative_intake.empty_creative_intake()
+    value["stage"] = stage
+    if stage == "intake":
+        return value
+
+    value["directions"] = [direction("main")]
+    value["selectedDirectionId"] = "main"
+    if stage == "direction_selected":
+        return value
+
+    value["brief"] = draft_brief()
+    if stage == "brief_draft":
+        return value
+
+    value["brief"]["status"] = "confirmed"
+    for item in value["brief"]["items"]:
+        item["locked"] = True
+    if stage == "brief_confirmed":
+        return value
+
+    value["selectedModelProfileId"] = "anima-1.1-v1"
+    value["recipeStatus"] = "stale"
+    if stage == "model_selected":
+        return value
+
+    value["decomposition"] = approved_decomposition()
+    if stage == "decomposition_draft":
+        return value
+
+    value["decomposition"]["status"] = "confirmed"
+    value["recipeStatus"] = "ready"
     return value
 
 

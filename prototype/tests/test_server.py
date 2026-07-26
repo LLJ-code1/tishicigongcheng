@@ -776,6 +776,45 @@ class PromptStudioServerTests(unittest.TestCase):
                 response = self.assert_http_error_json(request, 400)
                 self.assertEqual(response["code"], expected_code)
 
+    def test_creative_intake_transition_rejects_incomplete_decomposition_stage(self):
+        current = creative_intake.empty_creative_intake()
+        current["stage"] = "decomposition_draft"
+        current["directions"] = [
+            {"id": "main", "label": "Main", "summary": "Rainy-night run."}
+        ]
+        current["selectedDirectionId"] = "main"
+        current["decomposition"] = {
+            "status": "draft",
+            "blocks": [
+                {
+                    "id": "block-1",
+                    "category": "action",
+                    "zh": "奔跑",
+                    "en": "running",
+                    "source": {"type": "user", "refId": None},
+                    "locked": False,
+                    "approved": True,
+                    "reason": "From the brief.",
+                    "risks": [],
+                }
+            ],
+        }
+        request = Request(
+            f"{self.base_url}/api/creative-intake/transition",
+            data=json.dumps(
+                {
+                    "current": current,
+                    "action": {"type": "confirm_decomposition"},
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        response = self.assert_http_error_json(request, 400)
+
+        self.assertEqual(response["code"], "brief_stage_mismatch")
+
     def test_creative_intake_transition_rejects_non_object_and_oversized_json(self):
         non_object = Request(
             f"{self.base_url}/api/creative-intake/transition",

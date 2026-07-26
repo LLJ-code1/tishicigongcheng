@@ -617,20 +617,67 @@
         imageIds
       );
       const stageIndex = CREATIVE_INTAKE_STAGE_ORDER.indexOf(stage);
-      if (
-        normalizedBrief?.status === "confirmed" &&
-        stageIndex < CREATIVE_INTAKE_STAGE_ORDER.indexOf("brief_confirmed")
-      ) {
-        fail();
-      }
-      if (
-        normalizedDecomposition !== null &&
-        stageIndex < CREATIVE_INTAKE_STAGE_ORDER.indexOf("model_selected")
-      ) {
-        fail();
-      }
       const recipeStatus = text(intake.recipeStatus, 32, false);
       if (!CREATIVE_INTAKE_RECIPE_STATUSES.has(recipeStatus)) fail();
+      const directionRequired =
+        stageIndex >= CREATIVE_INTAKE_STAGE_ORDER.indexOf("direction_selected");
+      if ((selectedDirectionId !== null) !== directionRequired) fail();
+
+      const expectedBriefStatus =
+        stageIndex < CREATIVE_INTAKE_STAGE_ORDER.indexOf("brief_draft")
+          ? null
+          : stage === "brief_draft"
+            ? "draft"
+            : "confirmed";
+      if (expectedBriefStatus === null) {
+        if (normalizedBrief !== null) fail();
+      } else {
+        if (
+          normalizedBrief === null ||
+          normalizedBrief.status !== expectedBriefStatus
+        ) {
+          fail();
+        }
+        if (
+          expectedBriefStatus === "confirmed" &&
+          normalizedBrief.items.some((item) => !item.locked)
+        ) {
+          fail();
+        }
+      }
+
+      const modelRequired =
+        stageIndex >= CREATIVE_INTAKE_STAGE_ORDER.indexOf("model_selected");
+      if ((selectedModelProfileId !== null) !== modelRequired) fail();
+
+      const expectedDecompositionStatus =
+        stageIndex <
+        CREATIVE_INTAKE_STAGE_ORDER.indexOf("decomposition_draft")
+          ? null
+          : stage === "decomposition_draft"
+            ? "draft"
+            : "confirmed";
+      if (expectedDecompositionStatus === null) {
+        if (normalizedDecomposition !== null) fail();
+      } else if (
+        normalizedDecomposition === null ||
+        normalizedDecomposition.status !== expectedDecompositionStatus
+      ) {
+        fail();
+      }
+
+      const recipeStatusAllowed =
+        stageIndex <=
+        CREATIVE_INTAKE_STAGE_ORDER.indexOf("direction_selected")
+          ? recipeStatus === "missing"
+          : stageIndex <=
+              CREATIVE_INTAKE_STAGE_ORDER.indexOf("brief_confirmed")
+            ? new Set(["missing", "stale"]).has(recipeStatus)
+            : stageIndex <=
+                CREATIVE_INTAKE_STAGE_ORDER.indexOf("decomposition_draft")
+              ? recipeStatus === "stale"
+              : recipeStatus === "ready";
+      if (!recipeStatusAllowed) fail();
       const conflicts = unique(
         array(intake.conflicts, 100).map(conflict),
         (item) => item.id
