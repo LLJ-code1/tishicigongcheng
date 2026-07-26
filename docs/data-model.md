@@ -181,6 +181,36 @@ Recipe 不是新 SQLite 表，而是随每个不可变提示词版本保存的�
 `negative`。工作台保留历史公开 ID，通过一对一适配使用 `subject`、`outfit`、`pose`、
 `composition` 和 `artist` 等名称。
 
+## 官网研究与不可变模型档案
+
+四张表共同保存研究证据与档案版本，均属于 Prompt Studio SQLite：
+
+| 表 | 关键字段与约束 |
+| --- | --- |
+| `model_research_runs` | `id` 主键；原始 `source_url`、状态、错误码和创建/完成时间。 |
+| `model_evidence_snapshots` | `run_id` 外键；请求/最终 URL、证据类别、抓取时间、Content-Type、正文 SHA-256、提取文本、抓取状态/错误。 |
+| `model_evidence_claims` | `run_id` 外键；字段路径、严格 JSON 值、证据类别、snapshot 引用、理由、验证状态和应用状态。 |
+| `model_profile_versions` | `profile_id + revision` 唯一；父版本/研究运行外键、生命周期、档案 JSON、claim 决策、正文 SHA-256、审核说明和时间。 |
+
+`idx_model_profile_one_active` 是 `lifecycle_status='active'` 的局部唯一索引，保证每个
+`profile_id` 最多一个活动版本。修订、审核都插入新行并连接
+`parent_version_id`，不改旧档案 JSON；激活只在 `BEGIN IMMEDIATE` 事务内把已审核版本
+切为 active、旧活动版本切为 superseded，并校验调用方提供的
+`expectedActiveVersionId`。`content_sha256` 是规范 JSON 的 SHA-256，读取、审核和激活
+都会阻止正文与 Hash 不一致的记录继续流转。
+
+claim 的 `application_status` 初始为 `proposed`，只有 `approved` 的 allowlist 字段
+进入档案投影；`rejected` 和未决项仍留在审计轨迹。原始、补充、AI 推断和本地验证
+不能互相冒充；人工补充身份字段标记为 `user_supplied`。没有真实 checkpoint/参数
+证据时，不得生成 `locally_validated` 或把候选尺寸提升为 `validatedPresets`。
+
+抓取失败或身份不完整的档案保持
+`metadata.research.researchStatus="pending_verification"`，缺失字段留空并使用下游通用
+规则。活动版本通过现有模型档案校验器投影到统一读取 API，返回不可变
+`profileVersionId`、`profileContentSha256`、证据摘要、warnings 和
+`generationReady`。Recipe 继续保存当次使用的版本 ID、Hash 和快照，档案后来被替换
+不会修改历史 Recipe。
+
 ## resources
 
 用户资源预留表，目标用于保存“我的素材”、参考提示词库和本地覆盖资源。当前前端的

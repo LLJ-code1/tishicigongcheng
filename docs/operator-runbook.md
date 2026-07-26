@@ -133,6 +133,38 @@ Pillow，并执行三组测试及三个生成物一致性检查。
 文件。需要迁移这些本机资产时，另行复制受管理资产目录并核对 Hash；不要把模型文件
 塞进逻辑备份 ZIP。
 
+### 官网模型研究的备份与恢复
+
+研究运行、snapshot、claim 和档案版本保存在工作数据库的
+`model_research_runs`、`model_evidence_snapshots`、`model_evidence_claims` 和
+`model_profile_versions`。当前产品逻辑 ZIP 尚未导出这四张表；要保留研究证据链，
+必须在服务停止后对整个 SQLite 文件做文件级备份，或使用 SQLite backup API 生成一致
+副本。不要只复制 `-wal`/`-shm`，也不要在服务写入时直接复制主文件。
+
+文件级恢复先复制到新的隔离路径，设置 `PROMPT_STUDIO_DB` 指向该副本启动并核对：
+
+1. `PRAGMA integrity_check` 和 schema 初始化通过。
+2. snapshot/claim 数量与研究运行相符。
+3. 档案版本的 `content_sha256` 校验通过，父版本链完整。
+4. 每个 `profile_id` 最多一个 active 版本。
+5. `GET /api/model-profiles` 能读取活动版本。
+
+恢复核验前不要替换当前数据库；这与逻辑恢复的 `activated=false` 原则一致。研究页面
+提取文本可能包含第三方内容，备份按敏感本机资料保管，不提交 Git。
+
+### 官网研究故障恢复
+
+- `unsupported_source`：换成支持的官网原始模型页，或继续使用已有模型。
+- `unsafe_address` / DNS 策略拒绝：transport 没有发送请求；检查 URL 和 DNS，不关闭
+  SSRF 防线。
+- timeout、抓取或解析失败：保留 `pending_verification` 草稿，显式重试，或只人工
+  补充精确模型身份；未验证优化继续留空。
+- 证据不完整：不批准缺少证据的 claim；工作台继续使用通用规则和可见 warning。
+- `active_version_changed`：刷新活动档案，核对将被替换的版本后重新确认；不要原样
+  自动重试旧 CAS。
+- `profile_hash_mismatch` 或版本链异常：停止审核/激活，保留数据库和日志上下文，
+  从隔离的完整 SQLite 副本恢复，不手工改 JSON/Hash。
+
 ## 故障排查
 
 - 首页打不开：检查 57913 端口以及服务进程输出。
@@ -144,6 +176,8 @@ Pillow，并执行三组测试及三个生成物一致性检查。
   不超过 20 MiB 和 5,000 万像素，并检查对应本地识图模型状态。不要删除其他成功卡片。
 - brief 来源不符：核对条目的 `source.refId` 是否指向 canonical `inputs.images` 的
   稳定 ID；不要根据条目文案或当前卡片顺序猜测来源。
+- 官网研究被拒：先看返回 code；策略拒绝不会产生外部请求，抓取失败则保留待验证
+  草稿。不要把页面正文、Cookie、API Key 或任意 URL 直接写入数据库绕过 adapter。
 - 确定性计划返回 409：确认实验环境变量在启动 Python 服务的同一进程环境中。
 - 备份恢复冲突：默认 `reject` 不写入；确认需要保留两份时才使用 `rename`。
 - 数据库被判定为未来版本、损坏或错误应用：停止操作，不要强行降级；使用隔离备份

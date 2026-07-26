@@ -348,6 +348,79 @@ manual_override > task_preset > lora_requirement > model_default
 `generationReady=false`，尺寸状态为 `unverified`。调用方不得把候选尺寸展示成已验证
 推荐。
 
+## 官网模型研究、审核与激活
+
+只提交注册 adapter 支持的原始 `https://` 模型页：
+
+```http
+POST /api/model-research
+Content-Type: application/json
+
+{"sourceUrl":"https://civitai.com/models/934764/example"}
+```
+
+成功返回 `201`，`item` 中包含 `run`、不可变 `snapshots`、初始为 proposed 的
+`claims`、`draftVersion`、`researchStatus` 和 `warnings`。查看已保存运行：
+
+```http
+GET /api/model-research/<runId>
+```
+
+人工决定 claim 并补充精确身份会创建新的 draft 子版本；不能修改 snapshot：
+
+```http
+PUT /api/model-profile-versions/<versionId>
+Content-Type: application/json
+
+{
+  "claimDecisions":{"claim-1":"approved","claim-2":"rejected"},
+  "manualFields":{
+    "displayName":"Example",
+    "model.versionName":"v1",
+    "model.versionId":22,
+    "notes":"参数仍待本地验证"
+  },
+  "reviewNote":"已核对官网版本身份"
+}
+```
+
+审核同样创建不可变子版本：
+
+```http
+POST /api/model-profile-versions/<versionId>/review
+Content-Type: application/json
+
+{"reviewerNote":"已核对原始页面与精确版本号"}
+```
+
+激活必须显式提交调用方最后看到的活动版本；第一次激活也必须传 `null`：
+
+```http
+POST /api/model-profile-versions/<versionId>/activate
+Content-Type: application/json
+
+{"expectedActiveVersionId":null}
+```
+
+读取单个不可变版本使用 `GET /api/model-profile-versions/<versionId>`。激活成功后重新
+读取 `GET /api/model-profiles`；研究档案与内置档案使用同一目录形状，并额外包含
+`profileVersionId`、`profileContentSha256`、`evidenceSummary`、`warnings` 和
+`generationReady`。
+
+| HTTP / code | 含义 | 处理 |
+| --- | --- | --- |
+| `400 unsupported_source` | host/path、redirect 或 adapter 不受支持 | 改用受支持的原始模型页，或继续使用已有模型 |
+| `400 unsafe_address` | localhost、IP 字面量或 DNS 含非 global 地址 | 请求未发送；检查 URL/DNS，不绕过策略 |
+| `400 invalid_request` | 未知字段、缺少 CAS 字段或值越界 | 按严格请求 schema 修正 |
+| `404 unknown_run` / `unknown_version` | 运行或版本不存在 | 重新读取服务端历史 |
+| `409 active_version_changed` | 活动版本已被其他操作替换 | 刷新目录，核对新活动版本后再次确认 |
+| `409 profile_hash_mismatch` | 存储正文与规范 Hash 不一致 | 停止审核/激活，保留数据库并排查 |
+| `409 unresolved_model_identity` | 名称、精确版本号或来源仍未确认 | 决定 claim 或补充人工身份字段后创建新 draft |
+
+超时、抓取或解析失败可能仍返回 `201` 的 `pending_verification` 草稿；它不是“官网已
+确认”。调用方应展示错误/warning，允许显式重试或人工补充身份，同时保持已有模型
+选择和通用规则可用。当前阶段不接受 supplemental URL、客户端页面正文或任意证据类别。
+
 ## 确定性词库
 
 `GET /api/text/random-catalog` 始终可读，方便审查 9 类、471 条目录。当前目录仍返回：

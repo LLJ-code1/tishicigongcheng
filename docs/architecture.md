@@ -49,8 +49,41 @@ brief 借用项通过 `source: {"type":"image","refId":"<图片 ID>"}` 追溯来
 浏览器 `File`、object URL、图片字节和分析缓存不持久化；仅缺少本地文件的卡片提示
 重新附图。任何 path、base64、blob URL 或额外图片字段都在进入 canonical 状态前拒绝。
 设置中的 `creativeDirectorSkillOverride` 是内置只读 Skill 的可选覆盖层，最大
-100,000 字符；空字符串表示恢复默认。模型网页研究、按模型适配的十三块拆解预览和
-LoRA 档案仍由后续独立阶段消费本会话和转换 API。
+100,000 字符；空字符串表示恢复默认。官网原始链接研究和不可变模型档案生命周期已
+接通；按模型适配的十三块拆解预览和 LoRA 档案仍由后续独立阶段消费本会话、激活的
+模型档案和转换 API。
+
+## 官网模型研究边界
+
+官网研究是独立于工作区保存的资料库边界：
+
+```text
+受支持的 https 原始模型页
+  -> SourceAdapter 注册表（当前仅 Civitai 模型页）
+  -> URL / DNS / 每跳重定向校验
+  -> 有界 fetcher（最多 5 次重定向、2 MiB、15 秒、UTF-8 HTML/JSON）
+  -> 不可变 snapshot + proposed claims
+  -> draft 修订 -> reviewed 子版本
+  -> compare-and-swap 激活
+  -> GET /api/model-profiles 的统一模型档案目录
+```
+
+它不是任意 URL 抓取器。入口拒绝非 HTTPS、凭据、fragment、非默认端口、
+localhost、IP 字面量、不受支持 host/path，以及任一非 global DNS 结果；重定向后的
+URL、adapter 所有权和 DNS 会逐跳重验。自动测试只注入 fake resolver/fetcher/clock，
+不访问真实网络。
+
+每个结论都是带 `original_source`、`supplemental_source`、`ai_inference` 或
+`local_validation` 证据类别的 claim；本阶段 HTTP 入口只抓取注册的原始页面，不接受
+客户端上传补充 URL、页面正文或伪造证据类别。只有人工明确 `approved` 的 claim 才能
+投影到档案；抓取失败仍形成 `pending_verification` 草稿，用户可继续选择已有模型和
+使用通用规则。
+
+snapshot、claim 内容和档案版本正文均追加式保存。修订和审核创建带
+`parent_version_id` 的新版本；激活只改变生命周期指针，并用预期活动版本做 CAS。
+活动研究档案经过与内置档案兼容的校验后合并进 `/api/model-profiles`。历史 Recipe
+保存精确 `profileVersionId`、`profileContentSha256` 和档案快照；以后激活新版本不会
+回写历史作品。
 
 ## 数据边界
 
@@ -115,6 +148,10 @@ prototype/data/prompt_studio.db
 - `favorites`：角色、画师和结构块配方等已接入收藏。
 - `settings`：用户偏好、本地路径及使用保留前缀的内部幂等账本。账本不会由设置 API
   返回，也不会进入逻辑备份。
+- `model_research_runs`、`model_evidence_snapshots`、`model_evidence_claims`：
+  官网研究运行、不可变来源快照和证据结论。
+- `model_profile_versions`：追加式模型档案版本链；局部唯一索引保证每个 profile
+  最多一个 `active` 版本。
 
 ## API 约定
 
@@ -140,6 +177,12 @@ prototype/data/prompt_studio.db
 
 - `GET /api/model-profiles`
 - `GET /api/model-profiles/<id>`
+- `POST /api/model-research`
+- `GET /api/model-research/<runId>`
+- `GET /api/model-profile-versions/<versionId>`
+- `PUT /api/model-profile-versions/<versionId>`
+- `POST /api/model-profile-versions/<versionId>/review`
+- `POST /api/model-profile-versions/<versionId>/activate`
 - `POST /api/recipe/resolve`
 
 确定性词库与 AI 局部编辑：
@@ -281,6 +324,8 @@ Unicode 数据版本不同而产生不同去重键。
   `prototype/server.py` 注册。
 - Recipe/模型档案、词库 sampler、中文编辑和逻辑备份分别在 `prototype/recipe.py`、
   `model_profiles.py`、`random_sampler.py`、`edit_engine.py` 与 `backup.py`。
+- 官网抓取策略/证据投影与不可变档案仓储分别在 `prototype/model_research.py` 和
+  `prototype/model_profile_store.py`；生产 transport 仍通过 `server.py` 注入。
 - 模型调用提示词模板放在 `prototype/prompts/`，先按文生图和图生图分开。
 - 每次实现明显功能后，更新 `docs/development-log.md`。
 - 重要设计变化更新 `docs/architecture.md` 或 `docs/roadmap.md`。
