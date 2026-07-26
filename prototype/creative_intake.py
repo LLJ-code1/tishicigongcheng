@@ -46,6 +46,7 @@ _SOURCE_TYPES = {"user", "image", "ai", "model_rule"}
 _DECOMPOSITION_STATUSES = {"draft", "confirmed"}
 _CONFLICT_STATUSES = {"open", "resolved"}
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$")
 
 
 def _error(code: str, message: str) -> None:
@@ -90,6 +91,16 @@ def _identifier(value: object, label: str) -> str:
     identifier = _text(value, label, maximum=128, allow_empty=False)
     if any(character.isspace() for character in identifier):
         _error("invalid_identifier", f"{label} must not contain whitespace")
+    return identifier
+
+
+def _safe_identifier(value: object, label: str) -> str:
+    identifier = _text(value, label, maximum=128, allow_empty=False)
+    if not _SAFE_ID_PATTERN.fullmatch(identifier):
+        _error(
+            "invalid_identifier",
+            f"{label} must be a safe identifier",
+        )
     return identifier
 
 
@@ -235,14 +246,16 @@ def _rule_refs(value: object, label: str) -> list[dict]:
             rule.get("evidenceRefs"), f"{path}.evidenceRefs", maximum=200
         )
         evidence_refs = [
-            _identifier(ref, f"{path}.evidenceRefs[{ref_index}]")
+            _safe_identifier(ref, f"{path}.evidenceRefs[{ref_index}]")
             for ref_index, ref in enumerate(raw_refs)
         ]
         if len(evidence_refs) != len(set(evidence_refs)):
             _error("duplicate_id", f"{path}.evidenceRefs contains duplicate IDs")
         rules.append(
             {
-                "claimId": _identifier(rule.get("claimId"), f"{path}.claimId"),
+                "claimId": _safe_identifier(
+                    rule.get("claimId"), f"{path}.claimId"
+                ),
                 "fieldPath": _text(
                     rule.get("fieldPath"),
                     f"{path}.fieldPath",
@@ -749,6 +762,44 @@ def _select_model(state: dict, command: Mapping[str, object]) -> dict:
     return state
 
 
+_IMMUTABLE_DECOMPOSITION_ROOT_FIELDS = (
+    "status",
+    "briefContentSha256",
+    "profileVersionId",
+    "profileContentSha256",
+)
+_IMMUTABLE_DECOMPOSITION_BLOCK_FIELDS = (
+    "id",
+    "category",
+    "zh",
+    "source",
+    "locked",
+    "ruleRefs",
+    "risks",
+)
+
+
+def _require_decomposition_redraft_preserves_semantics(
+    current: dict, candidate: dict
+) -> None:
+    for field in _IMMUTABLE_DECOMPOSITION_ROOT_FIELDS:
+        if candidate[field] != current[field]:
+            _error(
+                "immutable_decomposition",
+                f"immutable decomposition field changed: {field}",
+            )
+    for index, (current_block, candidate_block) in enumerate(
+        zip(current["blocks"], candidate["blocks"], strict=True)
+    ):
+        for field in _IMMUTABLE_DECOMPOSITION_BLOCK_FIELDS:
+            if candidate_block[field] != current_block[field]:
+                _error(
+                    "immutable_decomposition",
+                    "immutable decomposition block field changed: "
+                    f"blocks[{index}].{field}",
+                )
+
+
 def _set_decomposition_draft(state: dict, command: Mapping[str, object]) -> dict:
     _transition_requires(
         state,
@@ -766,6 +817,10 @@ def _set_decomposition_draft(state: dict, command: Mapping[str, object]) -> dict
         _error("invalid_decomposition", "action.decomposition must be an object")
     if decomposition["status"] != "draft":
         _error("invalid_decomposition_status", "action.decomposition must have draft status")
+    if state["decomposition"] is not None:
+        _require_decomposition_redraft_preserves_semantics(
+            state["decomposition"], decomposition
+        )
     state["decomposition"] = decomposition
     state["recipeStatus"] = "stale"
     state["stage"] = "decomposition_draft"

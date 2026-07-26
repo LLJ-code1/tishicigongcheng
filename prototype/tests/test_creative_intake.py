@@ -1,6 +1,7 @@
 import sys
 import unittest
 import math
+import copy
 from pathlib import Path
 
 
@@ -565,7 +566,7 @@ class PromptStudioCreativeIntakeTests(unittest.TestCase):
         bad["decomposition"]["blocks"][0]["ruleRefs"] = [
             {**rule_ref("claim-one"), "evidenceRefs": ["unsafe ref"]}
         ]
-        cases.append(("whitespace", bad))
+        cases.append(("safe identifier", bad))
 
         for message, value in cases:
             with self.subTest(message=message), self.assertRaisesRegex(
@@ -602,6 +603,97 @@ class PromptStudioCreativeIntakeTests(unittest.TestCase):
             creative_intake.apply_creative_intake_transition(
                 draft, {"type": "confirm_decomposition"}
             )
+
+    def test_decomposition_redraft_only_allows_approval_and_wording_changes(self):
+        state = state_at_model_selected()
+        draft = creative_intake.apply_creative_intake_transition(
+            state,
+            {
+                "type": "set_decomposition_draft",
+                "decomposition": approved_decomposition(state["brief"]),
+            },
+        )
+        changed = copy.deepcopy(draft["decomposition"])
+        changed["blocks"][0]["approved"] = False
+        changed["blocks"][0]["en"] = "adult runner"
+        changed["blocks"][0]["reason"] = "Clearer model-compatible wording."
+
+        updated = creative_intake.apply_creative_intake_transition(
+            draft,
+            {"type": "set_decomposition_draft", "decomposition": changed},
+        )
+
+        self.assertFalse(updated["decomposition"]["blocks"][0]["approved"])
+        self.assertEqual(updated["decomposition"]["blocks"][0]["en"], "adult runner")
+        self.assertEqual(
+            updated["decomposition"]["blocks"][0]["reason"],
+            "Clearer model-compatible wording.",
+        )
+
+    def test_decomposition_redraft_rejects_semantic_or_lineage_tampering(self):
+        state = state_at_model_selected()
+        draft = creative_intake.apply_creative_intake_transition(
+            state,
+            {
+                "type": "set_decomposition_draft",
+                "decomposition": approved_decomposition(state["brief"]),
+            },
+        )
+        mutations = (
+            ("brief hash", lambda value: value.__setitem__("briefContentSha256", "b" * 64)),
+            ("profile version", lambda value: value.__setitem__("profileVersionId", "other-version")),
+            ("profile hash", lambda value: value.__setitem__("profileContentSha256", "b" * 64)),
+            ("block id", lambda value: value["blocks"][0].__setitem__("id", "different")),
+            ("category", lambda value: value["blocks"][0].__setitem__("category", "other")),
+            ("zh", lambda value: value["blocks"][0].__setitem__("zh", "篡改")),
+            ("source", lambda value: value["blocks"][0].__setitem__("source", {"type": "ai", "refId": None})),
+            ("locked", lambda value: value["blocks"][0].__setitem__("locked", False)),
+            ("rule ref", lambda value: value["blocks"][0]["ruleRefs"].append(rule_ref("fabricated"))),
+            ("risks", lambda value: value["blocks"][0]["risks"].append("fabricated")),
+        )
+        for label, mutate in mutations:
+            with self.subTest(label=label):
+                changed = copy.deepcopy(draft["decomposition"])
+                mutate(changed)
+                with self.assertRaises(
+                    creative_intake.CreativeIntakeValidationError
+                ):
+                    creative_intake.apply_creative_intake_transition(
+                        draft,
+                        {"type": "set_decomposition_draft", "decomposition": changed},
+                    )
+
+    def test_rule_and_evidence_refs_require_safe_identifiers(self):
+        unsafe_identifiers = (
+            "../claim",
+            r"claim\escape",
+            "claim:field",
+            "claim/control\x00",
+        )
+        for identifier in unsafe_identifiers:
+            with self.subTest(identifier=identifier):
+                value = state_with_decomposition()
+                value["decomposition"]["blocks"][0]["ruleRefs"] = [
+                    rule_ref(identifier)
+                ]
+                with self.assertRaisesRegex(
+                    creative_intake.CreativeIntakeValidationError,
+                    "safe identifier",
+                ):
+                    creative_intake.normalize_creative_intake(value)
+
+                value = state_with_decomposition()
+                value["decomposition"]["blocks"][0]["ruleRefs"] = [
+                    {
+                        **rule_ref("claim.valid_1~x"),
+                        "evidenceRefs": [identifier],
+                    }
+                ]
+                with self.assertRaisesRegex(
+                    creative_intake.CreativeIntakeValidationError,
+                    "safe identifier",
+                ):
+                    creative_intake.normalize_creative_intake(value)
 
     def test_failed_transition_leaves_source_untouched(self):
         state = creative_intake.empty_creative_intake()
