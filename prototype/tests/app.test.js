@@ -434,6 +434,78 @@ test("multi-image controller keeps per-ID evidence state and reconciles only rem
   assert.deepEqual(revoked, ["blob:action.png"]);
 });
 
+test("reopening eight safe image references preserves uses and asks only for missing browser files", () => {
+  const images = Array.from({ length: 8 }, (_, index) => ({
+    id: `image-${index + 1}`,
+    name: `reference-${index + 1}.png`,
+    mimeType: "image/png",
+    status: "local_reference_not_embedded",
+    requestedUses:
+      index === 0 ? ["action"] : index === 1 ? ["outfit"] : index === 2 ? ["environment"] : [],
+  }));
+  const intake = creativeIntakeStageFixture("brief_draft");
+  intake.inputs = { text: "three borrowed elements", images };
+  intake.brief.items = [
+    { id: "item-action", category: "action", text: "running", source: { type: "image", refId: "image-1" }, locked: false },
+    { id: "item-outfit", category: "outfit", text: "red coat", source: { type: "image", refId: "image-2" }, locked: false },
+    { id: "item-environment", category: "environment", text: "rainy street", source: { type: "image", refId: "image-3" }, locked: false },
+  ];
+  const restored = hydrateProjectState(createInitialState(), {
+    id: "project-eight-images",
+    mode: "text",
+    metadata: { workspaceBaseVersion: 0, creativeIntake: intake },
+    versions: [],
+  });
+  const controller = createDirectorImageCollectionController({
+    createObjectURL: (file) => `blob:${file.name}`,
+    revokeObjectURL() {},
+  });
+  controller.bind("image-1", { name: "reference-1.png", type: "image/png", size: 100 });
+  controller.bind("image-3", { name: "reference-3.png", type: "image/png", size: 100 });
+  const cards = buildDirectorImageCards(
+    restored.creativeIntake,
+    (imageId) => controller.get(imageId)
+  );
+
+  assert.equal(restored.creativeIntake.inputs.images.length, 8);
+  assert.deepEqual(
+    restored.creativeIntake.inputs.images.slice(0, 3).map((image) => image.requestedUses),
+    [["action"], ["outfit"], ["environment"]]
+  );
+  assert.deepEqual(
+    restored.creativeIntake.brief.items.map((item) => item.source.refId),
+    ["image-1", "image-2", "image-3"]
+  );
+  assert.deepEqual(
+    cards.filter((card) => card.needsReattachment).map((card) => card.id),
+    ["image-2", "image-4", "image-5", "image-6", "image-7", "image-8"]
+  );
+});
+
+test("persisted multi-image metadata contains safe references and never browser file material", () => {
+  const state = createInitialState();
+  state.creativeIntake = creativeIntakeStageFixture("brief_draft");
+  state.creativeIntake.inputs = {
+    text: "safe references only",
+    images: [
+      { id: "image-action", name: "action.png", mimeType: "image/png", status: "local_reference_not_embedded", requestedUses: ["action"] },
+      { id: "image-outfit", name: "outfit.webp", mimeType: "image/webp", status: "local_reference_not_embedded", requestedUses: ["outfit"] },
+      { id: "image-environment", name: "environment.jpg", mimeType: "image/jpeg", status: "local_reference_not_embedded", requestedUses: ["environment"] },
+    ],
+  };
+  const payload = buildProjectPayload(state);
+  const encoded = JSON.stringify(payload);
+
+  assert.deepEqual(
+    payload.metadata.creativeIntake.inputs.images.map((image) => image.requestedUses),
+    [["action"], ["outfit"], ["environment"]]
+  );
+  assert.doesNotMatch(encoded, /blob:/i);
+  assert.doesNotMatch(encoded, /data:image/i);
+  assert.doesNotMatch(encoded, /base64/i);
+  assert.doesNotMatch(encoded, /(?:file|local)?path/i);
+});
+
 test("multi-image canonical replacement and file binding follow the accepted response", () => {
   const current = {
     ...emptyCreativeIntake(),

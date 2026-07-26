@@ -87,6 +87,19 @@ SQLite 文件误当工作区。首次启动对兼容的旧 v0 库先生成本地
 `model_rule`；`user`/`ai` 的 `refId` 必须为 `null`，`image` 的 `refId` 必须引用
 `inputs.images` 中的图片 `id`，而 `model_rule` 使用非空模型规则标识。
 
+`requestedUses` 可从 `character`、`appearance`、`outfit`、`action`、`environment`、
+`composition`、`lighting`、`style` 中逐图选择；空数组表示让 AI 提候选，不代表已经
+确认任何借用元素。浏览器 `File`、object URL、分析缓存和失败详情只存在于内存控制器，
+不属于 `creativeIntake`。项目恢复只重建上述安全引用；缺少 `File` 的图片需要按原
+稳定 ID 重新附加。每个图片来源 brief 项都必须保留自己的 `source.refId`，不能靠文案
+推断来源。
+
+导演请求的 `imageEvidence` 不是持久化字段。它接受 `null`、兼容的单对象或最多八项
+数组，但服务端一律规范为数组，并按 `inputs.images` 顺序发送给文本提供商。每项必须
+绑定当前图片 ID 和相同 `requestedUses`，只允许有界文字；重复/未知 ID、path、base64、
+bytes、blob URL、密钥样字段或任一当前图片的不安全 MIME/status 都在 provider 调用前
+拒绝。
+
 `brief` 包含 `status`（`draft` 或 `confirmed`）、`summary`、`items`、`aiAdditions` 和
 `openQuestions`。每个 `items` 条目为
 `{ "id", "category", "text", "source", "locked" }`。`confirm_brief` 会把全部条目设为

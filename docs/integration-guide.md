@@ -3,9 +3,10 @@
 ## 创意导演接入
 
 `POST /api/creative-intake/director` 接收当前 canonical session、用户文字、推理来源、
-可选的 Skill 覆盖和有界本地图像文字证据。外部文本提供商不得接收图片字节、文件路径
-或 API Key。模型响应只允许 `message` 和一个候选 `action`；确认需求卡、选择模型等
-越权动作会被拒绝。
+可选的 Skill 覆盖和 `imageEvidence` 数组。数组最多八项，服务端按 canonical 图片
+顺序规范化；每项只含绑定图片 ID、逐图 `requestedUses` 和有界本地图像文字证据。
+外部文本提供商不得接收图片字节、文件路径、blob URL、base64 或 API Key。模型响应
+只允许 `message` 和一个候选 `action`；确认需求卡、选择模型等越权动作会被拒绝。
 
 客户端随后把候选动作提交到 `POST /api/creative-intake/transition`。只有该接口返回的
 完整规范会话可以替换本地 canonical session，并且响应修订号必须恰好增加 1。保存使用
@@ -124,7 +125,42 @@ metadata-only `POST /api/workspace/commit`，与尚未保存的 Recipe 编辑相
 }
 ```
 
-图片仅以这个引用描述进入会话；不要发送图片字节、路径、密钥或任意附加元数据。
+`images` 最多八项。图片仅以这个引用描述进入会话；不要发送图片字节、路径、base64、
+blob URL、密钥或任意附加元数据。每张图的 `requestedUses` 独立保存，空数组表示让 AI
+建议候选用途，不等于确认借用。
+
+### 多图 `imageEvidence`
+
+```json
+{
+  "current": "<完整 canonical session>",
+  "message": "用第一张的动作、第二张的衣服、第三张的环境",
+  "provider": "local",
+  "imageEvidence": [
+    {
+      "imageId": "image-action",
+      "requestedUses": ["action"],
+      "summary": "人物向前奔跑"
+    },
+    {
+      "imageId": "image-outfit",
+      "requestedUses": ["outfit"],
+      "summary": "红色长外套"
+    },
+    {
+      "imageId": "image-environment",
+      "requestedUses": ["environment"],
+      "summary": "雨夜街道"
+    }
+  ]
+}
+```
+
+客户端应逐图调用本地 `/api/vision/analyze`，保留成功项并只重试失败图片。服务端兼容
+旧客户端的单个 evidence 对象，但传给 provider 的 `imageEvidence` 始终是数组。brief
+采用图片内容时必须写入 `source: {"type":"image","refId":"image-action"}` 一类稳定
+引用。刷新或重开后 canonical 引用仍在，浏览器 `File` 不在；只为缺失文件的图片提示
+重新附加，不应删除其他图片的用途或来源。
 
 ### 合法的 `confirm_brief`
 

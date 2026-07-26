@@ -1169,6 +1169,46 @@ class PromptStudioServerTests(unittest.TestCase):
         self.assertEqual(payload["item"]["revision"], 1)
         self.assertEqual(payload["item"]["inputs"]["text"], "红发女孩，雨夜奔跑")
 
+    def test_creative_intake_transition_rejects_persisted_image_path_or_base64(self):
+        unsafe_images = (
+            {
+                "id": "image-path",
+                "name": "reference.png",
+                "mimeType": "image/png",
+                "status": "local_reference_not_embedded",
+                "requestedUses": ["action"],
+                "path": "C:\\private\\reference.png",
+            },
+            {
+                "id": "image-base64",
+                "name": "reference.png",
+                "mimeType": "image/png",
+                "status": "local_reference_not_embedded",
+                "requestedUses": ["environment"],
+                "base64": "iVBORw0KGgo=",
+            },
+        )
+        safe_fields = {"id", "name", "mimeType", "status", "requestedUses"}
+        for image in unsafe_images:
+            with self.subTest(field=next(iter(set(image) - safe_fields))):
+                request = Request(
+                    f"{self.base_url}/api/creative-intake/transition",
+                    data=json.dumps(
+                        {
+                            "current": creative_intake.empty_creative_intake(),
+                            "action": {
+                                "type": "replace_inputs",
+                                "text": "unsafe reference",
+                                "images": [image],
+                            },
+                        }
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                response = self.assert_http_error_json(request, 400)
+                self.assertEqual(response["code"], "unsupported_fields")
+
     def test_creative_intake_transition_migrates_legacy_confirmed_current(self):
         current = creative_intake.empty_creative_intake()
         current.update(

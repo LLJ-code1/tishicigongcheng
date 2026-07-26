@@ -20,7 +20,8 @@ Prompt Studio 本地后端 :57913
 数据流如下：
 
 ```text
-统一文字/单图输入 UI
+统一文字/多图输入 UI（0–8 张安全引用）
+  -> 每张原图独立 POST /api/vision/analyze（仅本地）
   -> POST /api/creative-intake/director（模型仅提出候选动作）
   -> POST /api/creative-intake/transition（服务器权威转换）
   -> prototype/creative_intake.py（规范化、阶段校验、锁与冲突规则）
@@ -38,10 +39,18 @@ Prompt Studio 本地后端 :57913
 增加 SQLite 表或修改 `PRAGMA user_version = 1`。项目重新打开、逻辑备份和隔离恢复
 会保留该元数据；历史项目缺少或带有无效 `creativeIntake` 时，前端安全地回退为空会话。
 
-单图字节只发送给本地 `/api/vision/analyze`，外部文本提供商最多接收有界文字证据。
+图片字节只发送给本地 `/api/vision/analyze`。浏览器以稳定图片 ID 管理最多八个独立
+`File`/object URL；canonical session 只保存同序的安全引用。每张图独立分析和重试，
+单图失败不会丢弃其他成功证据。`/api/creative-intake/director` 的 `imageEvidence`
+始终是按 canonical 图片顺序排列的数组，外部文本提供商最多接收有界文字证据。
+brief 借用项通过 `source: {"type":"image","refId":"<图片 ID>"}` 追溯来源。
+
+刷新、项目重开或逻辑恢复会保留安全引用、逐图 `requestedUses` 和 brief `refId`，但
+浏览器 `File`、object URL、图片字节和分析缓存不持久化；仅缺少本地文件的卡片提示
+重新附图。任何 path、base64、blob URL 或额外图片字段都在进入 canonical 状态前拒绝。
 设置中的 `creativeDirectorSkillOverride` 是内置只读 Skill 的可选覆盖层，最大
-100,000 字符；空字符串表示恢复默认。多图交互、模型网页研究和按模型适配的十三块
-拆解预览仍由后续独立阶段消费本会话和转换 API。
+100,000 字符；空字符串表示恢复默认。模型网页研究、按模型适配的十三块拆解预览和
+LoRA 档案仍由后续独立阶段消费本会话和转换 API。
 
 ## 数据边界
 
