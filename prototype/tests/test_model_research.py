@@ -216,6 +216,59 @@ class ModelResearchContractTests(unittest.TestCase):
         with self.assertRaises(model_research.ResearchError):
             model_research.claim_to_dict(claim)
 
+    def test_claim_defensively_freezes_nested_value_without_aliasing_input(self):
+        original = {"presets": [{"width": 1024, "tags": ["portrait"]}]}
+        claim = model_research.EvidenceClaim(
+            claim_id="claim-nested",
+            field_path="resolutions.candidatePresets",
+            value=original,
+            evidence_class="original_source",
+            evidence_refs=("snap-1",),
+            rationale="structured source field",
+            verification_status="source_recorded",
+            application_status="proposed",
+        )
+
+        original["presets"][0]["width"] = 1
+        original["presets"][0]["tags"].append("mutated")
+
+        exported = model_research.claim_to_dict(claim)
+        self.assertEqual(
+            exported["value"],
+            {"presets": [{"width": 1024, "tags": ["portrait"]}]},
+        )
+        with self.assertRaises(TypeError):
+            claim.value["presets"] = ()
+        with self.assertRaises(TypeError):
+            claim.value["presets"][0]["width"] = 1
+
+    def test_claim_export_returns_deep_copy_that_cannot_mutate_claim(self):
+        claim = model_research.normalize_claim(
+            {
+                "claimId": "claim-export",
+                "fieldPath": "metadata.strengths",
+                "value": ["hands", {"lighting": ["soft"]}],
+                "evidenceClass": "original_source",
+                "evidenceRefs": ["snap-1"],
+                "rationale": "structured source field",
+                "verificationStatus": "source_recorded",
+                "applicationStatus": "proposed",
+            }
+        )
+        exported = model_research.claim_to_dict(claim)
+        exported["value"][0] = "mutated"
+        exported["value"][1]["lighting"].append("hard")
+
+        second_export = model_research.claim_to_dict(claim)
+        self.assertEqual(
+            second_export["value"],
+            ["hands", {"lighting": ["soft"]}],
+        )
+        self.assertEqual(
+            model_research.normalize_claim(claim),
+            claim,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

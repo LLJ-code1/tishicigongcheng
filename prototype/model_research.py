@@ -201,11 +201,11 @@ def _validate_json_value(value: Any, *, depth: int = 0) -> None:
         if value != value or value in (float("inf"), float("-inf")):
             raise ResearchError("invalid_claim_value", "claim value must be finite")
         return
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         for item in value:
             _validate_json_value(item, depth=depth + 1)
         return
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         if any(not isinstance(key, str) for key in value):
             raise ResearchError(
                 "invalid_claim_value", "claim object keys must be strings"
@@ -216,11 +216,29 @@ def _validate_json_value(value: Any, *, depth: int = 0) -> None:
     raise ResearchError("invalid_claim_value", "claim value must be JSON-safe")
 
 
+def _deep_freeze_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {key: _deep_freeze_json(item) for key, item in value.items()}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_deep_freeze_json(item) for item in value)
+    return value
+
+
+def _deep_thaw_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _deep_thaw_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_deep_thaw_json(item) for item in value]
+    return value
+
+
 def _validate_claim_value(value: Any) -> None:
     _validate_json_value(value)
     try:
         encoded = json.dumps(
-            value,
+            _deep_thaw_json(value),
             ensure_ascii=False,
             allow_nan=False,
             sort_keys=True,
@@ -265,7 +283,7 @@ def _validate_claim_parts(
     return {
         "claim_id": normalized_claim_id,
         "field_path": field_path,
-        "value": value,
+        "value": _deep_freeze_json(value),
         "evidence_class": evidence_class,
         "evidence_refs": normalized_refs,
         "rationale": normalized_rationale,
@@ -330,7 +348,7 @@ def claim_to_dict(claim: EvidenceClaim) -> dict[str, Any]:
     return {
         "claimId": normalized["claim_id"],
         "fieldPath": normalized["field_path"],
-        "value": normalized["value"],
+        "value": _deep_thaw_json(normalized["value"]),
         "evidenceClass": normalized["evidence_class"],
         "evidenceRefs": list(normalized["evidence_refs"]),
         "rationale": normalized["rationale"],
