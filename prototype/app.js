@@ -862,7 +862,8 @@
     for (const outcome of outcomes) {
       if (outcome.evidence) {
         items.push(outcome.evidence);
-      } else {
+      }
+      if (!outcome.evidence || outcome.failures.length) {
         failures.push({
           imageId: outcome.reference.id,
           failures: outcome.failures,

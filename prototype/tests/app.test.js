@@ -867,6 +867,53 @@ test("multi-image evidence collection converts one thrown analyzer failure witho
   assert.match(result.failures[0].failures[0].error, /local model crashed/);
 });
 
+test("multi-image collection retains analyzer failures beside successful evidence", async () => {
+  const references = [
+    { id: "image-partial", requestedUses: ["environment"] },
+  ];
+  const entry = { file: { name: "partial.png" } };
+  const result = await resolveDirectorImageEvidenceCollection({
+    references,
+    getEntry: () => entry,
+    analyzerIds: ["wd14", "joycaption"],
+    sessionId: 1,
+    workspaceRevision: 1,
+    projectRevision: 1,
+    getCurrentContext: () => ({
+      references,
+      analyzerIds: ["wd14", "joycaption"],
+      sessionId: 1,
+      workspaceRevision: 1,
+      projectRevision: 1,
+    }),
+    analyze: async () => ({
+      evidence: {
+        imageId: "image-partial",
+        requestedUses: ["environment"],
+        summary: "rainy street",
+        sourceModels: ["wd14"],
+        uncertain: true,
+      },
+      failedAnalyzers: [
+        { id: "joycaption", error: "local model unavailable" },
+      ],
+      allFailed: false,
+    }),
+  });
+
+  assert.deepEqual(result.items.map((item) => item.imageId), [
+    "image-partial",
+  ]);
+  assert.deepEqual(result.failures, [
+    {
+      imageId: "image-partial",
+      failures: [
+        { id: "joycaption", error: "local model unavailable" },
+      ],
+    },
+  ]);
+});
+
 test("multi-image retry analyzes only the requested failed image and reuses valid peers", async () => {
   const references = [
     { id: "action-ref", requestedUses: ["action"] },
@@ -3706,6 +3753,10 @@ test("browser creative director production flow resolves every canonical image a
   assert.doesNotMatch(ensureBody, /app\.resolveDirectorImageEvidence\(/);
   assert.match(ensureBody, /directorImageCollectionController\.get/);
   assert.match(ensureBody, /retryImageIds/);
+  assert.match(
+    ensureBody,
+    /status:\s*evidence[\s\S]*?failures\.length[\s\S]*?"partial"/
+  );
   assert.ok(sendBody, "production director sender exists");
   assert.doesNotMatch(sendBody, /inputs\.images\[0\]/);
 });
