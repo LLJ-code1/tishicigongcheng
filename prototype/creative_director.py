@@ -1,5 +1,6 @@
 import json
 import math
+import re
 from pathlib import Path
 
 from creative_intake import (
@@ -26,6 +27,14 @@ _ACTION_FIELDS = {
         "approvedLockedItemIds",
     },
 }
+_IMAGE_EVIDENCE_FIELDS = {
+    "imageId",
+    "requestedUses",
+    "summary",
+    "sourceModels",
+    "uncertain",
+}
+_SAFE_MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
 class CreativeDirectorError(PromptEngineError):
@@ -59,6 +68,106 @@ def _invalid_request(message: str) -> None:
         code="invalid_creative_director_request",
         status=400,
     )
+
+
+def _valid_unicode_text(
+    value: object,
+    label: str,
+    *,
+    maximum: int,
+    allow_empty: bool = False,
+) -> str:
+    if not isinstance(value, str):
+        _invalid_request(f"{label} must be text")
+    try:
+        value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        _invalid_request(f"{label} must contain valid UTF-8 text")
+    if len(value) > maximum:
+        _invalid_request(f"{label} exceeds {maximum} characters")
+    if not allow_empty and not value:
+        _invalid_request(f"{label} must not be empty")
+    return value
+
+
+def _normalize_image_evidence(
+    current: dict,
+    image_evidence: object,
+) -> dict | None:
+    images = current["inputs"]["images"]
+    if len(images) > 1:
+        _invalid_request("single-image director turns allow at most one image")
+    if image_evidence is None:
+        return None
+    if not isinstance(image_evidence, dict):
+        _invalid_request("image_evidence must be null or one object")
+    if set(image_evidence) != _IMAGE_EVIDENCE_FIELDS:
+        _invalid_request("image_evidence fields are invalid")
+    if len(images) != 1:
+        _invalid_request("image_evidence requires the current image")
+
+    image = images[0]
+    image_id = _valid_unicode_text(
+        image_evidence["imageId"],
+        "image_evidence.imageId",
+        maximum=128,
+    )
+    if image_id != image["id"]:
+        _invalid_request("image_evidence imageId does not match current image")
+
+    requested_uses = image_evidence["requestedUses"]
+    if not isinstance(requested_uses, list) or len(requested_uses) > 8:
+        _invalid_request("image_evidence.requestedUses is invalid")
+    normalized_uses = [
+        _valid_unicode_text(
+            value,
+            "image_evidence.requestedUses",
+            maximum=128,
+        )
+        for value in requested_uses
+    ]
+    if len(normalized_uses) != len(set(normalized_uses)):
+        _invalid_request("image_evidence.requestedUses contains duplicates")
+    if not set(normalized_uses).issubset(set(image["requestedUses"])):
+        _invalid_request(
+            "image_evidence.requestedUses must match current image uses"
+        )
+
+    summary = _valid_unicode_text(
+        image_evidence["summary"],
+        "image_evidence.summary",
+        maximum=100_000,
+    )
+    source_models = image_evidence["sourceModels"]
+    if (
+        not isinstance(source_models, list)
+        or not source_models
+        or len(source_models) > 16
+    ):
+        _invalid_request("image_evidence.sourceModels is invalid")
+    normalized_models = [
+        _valid_unicode_text(
+            value,
+            "image_evidence.sourceModels",
+            maximum=128,
+        )
+        for value in source_models
+    ]
+    if (
+        len(normalized_models) != len(set(normalized_models))
+        or any(not _SAFE_MODEL_ID.fullmatch(value) for value in normalized_models)
+    ):
+        _invalid_request("image_evidence.sourceModels must be unique safe IDs")
+    uncertain = image_evidence["uncertain"]
+    if not isinstance(uncertain, bool):
+        _invalid_request("image_evidence.uncertain must be a boolean")
+    return {
+        "imageId": image_id,
+        "requestedUses": normalized_uses,
+        "summary": summary,
+        "sourceModels": normalized_models,
+        "uncertain": uncertain,
+    }
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
@@ -211,10 +320,10 @@ def run_creative_director_turn(
         _invalid_request("user_message must be non-empty text")
     if len(user_message) > 20_000:
         _invalid_request("user_message exceeds 20000 characters")
-    if not isinstance(image_evidence, list) or len(image_evidence) > 8:
-        _invalid_request("image_evidence must be an array with at most 8 items")
-    if any(not isinstance(item, dict) for item in image_evidence):
-        _invalid_request("each image_evidence item must be an object")
+    canonical_image_evidence = _normalize_image_evidence(
+        canonical_current,
+        image_evidence,
+    )
     if not isinstance(settings, dict):
         _invalid_request("settings must be an object")
 
@@ -223,7 +332,7 @@ def run_creative_director_turn(
             {
                 "current": canonical_current,
                 "userMessage": user_message.strip(),
-                "imageEvidence": image_evidence,
+                "imageEvidence": canonical_image_evidence,
             },
             ensure_ascii=False,
             allow_nan=False,

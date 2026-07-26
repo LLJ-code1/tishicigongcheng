@@ -110,8 +110,52 @@
               </form>
 
               <div class="director-image-preview" id="directorImagePreview" aria-live="polite">
-                <span class="director-preview-placeholder">尚未添加参考图</span>
-                <button class="director-remove-image" type="button" disabled>移除</button>
+                <div class="director-image-preview-main">
+                  <img
+                    id="directorImagePreviewImage"
+                    class="hidden"
+                    alt="当前参考图本地预览"
+                  />
+                  <div>
+                    <strong class="director-preview-placeholder">尚未添加参考图</strong>
+                    <span>仅使用本地识图模型；不会将原图发送给外部文本提供商。</span>
+                  </div>
+                  <button
+                    class="director-remove-image"
+                    id="directorImageRemoveBtn"
+                    type="button"
+                    disabled
+                  >移除</button>
+                </div>
+                <fieldset class="director-image-uses" id="directorImageUses" disabled>
+                  <legend>希望借用参考图的哪些内容</legend>
+                  <div class="director-image-use-chips">
+                    <button type="button" data-director-image-use="character" aria-pressed="false">人物</button>
+                    <button type="button" data-director-image-use="appearance" aria-pressed="false">外貌</button>
+                    <button type="button" data-director-image-use="outfit" aria-pressed="false">服装</button>
+                    <button type="button" data-director-image-use="action" aria-pressed="false">动作</button>
+                    <button type="button" data-director-image-use="environment" aria-pressed="false">环境</button>
+                    <button type="button" data-director-image-use="composition" aria-pressed="false">构图</button>
+                    <button type="button" data-director-image-use="lighting" aria-pressed="false">光影</button>
+                    <button type="button" data-director-image-use="style" aria-pressed="false">风格</button>
+                    <button
+                      type="button"
+                      id="directorImageAiSuggest"
+                      class="is-selected"
+                      aria-pressed="true"
+                    >让 AI 建议</button>
+                  </div>
+                </fieldset>
+                <div class="director-image-analysis">
+                  <span id="directorImageAnalysisStatus">添加图片后，将在发送前进行本地分析。</span>
+                  <ul class="director-analysis-failures" hidden></ul>
+                  <button
+                    id="directorImageRetryBtn"
+                    class="secondary-button"
+                    type="button"
+                    hidden
+                  >重试本地分析</button>
+                </div>
               </div>
 
               <fieldset class="director-provider-controls" id="directorProviderControls">

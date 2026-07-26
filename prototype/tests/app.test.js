@@ -42,6 +42,17 @@ const {
   buildDirectorRenderModel,
   performCreativeIntakeRequest,
   persistCreativeIntakeRevision,
+  DIRECTOR_IMAGE_REQUESTED_USES,
+  validateDirectorImageFile,
+  createDirectorImageReference,
+  setDirectorImageRequestedUses,
+  buildDirectorImageReplaceAction,
+  createSingleImagePreviewController,
+  buildDirectorImageEvidence,
+  performDirectorImageAnalysis,
+  shouldReuseDirectorImageEvidence,
+  createDirectorImageFlowGuard,
+  resolveDirectorImageEvidence,
 } = require("../app.js");
 const unicode15 = require("../unicode15-data.js");
 
@@ -209,7 +220,353 @@ test("starts with recoverable creative director display state", () => {
   assert.equal(state.directorError, "");
   assert.equal(state.directorImageEvidence, null);
   assert.equal(state.directorImageAnalysisStatus, "idle");
+  assert.deepEqual(state.directorImageAnalysisFailures, []);
   assert.equal(state.directorRequestRevision, 0);
+});
+
+test("single-image attachment validates size, creates a safe reference, and cleans every object URL", () => {
+  const created = [];
+  const revoked = [];
+  const controller = createSingleImagePreviewController({
+    createObjectURL(file) {
+      const url = `blob:${file.name}:${created.length + 1}`;
+      created.push(url);
+      return url;
+    },
+    revokeObjectURL(url) {
+      revoked.push(url);
+    },
+  });
+  const firstFile = {
+    name: "C:\\fakepath\\pose.png",
+    type: "image/png",
+    size: 1024,
+  };
+  const secondFile = {
+    name: "../lighting.webp",
+    type: "image/webp",
+    size: 2048,
+  };
+
+  assert.equal(validateDirectorImageFile(firstFile).ok, true);
+  assert.equal(
+    validateDirectorImageFile({
+      name: "huge.png",
+      type: "image/png",
+      size: 20 * 1024 * 1024 + 1,
+    }).ok,
+    false
+  );
+  assert.throws(
+    () =>
+      createDirectorImageReference(
+        firstFile,
+        () => "../unsafe-image-id"
+      ),
+    /reference ID/
+  );
+
+  const first = controller.attach(firstFile, {
+    createId: () => "image-first",
+  });
+  assert.equal(first.accepted, true);
+  assert.deepEqual(first.attachment.reference, {
+    id: "image-first",
+    name: "pose.png",
+    mimeType: "image/png",
+    status: "local_reference_not_embedded",
+    requestedUses: [],
+  });
+  assert.equal(first.attachment.previewUrl, "blob:C:\\fakepath\\pose.png:1");
+
+  const rejected = controller.attach(secondFile, {
+    confirmReplace: () => false,
+    createId: () => "image-second",
+  });
+  assert.equal(rejected.accepted, false);
+  assert.equal(controller.current().reference.id, "image-first");
+  assert.deepEqual(revoked, []);
+
+  const replaced = controller.attach(secondFile, {
+    confirmReplace: () => true,
+    createId: () => "image-second",
+  });
+  assert.equal(replaced.accepted, true);
+  assert.equal(controller.current().reference.id, "image-second");
+  assert.deepEqual(revoked, ["blob:C:\\fakepath\\pose.png:1"]);
+
+  controller.remove();
+  assert.equal(controller.current(), null);
+  assert.deepEqual(revoked, [
+    "blob:C:\\fakepath\\pose.png:1",
+    "blob:../lighting.webp:2",
+  ]);
+});
+
+test("single-image requested-use chips are allowlisted and AI suggestion means no explicit uses", () => {
+  assert.deepEqual(
+    DIRECTOR_IMAGE_REQUESTED_USES.map((item) => item.label),
+    ["人物", "外貌", "服装", "动作", "环境", "构图", "光影", "风格"]
+  );
+  const reference = createDirectorImageReference(
+    { name: "pose.png", type: "image/png", size: 100 },
+    () => "image-one"
+  );
+  const selected = setDirectorImageRequestedUses(reference, [
+    "action",
+    "lighting",
+    "action",
+  ]);
+  assert.deepEqual(selected.requestedUses, ["action", "lighting"]);
+  assert.deepEqual(
+    buildDirectorImageReplaceAction(emptyCreativeIntake(), selected),
+    {
+      type: "replace_inputs",
+      text: "",
+      images: [selected],
+    }
+  );
+  assert.deepEqual(
+    setDirectorImageRequestedUses(selected, []).requestedUses,
+    []
+  );
+  assert.throws(
+    () => setDirectorImageRequestedUses(reference, ["hidden_multi_image"]),
+    /requested image use/
+  );
+});
+
+test("local director image analysis produces bounded evidence and reports partial analyzer failure", async () => {
+  const reference = {
+    id: "image-one",
+    name: "pose.png",
+    mimeType: "image/png",
+    status: "local_reference_not_embedded",
+    requestedUses: ["action"],
+  };
+  const file = {
+    name: "pose.png",
+    type: "image/png",
+    size: 512,
+  };
+  const calls = [];
+  const result = await performDirectorImageAnalysis({
+    file,
+    imageReference: reference,
+    analyzerIds: ["wd14", "joycaption"],
+    readBase64: async () => "REQUEST_LOCAL_BASE64_ONLY",
+    apiCall: async (url, options) => {
+      calls.push({ url, options });
+      return {
+        item: {
+          rawResults: { wd14: "running, wind-blown dress" },
+          analyzers: [
+            {
+              id: "wd14",
+              status: "ready",
+              raw: "running, wind-blown dress",
+            },
+            {
+              id: "joycaption",
+              status: "error",
+              error: "CUDA 显存不足",
+            },
+          ],
+        },
+      };
+    },
+  });
+
+  assert.equal(calls[0].url, "/api/vision/analyze");
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    filename: "pose.png",
+    mimeType: "image/png",
+    dataBase64: "REQUEST_LOCAL_BASE64_ONLY",
+    analyzerIds: ["wd14", "joycaption"],
+  });
+  assert.deepEqual(result.evidence, {
+    imageId: "image-one",
+    requestedUses: ["action"],
+    summary: "running, wind-blown dress",
+    sourceModels: ["wd14"],
+    uncertain: true,
+  });
+  assert.deepEqual(result.failedAnalyzers, [
+    { id: "joycaption", error: "CUDA 显存不足" },
+  ]);
+  assert.equal(result.allFailed, false);
+});
+
+test("director image evidence caps summary and safe model IDs without inventing all-failure evidence", async () => {
+  const reference = {
+    id: "image-one",
+    name: "pose.png",
+    mimeType: "image/png",
+    status: "local_reference_not_embedded",
+    requestedUses: [],
+  };
+  const analyzerEntries = Array.from({ length: 20 }, (_, index) => ({
+    id: `model-${index}`,
+    status: "ready",
+    raw: index === 0 ? "x".repeat(120_000) : `visible-${index}`,
+  }));
+  analyzerEntries.push({
+    id: "unsafe/model",
+    status: "ready",
+    raw: "must not add an unsafe model id",
+  });
+  const bounded = buildDirectorImageEvidence(reference, {
+    analyzers: analyzerEntries,
+    rawResults: Object.fromEntries(
+      analyzerEntries.map((item) => [item.id, item.raw])
+    ),
+  });
+
+  assert.equal(Array.from(bounded.evidence.summary).length, 100_000);
+  assert.equal(bounded.evidence.sourceModels.length, 16);
+  assert.doesNotMatch(bounded.evidence.sourceModels.join(","), /unsafe/);
+  assert.equal(bounded.evidence.uncertain, true);
+  const validUnicode = buildDirectorImageEvidence(reference, {
+    analyzers: [
+      { id: "wd14", status: "ready", raw: "bad\ud800visible" },
+    ],
+  });
+  assert.doesNotMatch(validUnicode.evidence.summary, /\ud800/u);
+  assert.match(validUnicode.evidence.summary, /bad�visible/);
+
+  const failed = await performDirectorImageAnalysis({
+    file: { name: "pose.png", type: "image/png", size: 512 },
+    imageReference: reference,
+    analyzerIds: ["wd14"],
+    readBase64: async () => "REQUEST_LOCAL_BASE64_ONLY",
+    apiCall: async () => {
+      throw new Error("所有识图模型均执行失败");
+    },
+  });
+  assert.equal(failed.evidence, null);
+  assert.equal(failed.allFailed, true);
+  assert.match(failed.failedAnalyzers[0].error, /全部|所有/);
+});
+
+test("partial image evidence retry bypasses reuse and invokes local analysis again", async () => {
+  const reference = {
+    id: "image-one",
+    requestedUses: ["action"],
+  };
+  const evidence = {
+    imageId: "image-one",
+    requestedUses: ["action"],
+    summary: "人物向前奔跑",
+    sourceModels: ["wd14"],
+    uncertain: true,
+  };
+  const guard = createDirectorImageFlowGuard();
+  let calls = 0;
+
+  assert.equal(
+    shouldReuseDirectorImageEvidence(reference, evidence, false),
+    true
+  );
+  assert.equal(
+    shouldReuseDirectorImageEvidence(reference, evidence, true),
+    false
+  );
+  const resolved = await resolveDirectorImageEvidence({
+    getReference: () => reference,
+    currentEvidence: evidence,
+    force: true,
+    guard,
+    analyze: async () => {
+      calls += 1;
+      return { evidence, failedAnalyzers: [], allFailed: false };
+    },
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(resolved.accepted, true);
+  assert.equal(resolved.reused, false);
+});
+
+test("image mutation invalidates an in-flight analysis before it can feed a director request", async () => {
+  let reference = {
+    id: "image-old",
+    requestedUses: ["action"],
+  };
+  const guard = createDirectorImageFlowGuard();
+  let finishAnalysis;
+  const pending = resolveDirectorImageEvidence({
+    getReference: () => reference,
+    currentEvidence: null,
+    force: false,
+    guard,
+    analyze: () =>
+      new Promise((resolve) => {
+        finishAnalysis = resolve;
+      }),
+  });
+
+  let aborted = 0;
+  guard.beginMutation(() => {
+    aborted += 1;
+  });
+  reference = { id: "image-new", requestedUses: ["lighting"] };
+  finishAnalysis({
+    evidence: {
+      imageId: "image-old",
+      requestedUses: ["action"],
+      summary: "old image evidence",
+      sourceModels: ["wd14"],
+      uncertain: false,
+    },
+    failedAnalyzers: [],
+    allFailed: false,
+  });
+  const resolved = await pending;
+
+  assert.equal(aborted, 1);
+  assert.equal(resolved.accepted, false);
+  assert.equal(resolved.result, null);
+});
+
+test("director and project payloads retain only safe image references and local text evidence", () => {
+  const state = createInitialState();
+  state.settings.textProvider = "api";
+  state.creativeIntake.inputs.images = [
+    {
+      id: "image-one",
+      name: "pose.png",
+      mimeType: "image/png",
+      status: "local_reference_not_embedded",
+      requestedUses: ["action"],
+    },
+  ];
+  state.directorImageEvidence = {
+    imageId: "image-one",
+    requestedUses: ["action"],
+    summary: "人物向前奔跑。",
+    sourceModels: ["wd14"],
+    uncertain: false,
+  };
+
+  const directorBody = buildCreativeDirectorRequest(
+    state,
+    1,
+    "只借用动作"
+  ).body;
+  assert.deepEqual(directorBody.imageEvidence, state.directorImageEvidence);
+  const externalTextRequest = JSON.stringify(directorBody);
+  assert.match(externalTextRequest, /人物向前奔跑/);
+  assert.doesNotMatch(
+    externalTextRequest,
+    /dataBase64|REQUEST_LOCAL_BASE64_ONLY|blob:|fakepath/
+  );
+
+  const persisted = JSON.stringify(buildProjectPayload(state));
+  assert.match(persisted, /local_reference_not_embedded/);
+  assert.doesNotMatch(
+    persisted,
+    /directorImageEvidence|dataBase64|REQUEST_LOCAL_BASE64_ONLY|blob:|fakepath/
+  );
 });
 
 test("creative director reducer preserves messages across request errors and retries", () => {
@@ -386,7 +743,7 @@ test("director requests capture canonical state provider evidence skill and all 
   assert.deepEqual(request.body, {
     current: state.creativeIntake,
     message: "继续细化",
-    imageEvidence: [state.directorImageEvidence],
+    imageEvidence: state.directorImageEvidence,
     provider: "api",
     skillOverride: "每轮只问一个关键问题",
   });
@@ -2246,6 +2603,42 @@ test("unified creative director homepage replaces the split creation entry point
   assert.match(css, /\.director-error-banner/);
   assert.match(css, /\.director-source-badge/);
   assert.match(css, /\.director-lock-badge/);
+});
+
+test("director homepage exposes one local-analysis image with use chips and recovery controls", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const source = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  const css = fs.readFileSync(path.join(__dirname, "..", "styles.css"), "utf8");
+
+  for (const id of [
+    "directorImagePreviewImage",
+    "directorImageUses",
+    "directorImageAiSuggest",
+    "directorImageAnalysisStatus",
+    "directorImageRetryBtn",
+    "directorImageRemoveBtn",
+  ]) {
+    assert.match(html, new RegExp(`id=["']${id}["']`));
+  }
+  for (const use of [
+    "character",
+    "appearance",
+    "outfit",
+    "action",
+    "environment",
+    "composition",
+    "lighting",
+    "style",
+  ]) {
+    assert.match(html, new RegExp(`data-director-image-use=["']${use}["']`));
+  }
+  assert.match(html, /仅使用本地识图模型/);
+  assert.match(html, /不会将原图发送给外部文本/);
+  assert.match(source, /performDirectorImageAnalysis/);
+  assert.match(source, /\/api\/vision\/analyze/);
+  assert.match(source, /window\.confirm\([^)]*替换当前参考图/s);
+  assert.match(css, /\.director-image-use-chips/);
+  assert.match(css, /\.director-analysis-failures/);
 });
 
 test("prototype targets a 1920x1080 desktop workspace without mobile navigation", () => {

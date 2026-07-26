@@ -215,7 +215,7 @@ class CreativeDirectorTurnTests(unittest.TestCase):
                 result = creative_director.run_creative_director_turn(
                     current=self.current,
                     user_message="请帮我确定方向",
-                    image_evidence=[],
+                    image_evidence=None,
                     provider=provider,
                     settings=self.settings,
                     transport=transport,
@@ -251,7 +251,7 @@ class CreativeDirectorTurnTests(unittest.TestCase):
             creative_director.run_creative_director_turn(
                 current=self.current,
                 user_message="继续",
-                image_evidence=[],
+                image_evidence=None,
                 provider="api",
                 settings={**self.settings, "apiTextKey": ""},
                 transport=transport,
@@ -269,7 +269,7 @@ class CreativeDirectorTurnTests(unittest.TestCase):
             creative_director.run_creative_director_turn(
                 current=self.current,
                 user_message="继续",
-                image_evidence=[],
+                image_evidence=None,
                 provider="local",
                 settings=self.settings,
                 transport=lambda *_args: {
@@ -318,7 +318,7 @@ class CreativeDirectorTurnTests(unittest.TestCase):
                     creative_director.run_creative_director_turn(
                         current=self.current,
                         user_message="继续",
-                        image_evidence=[],
+                        image_evidence=None,
                         provider="api",
                         settings=self.settings,
                         transport=malicious_transport,
@@ -366,7 +366,7 @@ class CreativeDirectorTurnTests(unittest.TestCase):
             creative_director.run_creative_director_turn(
                 current=self.current,
                 user_message="继续",
-                image_evidence=[],
+                image_evidence=None,
                 provider="api",
                 settings=self.settings,
                 transport=malicious_transport,
@@ -395,7 +395,7 @@ class CreativeDirectorTurnTests(unittest.TestCase):
             creative_director.run_creative_director_turn(
                 current=current,
                 user_message="继续",
-                image_evidence=[],
+                image_evidence=None,
                 provider="api",
                 settings=self.settings,
                 transport=malicious_transport,
@@ -409,10 +409,26 @@ class CreativeDirectorTurnTests(unittest.TestCase):
         self.assertEqual(current, original)
 
     def test_turn_applies_legal_action_through_creative_intake_transition(self):
+        self.current["inputs"]["images"] = [
+            {
+                "id": "image-1",
+                "name": "reference.png",
+                "mimeType": "image/png",
+                "status": "local_reference_not_embedded",
+                "requestedUses": ["action"],
+            }
+        ]
+        original = copy.deepcopy(self.current)
         result = creative_director.run_creative_director_turn(
             current=self.current,
             user_message="请提出方向",
-            image_evidence=[{"imageId": "image-1", "summary": "雨夜街道"}],
+            image_evidence={
+                "imageId": "image-1",
+                "requestedUses": ["action"],
+                "summary": "人物向前奔跑",
+                "sourceModels": ["wd14"],
+                "uncertain": False,
+            },
             provider="local",
             settings=self.settings,
             transport=lambda *_args: self.direction_response("这里有三个候选。"),
@@ -421,7 +437,7 @@ class CreativeDirectorTurnTests(unittest.TestCase):
         self.assertEqual(result["message"], "这里有三个候选。")
         self.assertEqual(result["item"]["directions"][0]["id"], "recommended")
         self.assertEqual(result["item"]["revision"], 1)
-        self.assertEqual(self.current, creative_intake.empty_creative_intake())
+        self.assertEqual(self.current, original)
 
     def test_turn_does_not_bypass_transition_stage_guards(self):
         original = copy.deepcopy(self.current)
@@ -451,7 +467,7 @@ class CreativeDirectorTurnTests(unittest.TestCase):
             creative_director.run_creative_director_turn(
                 current=self.current,
                 user_message="直接给简报",
-                image_evidence=[],
+                image_evidence=None,
                 provider="local",
                 settings=self.settings,
                 transport=lambda *_args: response,
@@ -461,10 +477,10 @@ class CreativeDirectorTurnTests(unittest.TestCase):
 
     def test_turn_validates_user_message_and_image_evidence_before_calling(self):
         cases = (
-            ("blank message", " ", []),
-            ("oversized message", "x" * 20_001, []),
-            ("invalid evidence", "继续", {"imageId": "image-1"}),
-            ("too much evidence", "继续", [{} for _ in range(9)]),
+            ("blank message", " ", None),
+            ("oversized message", "x" * 20_001, None),
+            ("evidence array", "继续", []),
+            ("evidence without current image", "继续", {"imageId": "image-1"}),
         )
         for label, user_message, image_evidence in cases:
             with self.subTest(label=label):
@@ -486,6 +502,133 @@ class CreativeDirectorTurnTests(unittest.TestCase):
                     )
                 self.assertFalse(called)
 
+    def test_turn_rejects_unbound_or_oversized_image_evidence_before_provider(self):
+        image = {
+            "id": "image-1",
+            "name": "reference.png",
+            "mimeType": "image/png",
+            "status": "local_reference_not_embedded",
+            "requestedUses": ["action", "lighting"],
+        }
+        valid = {
+            "imageId": "image-1",
+            "requestedUses": ["action"],
+            "summary": "人物向前奔跑",
+            "sourceModels": ["wd14"],
+            "uncertain": False,
+        }
+        cases = {
+            "unknown field": {**valid, "dataBase64": "must-not-pass"},
+            "mismatched image": {**valid, "imageId": "image-other"},
+            "unrequested use": {
+                **valid,
+                "requestedUses": ["environment"],
+            },
+            "oversized summary": {
+                **valid,
+                "summary": "x" * 100_001,
+            },
+            "invalid unicode summary": {
+                **valid,
+                "summary": "\ud800",
+            },
+            "too many models": {
+                **valid,
+                "sourceModels": [f"model-{index}" for index in range(17)],
+            },
+            "unsafe model": {
+                **valid,
+                "sourceModels": ["../model"],
+            },
+            "duplicate model": {
+                **valid,
+                "sourceModels": ["wd14", "wd14"],
+            },
+            "non-boolean uncertainty": {
+                **valid,
+                "uncertain": 0,
+            },
+        }
+        for label, evidence in cases.items():
+            with self.subTest(label=label):
+                current = creative_intake.empty_creative_intake()
+                current["inputs"]["images"] = [copy.deepcopy(image)]
+                called = False
+
+                def transport(*_args):
+                    nonlocal called
+                    called = True
+                    return self.direction_response()
+
+                with self.assertRaises(
+                    creative_director.CreativeDirectorError
+                ) as raised:
+                    creative_director.run_creative_director_turn(
+                        current=current,
+                        user_message="继续",
+                        image_evidence=evidence,
+                        provider="local",
+                        settings=self.settings,
+                        transport=transport,
+                    )
+
+                self.assertEqual(
+                    raised.exception.code,
+                    "invalid_creative_director_request",
+                )
+                self.assertFalse(called)
+
+        current = creative_intake.empty_creative_intake()
+        current["inputs"]["images"] = [image, {**image, "id": "image-2"}]
+        with self.assertRaises(creative_director.CreativeDirectorError):
+            creative_director.run_creative_director_turn(
+                current=current,
+                user_message="继续",
+                image_evidence=valid,
+                provider="local",
+                settings=self.settings,
+                transport=lambda *_args: self.direction_response(),
+            )
+
+    def test_turn_accepts_exact_image_evidence_boundaries_and_sends_only_text(self):
+        current = creative_intake.empty_creative_intake()
+        current["inputs"]["images"] = [
+            {
+                "id": "image-1",
+                "name": "reference.png",
+                "mimeType": "image/png",
+                "status": "local_reference_not_embedded",
+                "requestedUses": ["action", "lighting"],
+            }
+        ]
+        evidence = {
+            "imageId": "image-1",
+            "requestedUses": ["action"],
+            "summary": "x" * 100_000,
+            "sourceModels": [f"model-{index}" for index in range(16)],
+            "uncertain": True,
+        }
+        captured = {}
+
+        def transport(_url, body, _headers, _timeout):
+            captured.update(body)
+            return self.direction_response()
+
+        creative_director.run_creative_director_turn(
+            current=current,
+            user_message="继续",
+            image_evidence=evidence,
+            provider="api",
+            settings=self.settings,
+            transport=transport,
+        )
+
+        content = json.loads(captured["messages"][1]["content"])
+        self.assertEqual(content["imageEvidence"], evidence)
+        serialized = json.dumps(content, ensure_ascii=False)
+        self.assertNotIn("dataBase64", serialized)
+        self.assertNotIn("localPath", serialized)
+
     def test_transport_failure_does_not_mutate_current(self):
         original = copy.deepcopy(self.current)
 
@@ -496,7 +639,7 @@ class CreativeDirectorTurnTests(unittest.TestCase):
             creative_director.run_creative_director_turn(
                 current=self.current,
                 user_message="继续",
-                image_evidence=[],
+                image_evidence=None,
                 provider="local",
                 settings=self.settings,
                 transport=transport,

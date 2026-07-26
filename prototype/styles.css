@@ -2962,9 +2962,8 @@ select:focus {
 }
 
 .director-image-preview {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
+  gap: 8px;
   min-height: 42px;
   padding: 7px 9px;
   border: 1px dashed var(--line);
@@ -2972,6 +2971,89 @@ select:focus {
   color: var(--faint);
   background: var(--surface-soft);
   font-size: 11px;
+}
+
+.director-image-preview-main {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+}
+
+.director-image-preview-main img {
+  width: 54px;
+  height: 54px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: #fff;
+}
+
+.director-image-preview-main strong,
+.director-image-preview-main span {
+  display: block;
+}
+
+.director-image-preview-main strong {
+  color: var(--text);
+}
+
+.director-image-preview-main span {
+  margin-top: 3px;
+  line-height: 1.45;
+}
+
+.director-image-uses {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 8px 0 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.director-image-uses legend {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.director-image-use-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.director-image-use-chips button {
+  min-height: 26px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: #fff;
+  font-size: 10px;
+}
+
+.director-image-use-chips button.is-selected,
+.director-image-use-chips button[aria-pressed="true"] {
+  border-color: var(--teal);
+  color: var(--teal);
+  background: var(--teal-soft);
+}
+
+.director-image-analysis {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+}
+
+.director-image-analysis > span {
+  flex: 1;
+}
+
+.director-analysis-failures {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--danger);
 }
 
 .director-remove-image {

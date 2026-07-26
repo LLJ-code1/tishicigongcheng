@@ -820,20 +820,35 @@ class PromptStudioServerTests(unittest.TestCase):
                 {
                     "current": creative_intake.empty_creative_intake(),
                     "message": "bad\ud800message",
-                    "imageEvidence": [],
+                    "imageEvidence": None,
                 },
             ),
             (
                 "nested image evidence",
                 {
-                    "current": creative_intake.empty_creative_intake(),
+                    "current": {
+                        **creative_intake.empty_creative_intake(),
+                        "inputs": {
+                            "text": "",
+                            "images": [
+                                {
+                                    "id": "image-1",
+                                    "name": "reference.png",
+                                    "mimeType": "image/png",
+                                    "status": "local_reference_not_embedded",
+                                    "requestedUses": ["action"],
+                                }
+                            ],
+                        },
+                    },
                     "message": "继续",
-                    "imageEvidence": [
-                        {
-                            "imageId": "image-1",
-                            "summary": "bad\ud800summary",
-                        }
-                    ],
+                    "imageEvidence": {
+                        "imageId": "image-1",
+                        "requestedUses": ["action"],
+                        "summary": "bad\ud800summary",
+                        "sourceModels": ["wd14"],
+                        "uncertain": False,
+                    },
                 },
             ),
         )
@@ -856,6 +871,47 @@ class PromptStudioServerTests(unittest.TestCase):
                         response["code"],
                         "invalid_creative_director_request",
                     )
+        transport.assert_not_called()
+
+    def test_creative_director_rejects_mismatched_image_evidence_before_provider(self):
+        current = creative_intake.empty_creative_intake()
+        current["inputs"]["images"] = [
+            {
+                "id": "image-current",
+                "name": "reference.png",
+                "mimeType": "image/png",
+                "status": "local_reference_not_embedded",
+                "requestedUses": ["action"],
+            }
+        ]
+        with patch("creative_director.default_transport") as transport:
+            response = self.assert_http_error_json(
+                Request(
+                    f"{self.base_url}/api/creative-intake/director",
+                    data=json.dumps(
+                        {
+                            "current": current,
+                            "message": "只借用动作",
+                            "imageEvidence": {
+                                "imageId": "image-stale",
+                                "requestedUses": ["action"],
+                                "summary": "人物向前奔跑",
+                                "sourceModels": ["wd14"],
+                                "uncertain": False,
+                            },
+                        },
+                        ensure_ascii=False,
+                    ).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                ),
+                400,
+            )
+
+        self.assertEqual(
+            response["code"],
+            "invalid_creative_director_request",
+        )
         transport.assert_not_called()
 
     def test_creative_director_sanitizes_provider_and_model_failures(self):
@@ -906,7 +962,7 @@ class PromptStudioServerTests(unittest.TestCase):
                                         creative_intake.empty_creative_intake()
                                     ),
                                     "message": "继续",
-                                    "imageEvidence": [],
+                                    "imageEvidence": None,
                                     "provider": "api",
                                 }
                             ).encode("utf-8"),
@@ -969,7 +1025,7 @@ class PromptStudioServerTests(unittest.TestCase):
                         {
                             "current": current,
                             "message": "直接给简报",
-                            "imageEvidence": [],
+                            "imageEvidence": None,
                             "provider": "api",
                         }
                     ).encode("utf-8"),

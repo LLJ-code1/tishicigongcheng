@@ -27,6 +27,24 @@
   const DEFAULT_BLOCK_WEIGHT = 100;
   const MIN_BLOCK_WEIGHT = 0;
   const MAX_BLOCK_WEIGHT = 120;
+  const MAX_DIRECTOR_IMAGE_BYTES = 20 * 1024 * 1024;
+  const MAX_DIRECTOR_EVIDENCE_CHARACTERS = 100_000;
+  const MAX_DIRECTOR_EVIDENCE_MODELS = 16;
+  const DIRECTOR_IMAGE_REQUESTED_USES = Object.freeze([
+    Object.freeze({ id: "character", label: "人物" }),
+    Object.freeze({ id: "appearance", label: "外貌" }),
+    Object.freeze({ id: "outfit", label: "服装" }),
+    Object.freeze({ id: "action", label: "动作" }),
+    Object.freeze({ id: "environment", label: "环境" }),
+    Object.freeze({ id: "composition", label: "构图" }),
+    Object.freeze({ id: "lighting", label: "光影" }),
+    Object.freeze({ id: "style", label: "风格" }),
+  ]);
+  const DIRECTOR_IMAGE_USE_IDS = new Set(
+    DIRECTOR_IMAGE_REQUESTED_USES.map((item) => item.id)
+  );
+  const SAFE_DIRECTOR_IMAGE_ID = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/u;
+  const SAFE_EVIDENCE_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
   const PROMPT_WHITESPACE_PATTERN =
     /[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+/g;
   const PROMPT_EDGE_WHITESPACE_PATTERN =
@@ -183,6 +201,376 @@
     );
   }
 
+  function validateDirectorImageFile(file) {
+    if (!isSupportedImageFile(file)) {
+      return { ok: false, error: "请选择 PNG、JPG 或 WEBP 图片" };
+    }
+    const size = Number(file?.size);
+    if (!Number.isSafeInteger(size) || size <= 0) {
+      return { ok: false, error: "图片文件为空或大小无效" };
+    }
+    if (size > MAX_DIRECTOR_IMAGE_BYTES) {
+      return { ok: false, error: "图片不能超过 20 MB" };
+    }
+    return { ok: true, error: "" };
+  }
+
+  function directorImageMimeType(file) {
+    const declared = String(file?.type || "").toLowerCase();
+    if (["image/png", "image/jpeg", "image/webp"].includes(declared)) {
+      return declared;
+    }
+    const name = String(file?.name || "").toLowerCase();
+    if (name.endsWith(".png")) return "image/png";
+    if (name.endsWith(".webp")) return "image/webp";
+    return "image/jpeg";
+  }
+
+  function pureImageFilename(value) {
+    const parts = String(value || "")
+      .split(/[\\/:]+/u)
+      .filter(Boolean);
+    const candidate = parts.at(-1) || "";
+    if (!candidate || candidate === "." || candidate === "..") {
+      throw new TypeError("director image filename is invalid");
+    }
+    return Array.from(candidate).slice(0, 512).join("");
+  }
+
+  function createDirectorImageReference(file, createId) {
+    const validation = validateDirectorImageFile(file);
+    if (!validation.ok) throw new TypeError(validation.error);
+    if (typeof createId !== "function") {
+      throw new TypeError("director image reference requires an ID factory");
+    }
+    const id = String(createId() || "");
+    if (!SAFE_DIRECTOR_IMAGE_ID.test(id)) {
+      throw new TypeError("director image reference ID is invalid");
+    }
+    return {
+      id,
+      name: pureImageFilename(file.name),
+      mimeType: directorImageMimeType(file),
+      status: "local_reference_not_embedded",
+      requestedUses: [],
+    };
+  }
+
+  function setDirectorImageRequestedUses(reference, requestedUses) {
+    if (
+      !reference ||
+      typeof reference !== "object" ||
+      Array.isArray(reference) ||
+      !Array.isArray(requestedUses)
+    ) {
+      throw new TypeError("requested image uses require one image reference");
+    }
+    const normalized = [];
+    for (const value of requestedUses) {
+      if (typeof value !== "string" || !DIRECTOR_IMAGE_USE_IDS.has(value)) {
+        throw new TypeError("requested image use is not supported");
+      }
+      if (!normalized.includes(value)) normalized.push(value);
+    }
+    return { ...clone(reference), requestedUses: normalized };
+  }
+
+  function buildDirectorImageReplaceAction(intake, reference = null) {
+    const current = normalizeCreativeIntake(intake);
+    return {
+      type: "replace_inputs",
+      text: current.inputs.text,
+      images: reference ? [clone(reference)] : [],
+    };
+  }
+
+  function createSingleImagePreviewController({
+    createObjectURL,
+    revokeObjectURL,
+  }) {
+    if (
+      typeof createObjectURL !== "function" ||
+      typeof revokeObjectURL !== "function"
+    ) {
+      throw new TypeError("single-image preview requires object URL functions");
+    }
+    let attachment = null;
+    return {
+      attach(file, { confirmReplace, createId } = {}) {
+        const validation = validateDirectorImageFile(file);
+        if (!validation.ok) {
+          return { accepted: false, error: validation.error };
+        }
+        if (
+          attachment &&
+          (typeof confirmReplace !== "function" || !confirmReplace())
+        ) {
+          return { accepted: false, error: "已保留当前参考图" };
+        }
+        const reference = createDirectorImageReference(file, createId);
+        const previewUrl = createObjectURL(file);
+        const previous = attachment;
+        attachment = { file, reference, previewUrl };
+        if (previous?.previewUrl) revokeObjectURL(previous.previewUrl);
+        return { accepted: true, attachment: { ...attachment } };
+      },
+      remove() {
+        const previous = attachment;
+        attachment = null;
+        if (previous?.previewUrl) revokeObjectURL(previous.previewUrl);
+        return previous ? { ...previous } : null;
+      },
+      current() {
+        return attachment ? { ...attachment } : null;
+      },
+    };
+  }
+
+  function boundedText(value, maximum) {
+    const source = String(value || "");
+    let safe = "";
+    for (let index = 0; index < source.length; index += 1) {
+      const unit = source.charCodeAt(index);
+      if (unit >= 0xd800 && unit <= 0xdbff) {
+        const trailing = source.charCodeAt(index + 1);
+        if (trailing >= 0xdc00 && trailing <= 0xdfff) {
+          safe += source[index] + source[index + 1];
+          index += 1;
+        } else {
+          safe += "\ufffd";
+        }
+      } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+        safe += "\ufffd";
+      } else {
+        safe += source[index];
+      }
+    }
+    return Array.from(safe).slice(0, maximum).join("");
+  }
+
+  function buildDirectorImageEvidence(imageReference, visionItem) {
+    const reference = setDirectorImageRequestedUses(
+      imageReference,
+      imageReference?.requestedUses || []
+    );
+    const item =
+      visionItem && typeof visionItem === "object" && !Array.isArray(visionItem)
+        ? visionItem
+        : {};
+    const rawResults =
+      item.rawResults &&
+      typeof item.rawResults === "object" &&
+      !Array.isArray(item.rawResults)
+        ? item.rawResults
+        : {};
+    const analyzerStates = Array.isArray(item.analyzers)
+      ? item.analyzers
+      : [];
+    const failedAnalyzers = analyzerStates
+      .filter((entry) => entry?.status === "error")
+      .slice(0, MAX_DIRECTOR_EVIDENCE_MODELS)
+      .map((entry) => ({
+        id: SAFE_EVIDENCE_MODEL_ID.test(String(entry.id || ""))
+          ? String(entry.id)
+          : "unknown",
+        error: boundedText(entry.error || "分析失败", 2_000),
+      }));
+    const readyIds = [];
+    for (const entry of analyzerStates) {
+      const id = String(entry?.id || "");
+      if (
+        entry?.status === "ready" &&
+        SAFE_EVIDENCE_MODEL_ID.test(id) &&
+        !readyIds.includes(id)
+      ) {
+        readyIds.push(id);
+      }
+    }
+    if (!readyIds.length) {
+      for (const id of Object.keys(rawResults)) {
+        if (
+          SAFE_EVIDENCE_MODEL_ID.test(id) &&
+          !readyIds.includes(id)
+        ) {
+          readyIds.push(id);
+        }
+      }
+    }
+    const sourceModels = readyIds.slice(
+      0,
+      MAX_DIRECTOR_EVIDENCE_MODELS
+    );
+    const summaries = sourceModels
+      .map((id) => {
+        const analyzer = analyzerStates.find(
+          (entry) => entry?.id === id && entry?.status === "ready"
+        );
+        return String(rawResults[id] ?? analyzer?.raw ?? "").trim();
+      })
+      .filter(Boolean);
+    const summary = boundedText(
+      summaries.join("\n\n"),
+      MAX_DIRECTOR_EVIDENCE_CHARACTERS
+    );
+    const hasEvidence = sourceModels.length > 0 && Boolean(summary);
+    return {
+      evidence: hasEvidence
+        ? {
+            imageId: reference.id,
+            requestedUses: clone(reference.requestedUses),
+            summary,
+            sourceModels,
+            uncertain:
+              failedAnalyzers.length > 0 ||
+              reference.requestedUses.length === 0,
+          }
+        : null,
+      failedAnalyzers,
+      allFailed: !hasEvidence,
+    };
+  }
+
+  function directorImageBinding(reference) {
+    if (!reference) return "";
+    return JSON.stringify([
+      reference.id || "",
+      Array.isArray(reference.requestedUses)
+        ? reference.requestedUses
+        : [],
+    ]);
+  }
+
+  function shouldReuseDirectorImageEvidence(
+    reference,
+    evidence,
+    force = false
+  ) {
+    return Boolean(
+      !force &&
+        reference &&
+        evidence &&
+        evidence.imageId === reference.id &&
+        JSON.stringify(evidence.requestedUses || []) ===
+          JSON.stringify(reference.requestedUses || [])
+    );
+  }
+
+  function createDirectorImageFlowGuard() {
+    let revision = 0;
+    return {
+      beginMutation(abort) {
+        revision += 1;
+        if (typeof abort === "function") abort();
+        return revision;
+      },
+      capture(reference) {
+        return {
+          revision,
+          binding: directorImageBinding(reference),
+        };
+      },
+      isCurrent(snapshot, reference) {
+        return Boolean(
+          snapshot &&
+            snapshot.revision === revision &&
+            snapshot.binding === directorImageBinding(reference)
+        );
+      },
+    };
+  }
+
+  async function resolveDirectorImageEvidence({
+    getReference,
+    currentEvidence,
+    force = false,
+    guard,
+    analyze,
+  }) {
+    if (
+      typeof getReference !== "function" ||
+      !guard ||
+      typeof guard.capture !== "function" ||
+      typeof guard.isCurrent !== "function" ||
+      typeof analyze !== "function"
+    ) {
+      throw new TypeError("director image evidence resolver is invalid");
+    }
+    const reference = getReference();
+    if (!reference) {
+      return { accepted: true, reused: false, result: null };
+    }
+    const snapshot = guard.capture(reference);
+    if (
+      shouldReuseDirectorImageEvidence(
+        reference,
+        currentEvidence,
+        force
+      )
+    ) {
+      return {
+        accepted: guard.isCurrent(snapshot, getReference()),
+        reused: true,
+        result: { evidence: clone(currentEvidence) },
+      };
+    }
+    const result = await analyze(reference);
+    if (!guard.isCurrent(snapshot, getReference())) {
+      return { accepted: false, reused: false, result: null };
+    }
+    return { accepted: true, reused: false, result };
+  }
+
+  async function performDirectorImageAnalysis({
+    file,
+    imageReference,
+    analyzerIds,
+    readBase64,
+    apiCall,
+    signal,
+  }) {
+    if (
+      typeof readBase64 !== "function" ||
+      typeof apiCall !== "function"
+    ) {
+      throw new TypeError("director image analysis requires IO functions");
+    }
+    const validation = validateDirectorImageFile(file);
+    if (!validation.ok) throw new TypeError(validation.error);
+    try {
+      const dataBase64 = await readBase64(file);
+      const response = await apiCall("/api/vision/analyze", {
+        method: "POST",
+        ...(signal ? { signal } : {}),
+        body: JSON.stringify({
+          filename: pureImageFilename(file.name),
+          mimeType: directorImageMimeType(file),
+          dataBase64,
+          analyzerIds: Array.isArray(analyzerIds)
+            ? analyzerIds.slice(0, MAX_DIRECTOR_EVIDENCE_MODELS)
+            : [],
+        }),
+      });
+      return buildDirectorImageEvidence(
+        imageReference,
+        response?.item || response
+      );
+    } catch (error) {
+      return {
+        evidence: null,
+        failedAnalyzers: [
+          {
+            id: "analysis",
+            error: boundedText(
+              error?.message || "所有识图模型均执行失败",
+              2_000
+            ),
+          },
+        ],
+        allFailed: true,
+      };
+    }
+  }
+
   function idleGenerationProgress() {
     return {
       status: "idle",
@@ -238,6 +626,7 @@
       directorError: "",
       directorImageEvidence: null,
       directorImageAnalysisStatus: "idle",
+      directorImageAnalysisFailures: [],
       directorRequestRevision: 0,
       textMode: "expand",
       draftInput: "",
@@ -461,8 +850,8 @@
       throw new TypeError("creative director message must not be empty");
     }
     const evidence = state.directorImageEvidence
-      ? [clone(state.directorImageEvidence)]
-      : [];
+      ? clone(state.directorImageEvidence)
+      : null;
     return {
       path: "/api/creative-intake/director",
       guard: creativeIntakeRequestGuard(state, sessionId),
@@ -631,6 +1020,11 @@
         : null,
       imageAnalysisStatus:
         state.directorImageAnalysisStatus || "idle",
+      imageAnalysisFailures: Array.isArray(
+        state.directorImageAnalysisFailures
+      )
+        ? clone(state.directorImageAnalysisFailures)
+        : [],
       directions: intake.directions.map((direction) => ({
         ...clone(direction),
         selected: direction.id === intake.selectedDirectionId,
@@ -1135,6 +1529,7 @@
     next.directorError = "";
     next.directorImageEvidence = null;
     next.directorImageAnalysisStatus = "idle";
+    next.directorImageAnalysisFailures = [];
     next.directorRequestRevision = 0;
     next.projectId = typeof project?.id === "string" ? project.id : null;
     next.projectName =
@@ -2087,6 +2482,9 @@
         next.directorImageEvidence = action.item
           ? clone(action.item)
           : null;
+        next.directorImageAnalysisFailures = Array.isArray(action.failures)
+          ? clone(action.failures)
+          : [];
         return next;
       case "DIRECTOR_IMAGE_ANALYSIS_STATUS_CHANGED":
         next.directorImageAnalysisStatus =
@@ -3040,6 +3438,17 @@
     reduceState,
     getCombinedPrompt,
     isSupportedImageFile,
+    DIRECTOR_IMAGE_REQUESTED_USES,
+    validateDirectorImageFile,
+    createDirectorImageReference,
+    setDirectorImageRequestedUses,
+    buildDirectorImageReplaceAction,
+    createSingleImagePreviewController,
+    buildDirectorImageEvidence,
+    performDirectorImageAnalysis,
+    shouldReuseDirectorImageEvidence,
+    createDirectorImageFlowGuard,
+    resolveDirectorImageEvidence,
     compileBlocks,
     compileBlockFragment,
     composeArtistMix,
@@ -3094,10 +3503,17 @@
   let generationProgressTimer = null;
   let activeTextAbort = null;
   let activeVisionAbort = null;
+  let activeDirectorImageAbort = null;
   let activeDirectorAbort = null;
   const workspaceRequestAborts = new Set();
   let uploadedImageFile = null;
   let imagePreviewUrl = "";
+  const directorImagePreviewController =
+    app.createSingleImagePreviewController({
+      createObjectURL: (file) => URL.createObjectURL(file),
+      revokeObjectURL: (url) => URL.revokeObjectURL(url),
+    });
+  const directorImageFlowGuard = app.createDirectorImageFlowGuard();
   let projectListRequestId = 0;
   let projectOpenRequestId = 0;
   let workspaceSessionId = 0;
@@ -3416,6 +3832,7 @@
     workspaceRequestAborts.clear();
     activeTextAbort = null;
     activeVisionAbort = null;
+    activeDirectorImageAbort = null;
     activeDirectorAbort = null;
     editPreviewRecipe = null;
     editPreviewPayload = null;
@@ -3460,6 +3877,7 @@
       advanceWorkspaceSession();
       uploadedImageFile = null;
       releaseImagePreview();
+      directorImagePreviewController.remove();
       dispatch({ type: "PROJECT_OPENED", item: result.item || {} });
     } catch (error) {
       if (requestId !== projectOpenRequestId) return;
@@ -3476,6 +3894,7 @@
     projectOpenRequestId += 1;
     uploadedImageFile = null;
     releaseImagePreview();
+    directorImagePreviewController.remove();
     dispatch({ type: "NEW_PROJECT" });
   }
 
@@ -3759,6 +4178,243 @@
     });
   }
 
+  function selectedLocalDirectorAnalyzers() {
+    return Object.values(state.analyzers || {})
+      .filter(
+        (model) =>
+          model.id !== "external" &&
+          model.selected &&
+          model.available !== false
+      )
+      .map((model) => model.id)
+      .slice(0, 16);
+  }
+
+  function clearDirectorImageEvidence(status = "idle") {
+    state = app.reduceState(state, {
+      type: "DIRECTOR_IMAGE_EVIDENCE_SET",
+      item: null,
+      failures: [],
+    });
+    state = app.reduceState(state, {
+      type: "DIRECTOR_IMAGE_ANALYSIS_STATUS_CHANGED",
+      status,
+    });
+  }
+
+  function syncDirectorImageAttachmentWithCanonical() {
+    const attachment = directorImagePreviewController.current();
+    const reference = state.creativeIntake.inputs.images[0] || null;
+    if (attachment && attachment.reference.id !== reference?.id) {
+      directorImagePreviewController.remove();
+      activeDirectorImageAbort?.abort();
+      clearDirectorImageEvidence("idle");
+    }
+  }
+
+  async function ensureDirectorImageEvidence({ force = false } = {}) {
+    const reference = state.creativeIntake.inputs.images[0] || null;
+    if (!reference) {
+      clearDirectorImageEvidence("idle");
+      return true;
+    }
+    const currentAttachment = directorImagePreviewController.current();
+    if (
+      app.shouldReuseDirectorImageEvidence(
+        reference,
+        state.directorImageEvidence,
+        force
+      )
+    ) {
+      return true;
+    }
+    if (
+      !currentAttachment ||
+      currentAttachment.reference.id !== reference.id
+    ) {
+      state = app.reduceState(state, {
+        type: "DIRECTOR_IMAGE_EVIDENCE_SET",
+        item: null,
+        failures: [
+          {
+            id: "attachment",
+            error: "原图未持久化，请重新附加这张参考图后再分析。",
+          },
+        ],
+      });
+      state = app.reduceState(state, {
+        type: "DIRECTOR_IMAGE_ANALYSIS_STATUS_CHANGED",
+        status: "error",
+      });
+      render();
+      return false;
+    }
+    const analyzerIds = selectedLocalDirectorAnalyzers();
+    if (!analyzerIds.length) {
+      state = app.reduceState(state, {
+        type: "DIRECTOR_IMAGE_EVIDENCE_SET",
+        item: null,
+        failures: [
+          {
+            id: "analysis",
+            error: "没有可用的本地识图模型，请先在设置中启用一个模型。",
+          },
+        ],
+      });
+      state = app.reduceState(state, {
+        type: "DIRECTOR_IMAGE_ANALYSIS_STATUS_CHANGED",
+        status: "error",
+      });
+      render();
+      return false;
+    }
+
+    activeDirectorImageAbort?.abort();
+    const controller = new AbortController();
+    activeDirectorImageAbort = controller;
+    workspaceRequestAborts.add(controller);
+    state = app.reduceState(state, {
+      type: "DIRECTOR_IMAGE_EVIDENCE_SET",
+      item: null,
+      failures: [],
+    });
+    state = app.reduceState(state, {
+      type: "DIRECTOR_IMAGE_ANALYSIS_STATUS_CHANGED",
+      status: "analyzing",
+    });
+    render();
+    try {
+      const resolved = await app.resolveDirectorImageEvidence({
+        getReference: () =>
+          state.creativeIntake.inputs.images[0] || null,
+        currentEvidence: null,
+        force: true,
+        guard: directorImageFlowGuard,
+        analyze: (capturedReference) =>
+          app.performDirectorImageAnalysis({
+            file: currentAttachment.file,
+            imageReference: capturedReference,
+            analyzerIds,
+            readBase64: fileToBase64,
+            apiCall: apiJson,
+            signal: controller.signal,
+          }),
+      });
+      if (controller.signal.aborted || !resolved.accepted) {
+        return false;
+      }
+      const result = resolved.result;
+      state = app.reduceState(state, {
+        type: "DIRECTOR_IMAGE_EVIDENCE_SET",
+        item: result.evidence,
+        failures: result.failedAnalyzers,
+      });
+      state = app.reduceState(state, {
+        type: "DIRECTOR_IMAGE_ANALYSIS_STATUS_CHANGED",
+        status: result.allFailed
+          ? "error"
+          : result.failedAnalyzers.length
+            ? "partial"
+            : "ready",
+      });
+      render();
+      return !result.allFailed;
+    } finally {
+      workspaceRequestAborts.delete(controller);
+      if (activeDirectorImageAbort === controller) {
+        activeDirectorImageAbort = null;
+      }
+    }
+  }
+
+  async function attachDirectorImageFile(file) {
+    const validation = app.validateDirectorImageFile(file);
+    if (!validation.ok) {
+      state = app.reduceState(state, {
+        type: "DIRECTOR_REQUEST_FAILED",
+        error: validation.error,
+      });
+      render();
+      return false;
+    }
+    const currentReference =
+      state.creativeIntake.inputs.images[0] || null;
+    if (
+      currentReference &&
+      !window.confirm(
+        "替换当前参考图？旧图的本地预览和分析证据会被清除。"
+      )
+    ) {
+      return false;
+    }
+    directorImageFlowGuard.beginMutation(() => {
+      activeDirectorImageAbort?.abort();
+    });
+    clearDirectorImageEvidence("idle");
+    const reference = app.createDirectorImageReference(
+      file,
+      () => app.createClientId("image")
+    );
+    const accepted = await transitionCreativeIntake(
+      app.buildDirectorImageReplaceAction(
+        state.creativeIntake,
+        reference
+      )
+    );
+    if (!accepted) return false;
+    directorImagePreviewController.attach(file, {
+      confirmReplace: () => true,
+      createId: () => reference.id,
+    });
+    clearDirectorImageEvidence("idle");
+    render();
+    return true;
+  }
+
+  async function removeDirectorImage() {
+    const reference = state.creativeIntake.inputs.images[0] || null;
+    if (!reference || state.directorBusy) return false;
+    directorImageFlowGuard.beginMutation(() => {
+      activeDirectorImageAbort?.abort();
+    });
+    clearDirectorImageEvidence("idle");
+    const accepted = await transitionCreativeIntake(
+      app.buildDirectorImageReplaceAction(state.creativeIntake)
+    );
+    if (!accepted) return false;
+    activeDirectorImageAbort?.abort();
+    directorImagePreviewController.remove();
+    clearDirectorImageEvidence("idle");
+    render();
+    return true;
+  }
+
+  async function setDirectorImageUses(requestedUses) {
+    const reference = state.creativeIntake.inputs.images[0] || null;
+    if (!reference || state.directorBusy) return false;
+    const updated = app.setDirectorImageRequestedUses(
+      reference,
+      requestedUses
+    );
+    if (
+      JSON.stringify(updated.requestedUses) ===
+      JSON.stringify(reference.requestedUses)
+    ) {
+      return true;
+    }
+    directorImageFlowGuard.beginMutation(() => {
+      activeDirectorImageAbort?.abort();
+    });
+    clearDirectorImageEvidence("idle");
+    const accepted = await transitionCreativeIntake(
+      app.buildDirectorImageReplaceAction(state.creativeIntake, updated)
+    );
+    if (!accepted) return false;
+    clearDirectorImageEvidence("idle");
+    render();
+    return true;
+  }
+
   async function sendCreativeDirectorMessage() {
     if (state.directorBusy) return;
     const input = $("#directorMessageInput");
@@ -3770,6 +4426,20 @@
       });
       render();
       return;
+    }
+    if (state.creativeIntake.inputs.images.length) {
+      const imageSnapshot = directorImageFlowGuard.capture(
+        state.creativeIntake.inputs.images[0]
+      );
+      if (
+        !(await ensureDirectorImageEvidence()) ||
+        !directorImageFlowGuard.isCurrent(
+          imageSnapshot,
+          state.creativeIntake.inputs.images[0] || null
+        )
+      ) {
+        return;
+      }
     }
 
     let request;
@@ -3811,6 +4481,7 @@
         return;
       }
       state = result.state;
+      syncDirectorImageAttachmentWithCanonical();
       const acceptedProjectRevision = state.projectRevision;
       if (input) input.value = "";
       render();
@@ -3898,6 +4569,7 @@
         return false;
       }
       state = result.state;
+      syncDirectorImageAttachmentWithCanonical();
       const acceptedProjectRevision = state.projectRevision;
       const message = creativeIntakeTransitionMessage(
         action,
@@ -5446,14 +6118,92 @@
     }
 
     const imagePreview = $("#directorImagePreview");
-    if (
-      imagePreview &&
-      !state.creativeIntake.inputs.images.length &&
-      !model.imageEvidence
-    ) {
-      imagePreview.querySelector(
+    if (imagePreview) {
+      const reference = state.creativeIntake.inputs.images[0] || null;
+      const attachment = directorImagePreviewController.current();
+      const hasLocalFile =
+        Boolean(reference) && attachment?.reference.id === reference.id;
+      const previewImage = $("#directorImagePreviewImage");
+      const placeholder = imagePreview.querySelector(
         ".director-preview-placeholder"
-      ).textContent = "尚未添加参考图";
+      );
+      if (previewImage) {
+        previewImage.classList.toggle("hidden", !hasLocalFile);
+        if (
+          hasLocalFile &&
+          previewImage.src !== attachment.previewUrl
+        ) {
+          previewImage.src = attachment.previewUrl;
+        } else if (!hasLocalFile) {
+          previewImage.removeAttribute("src");
+        }
+      }
+      if (placeholder) {
+        placeholder.textContent = reference
+          ? hasLocalFile
+            ? reference.name
+            : `${reference.name} · 需重新附加原图`
+          : "尚未添加参考图";
+      }
+      const uses = new Set(reference?.requestedUses || []);
+      $$("[data-director-image-use]", imagePreview).forEach((button) => {
+        const selected = uses.has(button.dataset.directorImageUse);
+        button.classList.toggle("is-selected", selected);
+        button.setAttribute("aria-pressed", selected ? "true" : "false");
+      });
+      const aiSuggest = $("#directorImageAiSuggest");
+      if (aiSuggest) {
+        const selected = Boolean(reference) && uses.size === 0;
+        aiSuggest.classList.toggle("is-selected", selected);
+        aiSuggest.setAttribute(
+          "aria-pressed",
+          selected ? "true" : "false"
+        );
+      }
+      const useFieldset = $("#directorImageUses");
+      if (useFieldset) {
+        useFieldset.disabled = !reference || model.busy;
+      }
+      const removeButton = $("#directorImageRemoveBtn");
+      if (removeButton) {
+        removeButton.disabled = !reference || model.busy;
+      }
+      const analysisStatus = $("#directorImageAnalysisStatus");
+      if (analysisStatus) {
+        analysisStatus.textContent =
+          {
+            idle: reference
+              ? "发送前将在本机分析；原图不会交给外部文本提供商。"
+              : "添加图片后，将在发送前进行本地分析。",
+            analyzing: "正在使用本地识图模型分析…",
+            ready: "本地分析完成，下一轮只发送有界文字证据。",
+            partial: "部分本地模型失败；已保留成功证据。",
+            error: "本地分析未产生证据；可重试或移除图片。",
+          }[model.imageAnalysisStatus] ||
+          "等待本地图片分析。";
+      }
+      const failureList = imagePreview.querySelector(
+        ".director-analysis-failures"
+      );
+      if (failureList) {
+        failureList.hidden = !model.imageAnalysisFailures.length;
+        failureList.innerHTML = model.imageAnalysisFailures
+          .map(
+            (failure) =>
+              `<li>${escapeHtml(failure.id)}：${escapeHtml(
+                failure.error
+              )}</li>`
+          )
+          .join("");
+      }
+      const retryButton = $("#directorImageRetryBtn");
+      if (retryButton) {
+        retryButton.hidden =
+          !reference ||
+          !["partial", "error"].includes(model.imageAnalysisStatus);
+        retryButton.disabled =
+          model.busy || model.imageAnalysisStatus === "analyzing";
+      }
     }
 
     const workbench = $("#workbenchArea");
@@ -6817,6 +7567,35 @@
       });
       return;
     }
+    if (button.dataset.directorImageUse) {
+      const reference =
+        state.creativeIntake.inputs.images[0] || null;
+      if (!reference) return;
+      const uses = new Set(reference.requestedUses || []);
+      if (uses.has(button.dataset.directorImageUse)) {
+        uses.delete(button.dataset.directorImageUse);
+      } else {
+        uses.add(button.dataset.directorImageUse);
+      }
+      setDirectorImageUses(
+        app.DIRECTOR_IMAGE_REQUESTED_USES
+          .map((item) => item.id)
+          .filter((id) => uses.has(id))
+      );
+      return;
+    }
+    if (button.id === "directorImageAiSuggest") {
+      setDirectorImageUses([]);
+      return;
+    }
+    if (button.id === "directorImageRemoveBtn") {
+      removeDirectorImage();
+      return;
+    }
+    if (button.id === "directorImageRetryBtn") {
+      ensureDirectorImageEvidence({ force: true });
+      return;
+    }
     if (button.id === "directorContinueBtn") {
       state = app.reduceState(state, {
         type: "ENTER_CREATIVE_WORKBENCH",
@@ -7347,6 +8126,10 @@
       const file = event.target.files?.[0];
       if (file) loadImageFile(file);
       event.target.value = "";
+    } else if (event.target.id === "directorImageInput") {
+      const file = event.target.files?.[0];
+      if (file) attachDirectorImageFile(file);
+      event.target.value = "";
     } else if (event.target.id === "backupFileInput") {
       const file = event.target.files?.[0];
       if (file) inspectAndStageBackup(file);
@@ -7357,6 +8140,9 @@
     if (!saveInFlight && !app.shouldConfirmWorkspaceDiscard(state)) return;
     event.preventDefault();
     event.returnValue = "";
+  });
+  window.addEventListener("pagehide", () => {
+    directorImagePreviewController.remove();
   });
 
   $("#expandBtn").addEventListener("click", expandTextPrompt);

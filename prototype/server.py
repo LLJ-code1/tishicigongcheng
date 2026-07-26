@@ -730,8 +730,6 @@ def process_creative_director_request(
         )
     )
     image_evidence = payload.get("imageEvidence")
-    if image_evidence is None:
-        image_evidence = []
 
     caller = engine or run_creative_director_turn
     return caller(
