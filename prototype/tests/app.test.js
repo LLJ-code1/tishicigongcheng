@@ -83,6 +83,7 @@ const {
   canConfirmDecomposition,
   performDecompositionPreviewRequest,
   validateDecompositionPreviewResponse,
+  normalizeDecompositionWarnings,
 } = require("../app.js");
 
 const DECOMPOSITION_BLOCK_IDS = [
@@ -6155,4 +6156,40 @@ test("decomposition preview persistence failure rolls back only the current acce
   );
   assert.equal(rolledBack, true);
   assert.equal(state.creativeIntake.stage, "model_selected");
+});
+
+test("decomposition warnings preserve structured evidence and bound legacy messages", () => {
+  const warnings = normalizeDecompositionWarnings([
+    {
+      claimId: "claim-community-cfg",
+      decision: "proposed",
+      message: "Unapproved model claim was not applied.",
+    },
+    "legacy warning",
+  ]);
+  assert.deepEqual(warnings, [
+    {
+      claimId: "claim-community-cfg",
+      decision: "proposed",
+      message: "Unapproved model claim was not applied.",
+    },
+    { claimId: null, decision: null, message: "legacy warning" },
+  ]);
+  assert.throws(
+    () => normalizeDecompositionWarnings([{ claimId: "../bad", decision: "proposed", message: "bad" }]),
+    /Invalid decomposition warning/
+  );
+  assert.throws(
+    () => normalizeDecompositionWarnings([{ claimId: "claim-1", decision: "approved", message: "bad" }]),
+    /Invalid decomposition warning/
+  );
+  const state = reduceState(createInitialState(), {
+    type: "DECOMPOSITION_PREVIEW_SUCCEEDED",
+    warnings: [warnings[0]],
+  });
+  warnings[0].message = "mutated";
+  assert.equal(
+    state.decompositionPreview.warnings[0].message,
+    "Unapproved model claim was not applied."
+  );
 });

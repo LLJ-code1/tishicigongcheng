@@ -3671,9 +3671,11 @@
       case "DECOMPOSITION_PREVIEW_SUCCEEDED":
         next.decompositionPreview.status = "ready";
         next.decompositionPreview.error = "";
-        next.decompositionPreview.warnings = Array.isArray(action.warnings)
-          ? action.warnings.map(String)
-          : [];
+        next.decompositionPreview.warnings = clone(
+          normalizeDecompositionWarnings(
+            Array.isArray(action.warnings) ? action.warnings : []
+          )
+        );
         return next;
       case "DECOMPOSITION_PREVIEW_FAILED":
         next.decompositionPreview.status = "error";
@@ -4870,6 +4872,39 @@
     }
   }
 
+  function normalizeDecompositionWarnings(value) {
+    if (!Array.isArray(value) || value.length > 100) {
+      throw new Error("Invalid decomposition warning");
+    }
+    return value.map((entry) => {
+      if (typeof entry === "string") {
+        const message = entry.trim();
+        if (!message || Array.from(message).length > 2_000) {
+          throw new Error("Invalid decomposition warning");
+        }
+        return { claimId: null, decision: null, message };
+      }
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        throw new Error("Invalid decomposition warning");
+      }
+      const keys = Object.keys(entry);
+      const claimId = String(entry.claimId || "");
+      const message = String(entry.message || "").trim();
+      if (
+        keys.some(
+          (key) => !["claimId", "decision", "message"].includes(key)
+        ) ||
+        !SAFE_DIRECTOR_IMAGE_ID.test(claimId) ||
+        !["proposed", "rejected"].includes(entry.decision) ||
+        !message ||
+        Array.from(message).length > 2_000
+      ) {
+        throw new Error("Invalid decomposition warning");
+      }
+      return { claimId, decision: entry.decision, message };
+    });
+  }
+
   function canonicalJson(value) {
     if (Array.isArray(value)) {
       return `[${value.map(canonicalJson).join(",")}]`;
@@ -5019,7 +5054,7 @@
       accepted: true,
       item,
       warnings: Array.isArray(result.warnings)
-        ? result.warnings.map(String)
+        ? normalizeDecompositionWarnings(result.warnings)
         : [],
     };
   }
@@ -5106,6 +5141,7 @@
     isDecompositionPreviewCurrent,
     buildDecompositionBlockReviewAction,
     canConfirmDecomposition,
+    normalizeDecompositionWarnings,
     validateDecompositionPreviewResponse,
     performDecompositionPreviewRequest,
     randomVariantBlockIds: Array.from(RANDOM_VARIANT_BLOCKS),
@@ -6566,93 +6602,6 @@
       return false;
     } finally {
       finishCreativeIntakeRequest(request);
-    }
-  }
-
-  async function generateDecompositionPreviewLegacy() {
-    activeDecompositionPreviewAbort?.abort();
-    const controller = new AbortController();
-    activeDecompositionPreviewAbort = controller;
-    let guard;
-    try {
-      guard = app.decompositionPreviewGuard(state, workspaceSessionId);
-    } catch (error) {
-      state = app.reduceState(state, {
-        type: "DECOMPOSITION_PREVIEW_FAILED",
-        error: error.message,
-      });
-      render();
-      return false;
-    }
-    const previousState = state;
-    state = app.reduceState(state, { type: "DECOMPOSITION_PREVIEW_STARTED" });
-    render();
-    try {
-      const result = await apiJson(
-        "/api/creative-intake/decomposition-preview",
-        {
-          method: "POST",
-          signal: controller.signal,
-          body: JSON.stringify({
-            current: app.normalizeCreativeIntake(previousState.creativeIntake),
-            profileVersionId: guard.profileVersionId,
-            profileContentSha256: guard.profileContentSha256,
-          }),
-        }
-      );
-      if (
-        !app.isDecompositionPreviewCurrent(
-          guard,
-          workspaceSessionId,
-          state
-        )
-      ) {
-        return false;
-      }
-      const accepted = app.normalizeCreativeIntake(result.item);
-      state = app.reduceState(state, {
-        type: "CREATIVE_INTAKE_REPLACED",
-        item: accepted,
-      });
-      const persisted = await persistAcceptedCreativeIntake(
-        state.projectRevision
-      );
-      if (!persisted) {
-        state = app.rollbackCreativeIntakeAfterPersistenceFailure(
-          previousState,
-          state,
-          "拆解预览保存失败，已保留上一个有效版本"
-        );
-        state = app.reduceState(state, {
-          type: "DECOMPOSITION_PREVIEW_FAILED",
-          error: "拆解预览保存失败，已保留上一个有效版本",
-        });
-        render();
-        return false;
-      }
-      state = app.reduceState(state, {
-        type: "DECOMPOSITION_PREVIEW_SUCCEEDED",
-        warnings: result.warnings,
-      });
-      render();
-      return true;
-    } catch (error) {
-      if (
-        isAbortError(error) ||
-        !app.isDecompositionPreviewCurrent(guard, workspaceSessionId, state)
-      ) {
-        return false;
-      }
-      state = app.reduceState(state, {
-        type: "DECOMPOSITION_PREVIEW_FAILED",
-        error: error.message || "拆解预览生成失败，请明确重试",
-      });
-      render();
-      return false;
-    } finally {
-      if (activeDecompositionPreviewAbort === controller) {
-        activeDecompositionPreviewAbort = null;
-      }
     }
   }
 
