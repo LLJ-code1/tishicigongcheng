@@ -14,6 +14,31 @@ Prompt Studio 本地后端 :57913
   └─ 本地视觉 worker（WD14 / Florence / JoyCaption / Qwen3-VL）
 ```
 
+## 创意意图数据基础（本阶段）
+
+本阶段增加的是可版本化、可校验的创意意图会话数据基础，不是新的统一首页或
+导演交互界面。数据流如下：
+
+```text
+后续统一输入 UI
+  -> POST /api/creative-intake/transition
+  -> prototype/creative_intake.py（规范化、阶段校验、锁与冲突规则）
+  -> 前端接收服务器规范化后的会话
+  -> POST /api/workspace/commit
+  -> projects.metadata_json.creativeIntake
+```
+
+`creative_intake.py` 是创意意图状态转换的唯一权威：客户端可提交一个动作，但
+不能自行确认阶段或绕过已锁定的 brief 条目。服务端返回完整的规范化会话；前端只
+保存、恢复并使用该会话，同时用会话修订号丢弃过期响应。
+
+会话仍跟随现有项目元数据，通过 `workspace/commit` 的同一原子事务保存，因此不会
+增加 SQLite 表或修改 `PRAGMA user_version = 1`。项目重新打开、逻辑备份和隔离恢复
+会保留该元数据；历史项目缺少或带有无效 `creativeIntake` 时，前端安全地回退为空会话。
+
+本阶段**尚未**实现统一首页替换、AI 导演调用、多图交互、模型网页研究，或按模型
+适配的十三块拆解预览 UI；这些能力必须在后续独立阶段消费本会话和转换 API。
+
 ## 数据边界
 
 AnimaDex 负责：
@@ -82,6 +107,7 @@ prototype/data/prompt_studio.db
 
 读取与持久化：
 
+- `POST /api/creative-intake/transition`
 - `POST /api/workspace/commit`（当前工作台原子保存入口）
 - `GET /api/projects`
 - `POST /api/projects`
@@ -186,6 +212,10 @@ Unicode 数据版本不同而产生不同去重键。
   服务端生成新的连续版本。
 - 项目头 metadata 与最新版本基线一致时，重开尊重项目头保存的 text/image 模式和
   草稿；项目头缺失或过期时才用最新版本来源兜底，避免“新草稿 + 旧模式”混合恢复。
+- 创意意图会话保存在项目 `metadata.creativeIntake`。其修改同样标记项目为待保存；
+  即使本次没有创建提示词版本，`POST /api/workspace/commit` 也会原子保存该项目元数据。
+  打开项目时，前端仅接受当前项目元数据中的规范会话；缺失或不合规的历史值不会写回
+  数据库，而是回退为空会话。
 - 保存、项目打开和项目列表各自有请求去重/过期响应保护。文本生成、图片分析、翻译、
   单块/多块再生成等工作区异步请求还会捕获会话 ID、工作区修订和项目修订；同一项目
   中请求发出后继续编辑，也不会让迟到结果覆盖新内容，丢弃结果时会同步清理加载态。
@@ -234,6 +264,8 @@ Unicode 数据版本不同而产生不同去重键。
 - 前端展示和交互仍在 `prototype/app.js`。
 - 后端 HTTP 入口仍在 `prototype/server.py`。
 - SQLite 逻辑独立在 `prototype/db.py`。
+- 创意意图规范、校验和服务器权威转换在 `prototype/creative_intake.py`；HTTP 路由仍由
+  `prototype/server.py` 注册。
 - Recipe/模型档案、词库 sampler、中文编辑和逻辑备份分别在 `prototype/recipe.py`、
   `model_profiles.py`、`random_sampler.py`、`edit_engine.py` 与 `backup.py`。
 - 模型调用提示词模板放在 `prototype/prompts/`，先按文生图和图生图分开。

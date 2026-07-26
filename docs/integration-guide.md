@@ -19,6 +19,7 @@
 
 | 方法 | 路由 | 用途 |
 | --- | --- | --- |
+| `POST` | `/api/creative-intake/transition` | 由服务器规范化并应用一次创意意图状态转换 |
 | `POST` | `/api/workspace/commit` | 原子保存项目头和可选完整版本 |
 | `GET` | `/api/model-profiles` | 列出模型档案 |
 | `GET` | `/api/model-profiles/<id>` | 读取单个模型档案及验证状态 |
@@ -34,6 +35,192 @@
 
 既有项目、收藏、设置、文本模型、图片分析与 AnimaDex 路由见
 [架构说明](architecture.md#api-约定)。
+
+## 创意意图状态转换
+
+`POST /api/creative-intake/transition` 只接受包含 `current` 和 `action` 的对象 JSON。
+服务端使用 `creative_intake.py` 规范化 `current`、验证当前阶段与动作，然后返回
+`{ "item": <完整规范会话> }`。成功转换把 `revision` 加一；客户端不得在本地授权锁定
+条目或直接跳过阶段。受支持动作是 `replace_inputs`、`set_directions`、
+`select_direction`、`set_brief_draft`、`confirm_brief`、`select_model`、
+`set_decomposition_draft`、`confirm_decomposition` 和 `reopen_brief`。
+
+### 合法的 `replace_inputs`
+
+```json
+{
+  "current": {
+    "schemaVersion": 1,
+    "revision": 0,
+    "stage": "intake",
+    "inputs": { "text": "", "images": [] },
+    "directions": [],
+    "selectedDirectionId": null,
+    "brief": null,
+    "selectedModelProfileId": null,
+    "decomposition": null,
+    "recipeStatus": "missing",
+    "conflicts": []
+  },
+  "action": {
+    "type": "replace_inputs",
+    "text": "雨夜中奔跑的红发女孩",
+    "images": [
+      {
+        "id": "image-1",
+        "name": "reference.png",
+        "mimeType": "image/png",
+        "status": "local_reference_not_embedded",
+        "requestedUses": ["action"]
+      }
+    ]
+  }
+}
+```
+
+响应：
+
+```json
+{
+  "item": {
+    "schemaVersion": 1,
+    "revision": 1,
+    "stage": "intake",
+    "inputs": {
+      "text": "雨夜中奔跑的红发女孩",
+      "images": [
+        {
+          "id": "image-1",
+          "name": "reference.png",
+          "mimeType": "image/png",
+          "status": "local_reference_not_embedded",
+          "requestedUses": ["action"]
+        }
+      ]
+    },
+    "directions": [],
+    "selectedDirectionId": null,
+    "brief": null,
+    "selectedModelProfileId": null,
+    "decomposition": null,
+    "recipeStatus": "missing",
+    "conflicts": []
+  }
+}
+```
+
+图片仅以这个引用描述进入会话；不要发送图片字节、路径、密钥或任意附加元数据。
+
+### 合法的 `confirm_brief`
+
+```json
+{
+  "current": {
+    "schemaVersion": 1,
+    "revision": 4,
+    "stage": "brief_draft",
+    "inputs": { "text": "雨夜中奔跑的红发女孩", "images": [] },
+    "directions": [
+      { "id": "main", "label": "主方向", "summary": "雨夜奔跑" }
+    ],
+    "selectedDirectionId": "main",
+    "brief": {
+      "status": "draft",
+      "summary": "雨夜中的追逐镜头",
+      "items": [
+        {
+          "id": "action-1",
+          "category": "action",
+          "text": "奔跑",
+          "source": { "type": "user", "refId": null },
+          "locked": true
+        }
+      ],
+      "aiAdditions": [],
+      "openQuestions": []
+    },
+    "selectedModelProfileId": null,
+    "decomposition": null,
+    "recipeStatus": "missing",
+    "conflicts": []
+  },
+  "action": { "type": "confirm_brief" }
+}
+```
+
+响应中的 `item` 与请求会话相同，但 `revision` 为 `5`、`stage` 为
+`brief_confirmed`，且 `brief.status` 为 `confirmed`。若 `openQuestions` 非空或任何
+`conflicts` 项的 `status` 为 `open`，服务端以 `400` 拒绝请求。
+
+### 已锁定条目的冲突
+
+下面的 `set_brief_draft` 试图改变已锁定的 `action-1`，但没有用
+`approvedLockedItemIds` 显式授权：
+
+```json
+{
+  "current": {
+    "schemaVersion": 1,
+    "revision": 4,
+    "stage": "brief_draft",
+    "inputs": { "text": "雨夜中奔跑的红发女孩", "images": [] },
+    "directions": [
+      { "id": "main", "label": "主方向", "summary": "雨夜奔跑" }
+    ],
+    "selectedDirectionId": "main",
+    "brief": {
+      "status": "draft",
+      "summary": "雨夜中的追逐镜头",
+      "items": [
+        {
+          "id": "action-1",
+          "category": "action",
+          "text": "奔跑",
+          "source": { "type": "user", "refId": null },
+          "locked": true
+        }
+      ],
+      "aiAdditions": [],
+      "openQuestions": []
+    },
+    "selectedModelProfileId": null,
+    "decomposition": null,
+    "recipeStatus": "missing",
+    "conflicts": []
+  },
+  "action": {
+    "type": "set_brief_draft",
+    "brief": {
+      "status": "draft",
+      "summary": "雨夜中的追逐镜头",
+      "items": [
+        {
+          "id": "action-1",
+          "category": "action",
+          "text": "慢跑",
+          "source": { "type": "user", "refId": null },
+          "locked": true
+        }
+      ],
+      "aiAdditions": [],
+      "openQuestions": []
+    },
+    "conflicts": []
+  }
+}
+```
+
+实际错误响应为：
+
+```json
+{
+  "error": "locked item action-1 requires approval",
+  "code": "locked_item"
+}
+```
+
+该锁定冲突使用实现中的稳定错误码 `locked_item`；如需本次修改，应在动作加入
+`"approvedLockedItemIds": ["action-1"]`。该授权只适用于这一次转换，不写入会话。
 
 ## 原子保存与重放
 

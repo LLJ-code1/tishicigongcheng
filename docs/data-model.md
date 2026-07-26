@@ -39,6 +39,60 @@ SQLite 文件误当工作区。首次启动对兼容的旧 v0 库先生成本地
 头、可选提示词版本和幂等结果在一个事务中提交。数据库已提交但 HTTP 响应丢失时，
 完全相同的请求会重放第一次结果，不会产生孤儿或重复项目。
 
+## `projects.metadata_json.creativeIntake`
+
+创意意图会话是项目元数据中的一个版本化领域对象，而不是新 SQLite 表。保存时前端把
+规范化后的值放入 `project.metadata.creativeIntake`，并通过
+`POST /api/workspace/commit` 与项目头（以及可选的提示词版本）一同在一个事务中提交。
+因此 SQLite 仍为 schema v1，`PRAGMA user_version` 不变；项目重开、逻辑备份和隔离恢复
+会自然保留这份元数据。
+
+顶层对象的 `schemaVersion` 固定为 `1`，且不接受未知字段：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `schemaVersion` | `1` | 创意意图数据契约版本。 |
+| `revision` | 非负整数 | 服务器每成功应用一次转换恰好加一；失败不改变原会话。 |
+| `stage` | 枚举 | 当前受服务器校验的流程阶段。 |
+| `inputs` | 对象 | `{ "text", "images" }` 的原始文字和本地图片引用描述。 |
+| `directions` | 数组 | 至多三条候选方向，每项为 `{ "id", "label", "summary" }`。 |
+| `selectedDirectionId` | 字符串或 `null` | 必须引用 `directions` 中已有的 `id`。 |
+| `brief` | 对象或 `null` | 当前草稿或已确认的创意 brief。 |
+| `selectedModelProfileId` | 字符串或 `null` | 已选择模型档案的标识；本阶段不进行模型资料研究。 |
+| `decomposition` | 对象或 `null` | 拆解草稿或确认状态的数据容器，供后续模型适配 UI 使用。 |
+| `recipeStatus` | `missing`、`stale` 或 `ready` | 下游配方是否缺失、因上游改动过期，或已就绪。 |
+| `conflicts` | 数组 | 至多 100 条显式冲突；每项含 `id`、`code`、`message`、`status` 和 `itemIds`。 |
+
+允许的 `stage` 依次为 `intake`、`direction_selected`、`brief_draft`、
+`brief_confirmed`、`model_selected`、`decomposition_draft` 和
+`decomposition_confirmed`。规范化会拒绝不匹配的阶段，例如在 `brief_confirmed` 之前
+出现已确认 brief，或在 `model_selected` 之前出现拆解数据。
+
+`inputs.images` 最多八项，每项严格为
+`{ "id", "name", "mimeType", "status", "requestedUses" }`。`name` 必须是普通文件名，
+该对象不能包含图片字节、文件系统路径、API key 或任意元数据。brief 条目和拆解块中的
+`source` 严格为 `{ "type", "refId" }`：`type` 为 `user`、`image`、`ai` 或
+`model_rule`；`user`/`ai` 的 `refId` 必须为 `null`，`image` 的 `refId` 必须引用
+`inputs.images` 中的图片 `id`，而 `model_rule` 使用非空模型规则标识。
+
+`brief` 包含 `status`（`draft` 或 `confirmed`）、`summary`、`items`、`aiAdditions` 和
+`openQuestions`。每个 `items` 条目为
+`{ "id", "category", "text", "source", "locked" }`。当已锁定条目的
+`id`、`category`、`text` 或 `source` 被改变或移除时，`set_brief_draft` 必须在本次动作的
+`approvedLockedItemIds` 中明确列出该 `id`；授权不会持久化。`confirm_brief` 在仍有
+`openQuestions` 或 `conflicts` 中存在 `status: "open"` 时拒绝确认。
+
+`decomposition` 为 `{ "status", "blocks" }`，状态是 `draft` 或 `confirmed`；块包含
+`id`、`category`、`zh`、`en`、`source`、`locked`、`approved`、`reason` 和 `risks`。本阶段
+仅提供该规范和阶段门禁；不提供模型适配的十三块拆解预览界面。确认拆解前，每个块必须
+`approved: true`。
+
+失效规则由服务器转换统一执行：`replace_inputs` 清除方向、brief、模型、拆解和冲突，
+并将配方置为 `missing`；`select_model` 保留已确认 brief、写入新的
+`selectedModelProfileId`、清除已有拆解并将 `recipeStatus` 置为 `stale`；`reopen_brief`
+把 brief 改回 draft，清除模型选择和拆解，并置为 `stale`。设置拆解草稿也保持 `stale`，
+确认拆解才置为 `ready`。这些规则不由客户端自行重写。
+
 ## prompt_versions
 
 提示词版本表。生成、应用修改或图生图合并先更新前端工作区并标记为待保存；用户
