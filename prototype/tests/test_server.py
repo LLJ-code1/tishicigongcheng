@@ -43,6 +43,7 @@ from server import (  # noqa: E402
     read_prompt_template,
 )
 import db  # noqa: E402
+import creative_intake  # noqa: E402
 
 
 def make_png_bytes() -> bytes:
@@ -569,7 +570,7 @@ class AnimaDexAdapterTests(unittest.TestCase):
         self.assertIn('"/api/vision/analyze"', source)
 
 
-class HttpBoundaryAdversarialTests(unittest.TestCase):
+class PromptStudioServerTests(unittest.TestCase):
     """Exercise malformed requests and direct static-file access at the HTTP boundary."""
 
     def setUp(self):
@@ -657,6 +658,142 @@ class HttpBoundaryAdversarialTests(unittest.TestCase):
         )
         with urlopen(request) as response:
             return response.status, json.loads(response.read().decode("utf-8"))
+
+    def test_creative_intake_transition_returns_server_normalized_state(self):
+        status, payload = self.json_request(
+            "/api/creative-intake/transition",
+            {
+                "current": creative_intake.empty_creative_intake(),
+                "action": {
+                    "type": "replace_inputs",
+                    "text": "红发女孩，雨夜奔跑",
+                    "images": [],
+                },
+            },
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["item"]["revision"], 1)
+        self.assertEqual(payload["item"]["inputs"]["text"], "红发女孩，雨夜奔跑")
+
+    def test_creative_intake_transition_rejects_invalid_domain_requests(self):
+        locked_current = creative_intake.empty_creative_intake()
+        locked_current.update(
+            {
+                "stage": "brief_draft",
+                "directions": [
+                    {"id": "main", "label": "Main", "summary": "Rainy-night run."}
+                ],
+                "selectedDirectionId": "main",
+                "brief": {
+                    "status": "draft",
+                    "summary": "A runner crosses a rainy street.",
+                    "items": [
+                        {
+                            "id": "item-1",
+                            "category": "action",
+                            "text": "run",
+                            "source": {"type": "user", "refId": None},
+                            "locked": True,
+                        }
+                    ],
+                    "aiAdditions": [],
+                    "openQuestions": [],
+                },
+            }
+        )
+        cases = (
+            (
+                "missing current",
+                {"action": {"type": "replace_inputs", "text": "runner", "images": []}},
+                "invalid_object",
+            ),
+            (
+                "missing action",
+                {"current": creative_intake.empty_creative_intake()},
+                "invalid_object",
+            ),
+            (
+                "unknown request field",
+                {
+                    "current": creative_intake.empty_creative_intake(),
+                    "action": {"type": "replace_inputs", "text": "runner", "images": []},
+                    "unexpected": True,
+                },
+                "invalid_request",
+            ),
+            (
+                "unknown action",
+                {
+                    "current": creative_intake.empty_creative_intake(),
+                    "action": {"type": "unknown"},
+                },
+                "unsupported_action",
+            ),
+            (
+                "invalid stage transition",
+                {
+                    "current": creative_intake.empty_creative_intake(),
+                    "action": {"type": "confirm_brief"},
+                },
+                "invalid_transition",
+            ),
+            (
+                "locked item overwrite without approval",
+                {
+                    "current": locked_current,
+                    "action": {
+                        "type": "set_brief_draft",
+                        "brief": {
+                            "status": "draft",
+                            "summary": "A runner crosses a rainy street.",
+                            "items": [
+                                {
+                                    "id": "item-1",
+                                    "category": "action",
+                                    "text": "sprint",
+                                    "source": {"type": "user", "refId": None},
+                                    "locked": True,
+                                }
+                            ],
+                            "aiAdditions": [],
+                            "openQuestions": [],
+                        },
+                        "approvedLockedItemIds": [],
+                    },
+                },
+                "locked_item",
+            ),
+        )
+        for label, request_payload, expected_code in cases:
+            with self.subTest(label=label):
+                request = Request(
+                    f"{self.base_url}/api/creative-intake/transition",
+                    data=json.dumps(request_payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                response = self.assert_http_error_json(request, 400)
+                self.assertEqual(response["code"], expected_code)
+
+    def test_creative_intake_transition_rejects_non_object_and_oversized_json(self):
+        non_object = Request(
+            f"{self.base_url}/api/creative-intake/transition",
+            data=b"[]",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        response = self.assert_http_error_json(non_object, 400)
+        self.assertIn("error", response)
+
+        oversized = Request(
+            f"{self.base_url}/api/creative-intake/transition",
+            data=b"x" * (MAX_JSON_BODY_BYTES + 1),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        response = self.assert_http_error_json(oversized, 413)
+        self.assertIn("error", response)
 
     def test_static_handler_serves_only_public_assets(self):
         with urlopen(f"{self.base_url}/index.html") as response:

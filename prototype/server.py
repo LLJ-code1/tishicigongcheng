@@ -33,6 +33,10 @@ from backup import (
     inspect_backup,
     restore_backup,
 )
+from creative_intake import (
+    CreativeIntakeValidationError,
+    apply_creative_intake_transition,
+)
 from db import (
     IdempotencyConflictError,
     ProjectConflictError,
@@ -1608,6 +1612,8 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             return self.handle_local_llm_stop()
         if parsed.path == "/api/workspace/commit":
             return self.handle_workspace_commit()
+        if parsed.path == "/api/creative-intake/transition":
+            return self.handle_creative_intake_transition()
         if parsed.path == "/api/backups/inspect":
             return self.handle_backup_inspect(parsed.query)
         if parsed.path == "/api/backups/stage-restore":
@@ -1877,6 +1883,29 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
 
     def handle_recipe_resolve(self) -> None:
         item = process_recipe_resolve_request(self.read_json())
+        self.send_json({"item": item})
+
+    def handle_creative_intake_transition(self) -> None:
+        payload = self.read_json()
+        unknown = set(payload) - {"current", "action"}
+        if unknown:
+            return self.send_json(
+                {
+                    "error": f"unsupported fields: {', '.join(sorted(unknown))}",
+                    "code": "invalid_request",
+                },
+                status=400,
+            )
+        try:
+            item = apply_creative_intake_transition(
+                payload.get("current"),
+                payload.get("action"),
+            )
+        except CreativeIntakeValidationError as error:
+            return self.send_json(
+                {"error": str(error), "code": error.code},
+                status=400,
+            )
         self.send_json({"item": item})
 
     def handle_edit_preview(self) -> None:
