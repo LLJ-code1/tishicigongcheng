@@ -60,6 +60,7 @@ const {
   shouldReuseDirectorImageEvidence,
   createDirectorImageFlowGuard,
   resolveDirectorImageEvidence,
+  resolveDirectorImageEvidenceCollection,
   shouldBindDirectorImageFile,
 } = require("../app.js");
 const unicode15 = require("../unicode15-data.js");
@@ -760,6 +761,339 @@ test("image mutation invalidates an in-flight analysis before it can feed a dire
   assert.equal(aborted, 1);
   assert.equal(resolved.accepted, false);
   assert.equal(resolved.result, null);
+});
+
+test("multi-image evidence collection keeps successes when a peer analysis fails", async () => {
+  const references = [
+    { id: "action-ref", requestedUses: ["action"] },
+    { id: "outfit-ref", requestedUses: ["outfit"] },
+    { id: "environment-ref", requestedUses: ["environment"] },
+  ];
+  const files = new Map(
+    references.map((reference) => [
+      reference.id,
+      { name: `${reference.id}.png`, type: "image/png", size: 100 },
+    ])
+  );
+  const result = await resolveDirectorImageEvidenceCollection({
+    references,
+    getEntry: (imageId) => ({ file: files.get(imageId) }),
+    analyzerIds: ["wd14"],
+    sessionId: 7,
+    workspaceRevision: 11,
+    projectRevision: 13,
+    getCurrentContext: () => ({
+      references,
+      sessionId: 7,
+      workspaceRevision: 11,
+      projectRevision: 13,
+    }),
+    analyze: async (reference) => {
+      if (reference.id === "outfit-ref") {
+        return {
+          evidence: null,
+          failedAnalyzers: [{ id: "wd14", error: "unavailable" }],
+          allFailed: true,
+        };
+      }
+      return {
+        evidence: {
+          imageId: reference.id,
+          requestedUses: reference.requestedUses,
+          summary: `safe ${reference.id}`,
+          sourceModels: ["wd14"],
+          uncertain: false,
+        },
+        failedAnalyzers: [],
+        allFailed: false,
+      };
+    },
+  });
+
+  assert.deepEqual(
+    result.items.map((item) => item.imageId),
+    ["action-ref", "environment-ref"]
+  );
+  assert.deepEqual(
+    result.failures.map((item) => item.imageId),
+    ["outfit-ref"]
+  );
+});
+
+test("multi-image evidence collection converts one thrown analyzer failure without dropping peers", async () => {
+  const references = [
+    { id: "image-good", requestedUses: ["action"] },
+    { id: "image-bad", requestedUses: ["outfit"] },
+  ];
+  const entries = new Map(
+    references.map((reference) => [
+      reference.id,
+      { file: { name: `${reference.id}.png` } },
+    ])
+  );
+  const result = await resolveDirectorImageEvidenceCollection({
+    references,
+    getEntry: (imageId) => entries.get(imageId),
+    analyzerIds: ["wd14"],
+    sessionId: 1,
+    workspaceRevision: 1,
+    projectRevision: 1,
+    getCurrentContext: () => ({
+      references,
+      sessionId: 1,
+      workspaceRevision: 1,
+      projectRevision: 1,
+    }),
+    analyze: async (reference) => {
+      if (reference.id === "image-bad") throw new Error("local model crashed");
+      return {
+        evidence: {
+          imageId: reference.id,
+          requestedUses: reference.requestedUses,
+          summary: "running",
+          sourceModels: ["wd14"],
+          uncertain: false,
+        },
+        failedAnalyzers: [],
+        allFailed: false,
+      };
+    },
+  });
+
+  assert.deepEqual(result.items.map((item) => item.imageId), ["image-good"]);
+  assert.deepEqual(result.failures.map((item) => item.imageId), ["image-bad"]);
+  assert.match(result.failures[0].failures[0].error, /local model crashed/);
+});
+
+test("multi-image retry analyzes only the requested failed image and reuses valid peers", async () => {
+  const references = [
+    { id: "action-ref", requestedUses: ["action"] },
+    { id: "outfit-ref", requestedUses: ["outfit"] },
+  ];
+  const context = {
+    analyzerIds: ["wd14"],
+    sessionId: 3,
+    workspaceRevision: 4,
+    projectRevision: 5,
+  };
+  const entries = new Map([
+    [
+      "action-ref",
+      {
+        file: { name: "action.png" },
+        evidence: {
+          imageId: "action-ref",
+          requestedUses: ["action"],
+          summary: "running",
+          sourceModels: ["wd14"],
+          uncertain: false,
+        },
+        evidenceContext: null,
+      },
+    ],
+    [
+      "outfit-ref",
+      {
+        file: { name: "outfit.png" },
+        failures: [{ id: "wd14", error: "failed" }],
+      },
+    ],
+  ]);
+  entries.get("action-ref").evidenceContext = {
+    ...context,
+    file: entries.get("action-ref").file,
+  };
+  const analyzed = [];
+  const result = await resolveDirectorImageEvidenceCollection({
+    references,
+    getEntry: (imageId) => entries.get(imageId),
+    ...context,
+    retryImageIds: ["outfit-ref"],
+    getCurrentContext: () => ({ references, ...context }),
+    analyze: async (reference) => {
+      analyzed.push(reference.id);
+      return {
+        evidence: {
+          imageId: reference.id,
+          requestedUses: reference.requestedUses,
+          summary: "red coat",
+          sourceModels: ["wd14"],
+          uncertain: false,
+        },
+        failedAnalyzers: [],
+        allFailed: false,
+      };
+    },
+  });
+
+  assert.deepEqual(analyzed, ["outfit-ref"]);
+  assert.deepEqual(
+    result.items.map((item) => item.imageId),
+    ["action-ref", "outfit-ref"]
+  );
+});
+
+test("multi-image cache invalidates only the changed use binding", async () => {
+  const references = [
+    { id: "action-ref", requestedUses: ["lighting"] },
+    { id: "outfit-ref", requestedUses: ["outfit"] },
+  ];
+  const sharedContext = {
+    analyzerIds: ["wd14"],
+    sessionId: 1,
+    workspaceRevision: 2,
+    projectRevision: 3,
+  };
+  const entries = new Map(
+    references.map((reference) => {
+      const entry = {
+        file: { name: `${reference.id}.png` },
+        evidence: {
+          imageId: reference.id,
+          requestedUses:
+            reference.id === "action-ref" ? ["action"] : reference.requestedUses,
+          summary: reference.id,
+          sourceModels: ["wd14"],
+          uncertain: false,
+        },
+      };
+      entry.evidenceContext = { ...sharedContext, file: entry.file };
+      return [reference.id, entry];
+    })
+  );
+  const analyzed = [];
+  await resolveDirectorImageEvidenceCollection({
+    references,
+    getEntry: (imageId) => entries.get(imageId),
+    ...sharedContext,
+    getCurrentContext: () => ({ references, ...sharedContext }),
+    analyze: async (reference) => {
+      analyzed.push(reference.id);
+      return {
+        evidence: {
+          imageId: reference.id,
+          requestedUses: reference.requestedUses,
+          summary: "updated",
+          sourceModels: ["wd14"],
+          uncertain: false,
+        },
+        failedAnalyzers: [],
+        allFailed: false,
+      };
+    },
+  });
+  assert.deepEqual(analyzed, ["action-ref"]);
+});
+
+test("multi-image resolver rejects results after removal, file replacement, or canonical revision change", async () => {
+  const originalReferences = [
+    { id: "action-ref", requestedUses: ["action"] },
+    { id: "outfit-ref", requestedUses: ["outfit"] },
+  ];
+  let references = originalReferences;
+  let projectRevision = 8;
+  const originalFile = { name: "action.png" };
+  let currentFile = originalFile;
+  let finish;
+  const pending = resolveDirectorImageEvidenceCollection({
+    references: originalReferences,
+    getEntry: (imageId) =>
+      imageId === "action-ref" ? { file: currentFile } : { file: {} },
+    analyzerIds: ["wd14"],
+    sessionId: 2,
+    workspaceRevision: 6,
+    projectRevision: 8,
+    getCurrentContext: () => ({
+      references,
+      sessionId: 2,
+      workspaceRevision: 6,
+      projectRevision,
+    }),
+    analyze: (reference) =>
+      reference.id === "action-ref"
+        ? new Promise((resolve) => {
+            finish = resolve;
+          })
+        : Promise.resolve({
+            evidence: null,
+            failedAnalyzers: [],
+            allFailed: true,
+          }),
+  });
+  references = [originalReferences[1]];
+  currentFile = { name: "replacement.png" };
+  projectRevision += 1;
+  finish({
+    evidence: {
+      imageId: "action-ref",
+      requestedUses: ["action"],
+      summary: "stale",
+      sourceModels: ["wd14"],
+      uncertain: false,
+    },
+    failedAnalyzers: [],
+    allFailed: false,
+  });
+
+  const result = await pending;
+  assert.deepEqual(result.items, []);
+  assert.equal(result.stale, true);
+});
+
+test("multi-image director evidence is allowlisted text and external requests contain no local file material", async () => {
+  const reference = { id: "image-one", requestedUses: ["action"] };
+  const file = {
+    name: "secret.png",
+    path: "C:\\private\\secret.png",
+    bytes: Buffer.from("secret"),
+  };
+  const result = await resolveDirectorImageEvidenceCollection({
+    references: [reference],
+    getEntry: () => ({ file }),
+    analyzerIds: ["wd14"],
+    sessionId: 1,
+    workspaceRevision: 1,
+    projectRevision: 1,
+    getCurrentContext: () => ({
+      references: [reference],
+      sessionId: 1,
+      workspaceRevision: 1,
+      projectRevision: 1,
+    }),
+    analyze: async () => ({
+      evidence: {
+        imageId: "image-one",
+        requestedUses: ["action"],
+        summary: "running",
+        sourceModels: ["wd14"],
+        uncertain: false,
+        file,
+        blobUrl: "blob:private",
+        dataBase64: "c2VjcmV0",
+        path: file.path,
+        bytes: file.bytes,
+      },
+      failedAnalyzers: [],
+      allFailed: false,
+    }),
+  });
+  const state = createInitialState();
+  state.directorImageEvidence = result.items;
+  const serialized = JSON.stringify(
+    buildCreativeDirectorRequest(state, 1, "use references").body
+  );
+
+  assert.deepEqual(Object.keys(result.items[0]).sort(), [
+    "imageId",
+    "requestedUses",
+    "sourceModels",
+    "summary",
+    "uncertain",
+  ]);
+  assert.doesNotMatch(
+    serialized,
+    /"file"|"blobUrl"|blob:|dataBase64|"base64"|"path"|"bytes"|c2VjcmV0/i
+  );
 });
 
 test("director and project payloads retain only safe image references and local text evidence", () => {

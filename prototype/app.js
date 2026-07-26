@@ -685,6 +685,177 @@
     return { accepted: true, reused: false, result };
   }
 
+  function directorEvidenceContextMatches({
+    reference,
+    entry,
+    analyzerIds,
+    sessionId,
+    workspaceRevision,
+    projectRevision,
+  }) {
+    const context = entry?.evidenceContext;
+    return Boolean(
+      entry?.evidence &&
+        context &&
+        context.file === entry.file &&
+        JSON.stringify(context.analyzerIds || []) ===
+          JSON.stringify(analyzerIds || []) &&
+        context.sessionId === sessionId &&
+        context.workspaceRevision === workspaceRevision &&
+        context.projectRevision === projectRevision &&
+        shouldReuseDirectorImageEvidence(reference, entry.evidence)
+    );
+  }
+
+  function safeDirectorEvidenceItem(reference, value) {
+    if (!value || value.imageId !== reference.id) return null;
+    const sourceModels = Array.isArray(value.sourceModels)
+      ? value.sourceModels
+          .map((item) => String(item || ""))
+          .filter((item) => SAFE_EVIDENCE_MODEL_ID.test(item))
+          .slice(0, MAX_DIRECTOR_EVIDENCE_MODELS)
+      : [];
+    const summary = boundedText(value.summary, MAX_DIRECTOR_EVIDENCE_CHARACTERS);
+    if (!summary || !sourceModels.length) return null;
+    return {
+      imageId: reference.id,
+      requestedUses: clone(reference.requestedUses || []),
+      summary,
+      sourceModels,
+      uncertain: Boolean(value.uncertain),
+    };
+  }
+
+  function directorCollectionSignature(references) {
+    return JSON.stringify(
+      (Array.isArray(references) ? references : []).map((reference) => [
+        reference?.id || "",
+        Array.isArray(reference?.requestedUses)
+          ? reference.requestedUses
+          : [],
+      ])
+    );
+  }
+
+  async function resolveDirectorImageEvidenceCollection({
+    references,
+    getEntry,
+    analyze,
+    analyzerIds = [],
+    sessionId,
+    workspaceRevision,
+    projectRevision,
+    getCurrentContext,
+    retryImageIds = [],
+  }) {
+    if (
+      !Array.isArray(references) ||
+      references.length > 8 ||
+      typeof getEntry !== "function" ||
+      typeof analyze !== "function" ||
+      typeof getCurrentContext !== "function"
+    ) {
+      throw new TypeError("director image evidence collection resolver is invalid");
+    }
+    const retryIds = new Set(
+      Array.isArray(retryImageIds) ? retryImageIds.map(String) : []
+    );
+    const initialSignature = directorCollectionSignature(references);
+    const snapshots = new Map();
+    const outcomes = await Promise.all(
+      references.map(async (reference) => {
+        const entry = getEntry(reference.id);
+        snapshots.set(reference.id, entry?.file);
+        const reusable = directorEvidenceContextMatches({
+          reference,
+          entry,
+          analyzerIds,
+          sessionId,
+          workspaceRevision,
+          projectRevision,
+        });
+        if (reusable && !retryIds.has(reference.id)) {
+          return {
+            reference,
+            evidence: safeDirectorEvidenceItem(reference, entry.evidence),
+            failures: [],
+          };
+        }
+        if (
+          retryIds.size &&
+          !retryIds.has(reference.id) &&
+          !reusable
+        ) {
+          return {
+            reference,
+            evidence: null,
+            failures: Array.isArray(entry?.failures)
+              ? clone(entry.failures)
+              : [],
+          };
+        }
+        if (!entry?.file) {
+          return {
+            reference,
+            evidence: null,
+            failures: [{ id: "attachment", error: "reference file is missing" }],
+          };
+        }
+        let result;
+        try {
+          result = await analyze(reference, entry);
+        } catch (error) {
+          return {
+            reference,
+            evidence: null,
+            failures: [
+              {
+                id: "analysis",
+                error: boundedText(
+                  error?.message || "all local image analyzers failed",
+                  2_000
+                ),
+              },
+            ],
+          };
+        }
+        return {
+          reference,
+          evidence: safeDirectorEvidenceItem(reference, result?.evidence),
+          failures: Array.isArray(result?.failedAnalyzers)
+            ? clone(result.failedAnalyzers)
+            : [],
+        };
+      })
+    );
+    const current = getCurrentContext() || {};
+    const globallyStale =
+      directorCollectionSignature(current.references) !== initialSignature ||
+      current.sessionId !== sessionId ||
+      current.workspaceRevision !== workspaceRevision ||
+      current.projectRevision !== projectRevision;
+    const fileStale = references.some(
+      (reference) =>
+        getEntry(reference.id)?.file !== snapshots.get(reference.id)
+    );
+    if (globallyStale || fileStale) {
+      return { items: [], failures: [], stale: true };
+    }
+    const items = [];
+    const failures = [];
+    for (const outcome of outcomes) {
+      if (outcome.evidence) {
+        items.push(outcome.evidence);
+      } else {
+        failures.push({
+          imageId: outcome.reference.id,
+          failures: outcome.failures,
+        });
+      }
+    }
+    return { items, failures, stale: false };
+  }
+
   async function performDirectorImageAnalysis({
     file,
     imageReference,
@@ -3903,6 +4074,7 @@
     shouldReuseDirectorImageEvidence,
     createDirectorImageFlowGuard,
     resolveDirectorImageEvidence,
+    resolveDirectorImageEvidenceCollection,
     compileBlocks,
     compileBlockFragment,
     composeArtistMix,
