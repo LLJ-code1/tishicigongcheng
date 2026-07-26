@@ -44,6 +44,30 @@ def confirmed_intake():
     }
 
 
+def confirmed_intake_with_all_semantic_sources():
+    value = confirmed_intake()
+    value["brief"]["items"].extend(
+        [
+            {
+                "id": "brief-clothing",
+                "category": "clothing",
+                "text": "穿深蓝色防水风衣",
+                "source": {"type": "user", "refId": None},
+                "locked": False,
+            },
+            {
+                "id": "brief-scene",
+                "category": "environment",
+                "text": "雨夜的石阶街道",
+                "source": {"type": "image", "refId": "image-scene"},
+                "locked": False,
+            },
+        ]
+    )
+    value["brief"]["aiAdditions"] = ["伞沿连续滴水"]
+    return value
+
+
 def profile_snapshot():
     return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
 
@@ -152,6 +176,44 @@ class ModelAdaptedDecompositionTests(unittest.TestCase):
         )
         self.assertNotIn("approvedRules", payload["warnings"][0])
 
+    def test_messages_include_exact_thirteen_id_to_category_contract(self):
+        subject = self.import_subject()
+        messages = subject.build_decomposition_messages(
+            confirmed_intake_with_all_semantic_sources()["brief"],
+            profile_snapshot()["approvedRules"],
+            profile_snapshot()["warnings"],
+        )
+        payload = json.loads(messages[-1]["content"])
+
+        self.assertEqual(
+            payload["blockDefinitions"],
+            [
+                {"id": "identity", "category": "人物身份"},
+                {"id": "appearance", "category": "身体与外观特征"},
+                {"id": "clothing", "category": "服装与配饰"},
+                {"id": "expression", "category": "表情"},
+                {"id": "action", "category": "姿势与动作"},
+                {"id": "interaction", "category": "人物互动关系"},
+                {"id": "scene", "category": "场景与环境"},
+                {"id": "camera", "category": "构图与镜头"},
+                {"id": "lighting", "category": "光影与色彩"},
+                {"id": "style", "category": "风格与艺术家"},
+                {"id": "effects", "category": "道具与特效"},
+                {"id": "quality", "category": "质量增强"},
+                {"id": "negative", "category": "负向约束"},
+            ],
+        )
+        self.assertEqual(
+            payload["semanticItems"][-1],
+            {
+                "id": "ai-addition-0",
+                "category": None,
+                "text": "伞沿连续滴水",
+                "source": {"type": "ai", "refId": None},
+                "locked": False,
+            },
+        )
+
     def test_normalizes_exact_approved_rule_lineage(self):
         subject = self.import_subject()
         result = subject.normalize_decomposition_output(
@@ -257,6 +319,111 @@ class ModelAdaptedDecompositionTests(unittest.TestCase):
                     )
                 self.assertEqual(caught.exception.code, "locked_fact_changed")
 
+    def test_all_confirmed_items_and_ai_additions_form_a_closed_semantic_set(self):
+        subject = self.import_subject()
+        intake = confirmed_intake_with_all_semantic_sources()
+        output = provider_output()
+        output["blocks"][2].update(
+            {
+                "zh": "穿深蓝色防水风衣",
+                "en": "dark blue waterproof trench coat",
+                "source": {"type": "user", "refId": None},
+                "risks": ["通用表达，未使用模型专用规则。"],
+                "semanticItemIds": ["brief-clothing"],
+            }
+        )
+        output["blocks"][6].update(
+            {
+                "zh": "雨夜的石阶街道",
+                "en": "rainy stone stair street at night",
+                "source": {"type": "image", "refId": "image-scene"},
+                "risks": ["通用表达，未使用模型专用规则。"],
+                "semanticItemIds": ["brief-scene"],
+            }
+        )
+        output["blocks"][10].update(
+            {
+                "zh": "伞沿连续滴水",
+                "en": "water dripping continuously from umbrella edge",
+                "source": {"type": "ai", "refId": None},
+                "risks": ["通用表达，未使用模型专用规则。"],
+                "semanticItemIds": ["ai-addition-0"],
+            }
+        )
+
+        result = subject.normalize_decomposition_output(
+            output,
+            intake=intake,
+            profile_snapshot=profile_snapshot(),
+        )
+
+        self.assertEqual(result["blocks"][2]["zh"], "穿深蓝色防水风衣")
+        self.assertEqual(
+            result["blocks"][6]["source"],
+            {"type": "image", "refId": "image-scene"},
+        )
+        self.assertEqual(result["blocks"][10]["zh"], "伞沿连续滴水")
+
+    def test_rejects_missing_unlocked_item_ai_addition_or_unconfirmed_semantics(self):
+        subject = self.import_subject()
+        intake = confirmed_intake_with_all_semantic_sources()
+        missing = provider_output()
+        invented = provider_output()
+        invented["blocks"][4]["zh"] += "，身后跟着一名儿童"
+
+        for value in (missing, invented):
+            with self.subTest(value=value):
+                with self.assertRaises(subject.DecompositionError) as caught:
+                    subject.normalize_decomposition_output(
+                        value,
+                        intake=intake,
+                        profile_snapshot=profile_snapshot(),
+                    )
+                self.assertEqual(caught.exception.code, "semantic_violation")
+
+    def test_unlocked_semantic_item_keeps_category_and_source_mapping(self):
+        subject = self.import_subject()
+        intake = confirmed_intake()
+        intake["brief"]["items"] = [
+            {
+                "id": "brief-clothing",
+                "category": "clothing",
+                "text": "穿深蓝色防水风衣",
+                "source": {"type": "image", "refId": "image-clothing"},
+                "locked": False,
+            }
+        ]
+        output = provider_output()
+        output["blocks"][4].update(
+            {
+                "zh": "",
+                "en": "",
+                "source": {"type": "ai", "refId": None},
+                "locked": False,
+                "reason": "无已确认语义。",
+                "ruleRefs": [],
+                "semanticItemIds": [],
+            }
+        )
+        output["blocks"][2].update(
+            {
+                "zh": "穿深蓝色防水风衣",
+                "en": "dark blue waterproof trench coat",
+                "source": {"type": "user", "refId": None},
+                "risks": ["通用表达，未使用模型专用规则。"],
+                "semanticItemIds": ["brief-clothing"],
+            }
+        )
+
+        with self.assertRaises(subject.DecompositionError) as caught:
+            subject.normalize_decomposition_output(
+                output,
+                intake=intake,
+                profile_snapshot=profile_snapshot(),
+            )
+
+        self.assertEqual(caught.exception.code, "semantic_violation")
+
     def test_semantic_chinese_rejects_target_model_terminology(self):
         subject = self.import_subject()
         output = provider_output()
@@ -269,7 +436,27 @@ class ModelAdaptedDecompositionTests(unittest.TestCase):
                 profile_snapshot=profile_snapshot(),
             )
 
-        self.assertEqual(caught.exception.code, "invalid_provider_output")
+        self.assertEqual(caught.exception.code, "semantic_violation")
+
+    def test_semantic_violation_is_not_retried(self):
+        subject = self.import_subject()
+        calls = []
+
+        def provider(messages):
+            calls.append(messages)
+            output = provider_output()
+            output["blocks"][4]["zh"] += "，身后跟着一名儿童"
+            return output
+
+        with self.assertRaises(subject.DecompositionError) as caught:
+            subject.generate_model_adapted_decomposition(
+                intake=confirmed_intake(),
+                profile_snapshot=profile_snapshot(),
+                provider=provider,
+            )
+
+        self.assertEqual(caught.exception.code, "semantic_violation")
+        self.assertEqual(len(calls), 1)
 
     def test_invalid_json_gets_exactly_one_bounded_repair(self):
         subject = self.import_subject()

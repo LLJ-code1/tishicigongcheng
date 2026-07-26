@@ -159,6 +159,58 @@ def _trusted_rules(
     return trusted
 
 
+def _semantic_items(brief: Mapping[str, object]) -> list[dict]:
+    raw_items = brief.get("items")
+    if not isinstance(raw_items, list):
+        _fail("invalid_provider_output", "brief.items must be an array")
+    items = []
+    seen = set()
+    for index, raw in enumerate(raw_items):
+        if not isinstance(raw, Mapping):
+            _fail("invalid_provider_output", f"brief.items[{index}] is invalid")
+        item_id = _safe_identifier(raw.get("id"), f"brief.items[{index}].id")
+        if item_id in seen:
+            _fail("invalid_provider_output", "brief item IDs must be unique")
+        category = raw.get("category")
+        if not isinstance(category, str) or category not in _CATEGORY_TO_BLOCK:
+            _fail(
+                "semantic_violation",
+                f"brief item {item_id} has no canonical semantic category",
+            )
+        source = _source(raw.get("source"), f"brief.items[{index}].source")
+        locked = raw.get("locked")
+        if not isinstance(locked, bool):
+            _fail("invalid_provider_output", f"brief.items[{index}].locked is invalid")
+        items.append(
+            {
+                "id": item_id,
+                "category": category,
+                "text": _text(raw.get("text"), f"brief.items[{index}].text"),
+                "source": source,
+                "locked": locked,
+            }
+        )
+        seen.add(item_id)
+    additions = brief.get("aiAdditions")
+    if not isinstance(additions, list):
+        _fail("invalid_provider_output", "brief.aiAdditions must be an array")
+    for index, addition in enumerate(additions):
+        item_id = f"ai-addition-{index}"
+        if item_id in seen:
+            _fail("invalid_provider_output", "semantic item IDs must be unique")
+        items.append(
+            {
+                "id": item_id,
+                "category": None,
+                "text": _text(addition, f"brief.aiAdditions[{index}]"),
+                "source": {"type": "ai", "refId": None},
+                "locked": False,
+            }
+        )
+        seen.add(item_id)
+    return items
+
+
 def build_decomposition_messages(
     brief: Mapping[str, object],
     approved_rules: Sequence[Mapping[str, object]],
@@ -172,9 +224,13 @@ def build_decomposition_messages(
     payload = {
         "task": "generate_model_adapted_decomposition",
         "brief": deepcopy(dict(brief)),
+        "semanticItems": _semantic_items(brief),
         "approvedRules": deepcopy(list(approved_rules)),
         "warnings": deepcopy(list(warnings)),
-        "blockOrder": list(BLOCK_IDS),
+        "blockDefinitions": [
+            {"id": definition.id, "category": definition.label}
+            for definition in BLOCK_DEFINITIONS
+        ],
     }
     return [
         {"role": "system", "content": _PROMPT_PATH.read_text(encoding="utf-8")},
@@ -232,6 +288,14 @@ def _model_terms(profile_snapshot: Mapping[str, object]) -> set[str]:
     }
 
 
+def _semantic_content(value: str) -> str:
+    return "".join(
+        character
+        for character in _normalized_text(value).casefold()
+        if character.isalnum()
+    )
+
+
 def normalize_decomposition_output(
     value: object,
     *,
@@ -254,17 +318,8 @@ def normalize_decomposition_output(
             "provider must return exactly thirteen canonical blocks in order",
         )
 
-    brief_items = brief.get("items")
-    if not isinstance(brief_items, list):
-        _fail("invalid_provider_output", "brief.items must be an array")
-    items_by_id = {}
-    for index, item in enumerate(brief_items):
-        if not isinstance(item, Mapping):
-            _fail("invalid_provider_output", f"brief.items[{index}] is invalid")
-        item_id = _safe_identifier(item.get("id"), f"brief.items[{index}].id")
-        if item_id in items_by_id:
-            _fail("invalid_provider_output", "brief item IDs must be unique")
-        items_by_id[item_id] = item
+    semantic_items = _semantic_items(brief)
+    items_by_id = {item["id"]: item for item in semantic_items}
 
     normalized_blocks = []
     semantic_locations: dict[str, list[str]] = {}
@@ -326,7 +381,7 @@ def normalize_decomposition_output(
         normalized_zh = _normalized_text(zh).casefold()
         if any(term in normalized_zh for term in forbidden_model_terms):
             _fail(
-                "invalid_provider_output",
+                "semantic_violation",
                 "semantic zh must not contain target-model terminology",
             )
         en = _text(raw_block.get("en"), f"blocks[{index}].en")
@@ -359,28 +414,45 @@ def normalize_decomposition_output(
         )
 
     for item_id, item in items_by_id.items():
-        if not item.get("locked"):
-            continue
         expected_block = _CATEGORY_TO_BLOCK.get(item.get("category"))
         locations = semantic_locations.get(item_id, [])
         fact_text = item.get("text")
-        if (
-            expected_block is None
-            or locations != [expected_block]
-            or not isinstance(fact_text, str)
-            or _normalized_text(fact_text)
-            not in _normalized_text(normalized_blocks[BLOCK_IDS.index(expected_block)]["zh"])
-        ):
+        wrong_location = (
+            locations != [expected_block]
+            if expected_block is not None
+            else len(locations) != 1
+        )
+        if wrong_location or not isinstance(fact_text, str):
             _fail(
-                "locked_fact_changed",
-                f"locked brief fact {item_id} was changed or relocated",
+                "locked_fact_changed" if item["locked"] else "semantic_violation",
+                f"confirmed brief fact {item_id} was omitted, duplicated, or relocated",
             )
-        target = normalized_blocks[BLOCK_IDS.index(expected_block)]
-        if not target["locked"] or target["source"] != item.get("source"):
+        target_id = locations[0]
+        target = normalized_blocks[BLOCK_IDS.index(target_id)]
+        if _normalized_text(fact_text) not in _normalized_text(target["zh"]):
             _fail(
-                "locked_fact_changed",
-                f"locked brief fact {item_id} lost its source or lock",
+                "locked_fact_changed" if item["locked"] else "semantic_violation",
+                f"confirmed brief fact {item_id} was not preserved verbatim",
             )
+
+    for block, raw_block in zip(normalized_blocks, raw_blocks):
+        semantic_ids = raw_block["semanticItemIds"]
+        referenced = [items_by_id[item_id] for item_id in semantic_ids]
+        expected_content = "".join(_semantic_content(item["text"]) for item in referenced)
+        if _semantic_content(block["zh"]) != expected_content:
+            _fail(
+                "semantic_violation",
+                f"{block['id']} semantic zh contains unconfirmed meaning",
+            )
+        expected_source = (
+            referenced[0]["source"]
+            if referenced
+            else {"type": "ai", "refId": None}
+        )
+        expected_locked = any(item["locked"] for item in referenced)
+        if block["source"] != expected_source or block["locked"] != expected_locked:
+            code = "locked_fact_changed" if expected_locked else "semantic_violation"
+            _fail(code, f"{block['id']} semantic provenance or lock is invalid")
 
     return {
         "status": "draft",
