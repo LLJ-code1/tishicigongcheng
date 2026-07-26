@@ -738,6 +738,37 @@ class PromptStudioServerTests(unittest.TestCase):
                     400,
                 )
                 self.assertEqual(rejected["code"], expected_code)
+        identity_decisions = {
+            claim["claimId"]: (
+                "approved"
+                if claim["fieldPath"] in {"model.versionId", "model.versionName"}
+                else "rejected"
+            )
+            for claim in payload["claims"]
+        }
+        request = Request(
+            f"{self.base_url}/api/model-profile-versions/{payload['draftVersion']['versionId']}",
+            data=json.dumps({
+                "claimDecisions": identity_decisions,
+                "manualFields": {"notes": "Identity still needs a real model name."},
+                "reviewNote": "Version fields only",
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        with urlopen(request) as response:
+            version_only = json.loads(response.read().decode("utf-8"))["item"]
+        self.assertIn("Identity still needs", version_only["reviewNote"])
+        rejected = self.assert_http_error_json(
+            Request(
+                f"{self.base_url}/api/model-profile-versions/{version_only['versionId']}/review",
+                data=b'{"reviewerNote":"placeholder name is not identity"}',
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            ),
+            400,
+        )
+        self.assertEqual(rejected["code"], "unresolved_model_identity")
         self.assert_http_error_json(
             Request(
                 f"{self.base_url}/api/model-research/{payload['run']['runId']}/extra"
@@ -869,6 +900,23 @@ class PromptStudioServerTests(unittest.TestCase):
             409,
         )
         self.assertEqual(stale["code"], "active_version_changed")
+        with db.database(self.api_db_path) as connection:
+            connection.execute(
+                "UPDATE model_profile_versions SET content_sha256 = ? WHERE id = ?",
+                ("f" * 64, second_reviewed["versionId"]),
+            )
+        mismatch = self.assert_http_error_json(
+            Request(
+                f"{self.base_url}/api/model-profile-versions/{second_reviewed['versionId']}/activate",
+                data=json.dumps({
+                    "expectedActiveVersionId": active["versionId"]
+                }).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            ),
+            409,
+        )
+        self.assertEqual(mismatch["code"], "profile_hash_mismatch")
         with urlopen(f"{self.base_url}/api/model-profiles") as response:
             catalog = json.loads(response.read().decode("utf-8"))["items"]
         researched = next(
@@ -882,6 +930,17 @@ class PromptStudioServerTests(unittest.TestCase):
         self.assertIn("warnings", researched)
         self.assertIn("generationReady", researched)
         self.assertTrue(any(item["profileId"] == "anima-1.1-v1" for item in catalog))
+        with db.database(self.api_db_path) as connection:
+            connection.execute(
+                "UPDATE model_profile_versions SET content_sha256 = ? WHERE id = ?",
+                ("0" * 64, active["versionId"]),
+            )
+        with urlopen(f"{self.base_url}/api/model-profiles") as response:
+            corrupted_catalog = json.loads(response.read().decode("utf-8"))["items"]
+        self.assertFalse(any(
+            item.get("profileVersionId") == active["versionId"]
+            for item in corrupted_catalog
+        ))
 
     def test_model_research_failure_is_nonblocking_and_private_resolution_is_rejected(self):
         source_url = "https://civitai.com/models/934764/example"

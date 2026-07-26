@@ -1515,7 +1515,9 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         except model_profile_store.ProfileStoreError as error:
             self._send_json_if_possible(
                 {"error": str(error), "code": error.code},
-                409 if error.code == "active_version_changed" else 400,
+                409 if error.code in {
+                    "active_version_changed", "profile_hash_mismatch"
+                } else 400,
             )
         except ModelProfileError:
             self._send_json_if_possible(
@@ -2053,8 +2055,9 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         researched_items = []
         for version in researched:
             try:
+                self._require_profile_hash(version)
                 researched_items.append(self._researched_profile_api_item(version))
-            except ModelProfileError:
+            except (ModelProfileError, model_profile_store.ProfileStoreError):
                 continue
         if profile_id:
             for item in researched_items:
@@ -2111,6 +2114,15 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         candidate = deepcopy(profile)
         candidate["profileId"] = candidate.pop("id", candidate.get("profileId"))
         return validate_researched_model_profile(candidate)
+
+    @staticmethod
+    def _require_profile_hash(version: dict) -> None:
+        actual = prompt_db.canonical_json_hash(version["profile"])
+        if actual != version.get("contentSha256"):
+            raise model_profile_store.ProfileStoreError(
+                "profile_hash_mismatch",
+                "stored profile content hash does not match its canonical content",
+            )
 
     def handle_model_research_create(self) -> None:
         payload = self.read_json()
@@ -2219,7 +2231,7 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             ]
         projection_manual = {
             path: value for path, value in manual.items()
-            if path not in {"displayName", "notes"}
+            if path != "notes"
         }
         projected, _ = model_research.apply_claim_decisions(
             parent["profile"], claims, decisions, projection_manual
@@ -2241,7 +2253,11 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
                 raise model_research.ResearchError(
                     "invalid_request", "notes is invalid"
                 )
-            projected.setdefault("metadata", {})["notes"] = notes
+            note = f"{note}\n\n{notes}".strip()
+            if len(note) > 4096:
+                raise model_research.ResearchError(
+                    "invalid_request", "combined review note is too long"
+                )
         projected["id"] = parent["profileId"]
         projected.pop("profileId", None)
         self._validate_stored_researched_profile(projected)
@@ -2261,11 +2277,22 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             raise model_profile_store.ProfileStoreError(
                 "unknown_version", "profile version does not exist"
             )
-        self._validate_stored_researched_profile(version["profile"])
         model = version["profile"].get("model", {})
         display_name = version["profile"].get("displayName")
         version_name = model.get("versionName")
         exact_model_version_id = model.get("versionId")
+        audit = (
+            version["profile"].get("metadata", {})
+            .get("research", {})
+            .get("claimAudit", [])
+        )
+        verified_name = any(
+            isinstance(item, dict)
+            and item.get("fieldPath") == "displayName"
+            and item.get("applicationStatus") == "approved"
+            and item.get("evidenceClass") in {"original_source", "user_supplied"}
+            for item in audit
+        )
         if (
             not isinstance(display_name, str)
             or not display_name.strip()
@@ -2273,11 +2300,14 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             or not version_name.strip()
             or not isinstance(exact_model_version_id, int)
             or isinstance(exact_model_version_id, bool)
+            or display_name == "Pending model research"
+            or not verified_name
         ):
             raise model_profile_store.ProfileStoreError(
                 "unresolved_model_identity",
                 "exact model version identity must be resolved before review",
             )
+        self._validate_stored_researched_profile(version["profile"])
         item = model_profile_store.review_profile_version(
             version_id, payload.get("reviewerNote"),
             db_path=prompt_db.DEFAULT_DB_PATH,
@@ -2298,6 +2328,7 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             raise model_profile_store.ProfileStoreError(
                 "unknown_version", "profile version does not exist"
             )
+        self._require_profile_hash(version)
         self._validate_stored_researched_profile(version["profile"])
         item = model_profile_store.activate_profile_version(
             version_id, payload["expectedActiveVersionId"],
