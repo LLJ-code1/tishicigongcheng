@@ -1059,6 +1059,46 @@ test("entering the workbench applies the canonical target model and its defaults
   assert.equal(next.generationParameters.cfg, 6.5);
 });
 
+test("workbench entry waits until the canonical model profile is loaded", () => {
+  const state = createInitialState();
+  state.creativeIntake = creativeIntakeStageFixture("model_selected");
+  state.creativeIntake.selectedModelProfileId = "director-target";
+  state.modelProfilesStatus = "loading";
+  state.modelProfiles = [];
+
+  const next = reduceState(state, { type: "ENTER_CREATIVE_WORKBENCH" });
+
+  assert.equal(next.view, "home");
+  assert.equal(next.modelProfileId, "anima-1.1-v1");
+  assert.match(next.toast, /模型档案.*加载/);
+  assert.equal(buildDirectorRenderModel(next).canContinue, false);
+});
+
+test("loaded model profiles reconcile the canonical target before handoff", () => {
+  const state = createInitialState();
+  state.creativeIntake = creativeIntakeStageFixture("model_selected");
+  state.creativeIntake.selectedModelProfileId = "director-target";
+  state.modelProfilesStatus = "loading";
+
+  const next = reduceState(state, {
+    type: "MODEL_PROFILES_LOADED",
+    items: [
+      {
+        profileId: "fallback",
+        defaultParameters: { steps: 12 },
+      },
+      {
+        profileId: "director-target",
+        defaultParameters: { steps: 31 },
+      },
+    ],
+  });
+
+  assert.equal(next.modelProfileId, "director-target");
+  assert.equal(next.generationParameters.steps, 31);
+  assert.equal(buildDirectorRenderModel(next).canContinue, true);
+});
+
 test("reopening a brief clears stale downstream workspace content", () => {
   const state = createInitialState();
   state.view = "text";
@@ -1090,6 +1130,50 @@ test("reopening a brief clears stale downstream workspace content", () => {
   assert.equal(next.pendingEditPreview, null);
   assert.equal(next.recipeHash, "");
   assert.equal(next.randomPlan, null);
+});
+
+test("refresh after reopening a brief cannot resurrect the latest recipe", () => {
+  const intake = creativeIntakeStageFixture("brief_draft");
+  intake.recipeStatus = "missing";
+  const restored = hydrateProjectState(createInitialState(), {
+    id: "project-reopened",
+    mode: "text",
+    metadata: {
+      workspaceBaseVersion: 1,
+      creativeIntake: intake,
+      draftInput: "stale draft",
+    },
+    versions: [
+      {
+        version: 1,
+        source: "text",
+        blocks: [
+          { id: "subject", en: ["stale"], zh: ["旧"], weight: 100 },
+        ],
+        output: {
+          positiveEn: "stale output",
+          positiveZh: "旧输出",
+          negativeEn: "",
+          negativeZh: "",
+          relationEn: "",
+          relationZh: "",
+        },
+        metadata: {
+          draftInput: "stale draft",
+          recipe: {
+            model: { profileId: "stale-model" },
+            parameters: {},
+          },
+        },
+      },
+    ],
+  });
+
+  assert.equal(restored.view, "home");
+  assert.equal(restored.draftInput, "");
+  assert.deepEqual(restored.blocks, []);
+  assert.equal(restored.output.positiveEn, "");
+  assert.equal(restored.modelProfileId, "anima-1.1-v1");
 });
 
 test("deterministic creative intake requests share the stale guard and only use loaded model IDs", () => {
@@ -1147,6 +1231,7 @@ test("director render model derives directions brief gate and workbench handoff 
       readiness: "verified",
     },
   ];
+  draftState.modelProfilesStatus = "ready";
   const draft = buildDirectorRenderModel(draftState);
 
   assert.equal(draft.stage, "brief_draft");
@@ -1350,6 +1435,13 @@ test("model gate exposes canonical profile readiness and bounded evidence withou
 test("workbench handoff preserves canonical brief and model without inventing decomposition", () => {
   const state = createInitialState();
   state.creativeIntake = creativeIntakeStageFixture("model_selected");
+  state.modelProfilesStatus = "ready";
+  state.modelProfiles = [
+    {
+      profileId: "anima-1.1-v1",
+      defaultParameters: {},
+    },
+  ];
   state.draftInput = "";
 
   const entered = reduceState(state, { type: "ENTER_CREATIVE_WORKBENCH" });
@@ -1394,8 +1486,9 @@ test("refresh recovery stays stage-driven at intake brief and model boundaries",
       view.showModelGate,
       ["brief_confirmed", "model_selected"].includes(stage)
     );
-    assert.equal(view.canContinue, stage === "model_selected");
-    assert.equal(view.showWorkbench, stage === "model_selected");
+    assert.equal(view.canContinue, false);
+    assert.equal(view.showWorkbench, false);
+    assert.equal(restored.view, "home");
   }
 });
 

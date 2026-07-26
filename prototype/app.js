@@ -758,7 +758,7 @@
     const profile = state.modelProfiles.find(
       (item) => item.profileId === profileId
     );
-    if (!profile) return;
+    if (!profile) return false;
     state.modelProfileId = profile.profileId;
     for (const [key, value] of Object.entries(
       safeObject(profile.defaultParameters)
@@ -770,6 +770,7 @@
         state.generationParameters[key] = clone(value);
       }
     }
+    return true;
   }
 
   function clearCreativeDownstreamWorkspace(state) {
@@ -1192,6 +1193,14 @@
   function buildDirectorRenderModel(state) {
     const intake = normalizeCreativeIntake(state.creativeIntake);
     const stageView = creativeDirectorStageView(intake.stage);
+    const canonicalModelReady =
+      state.modelProfilesStatus === "ready" &&
+      Boolean(
+        state.modelProfiles.find(
+          (profile) =>
+            profile?.profileId === intake.selectedModelProfileId
+        )
+      );
     return {
       stage: intake.stage,
       messages:
@@ -1223,9 +1232,11 @@
       conflicts: clone(intake.conflicts),
       canConfirmBrief: canConfirmCreativeBrief(intake),
       showModelGate: stageView.showModelGate,
-      canContinue: stageView.canContinue,
+      canContinue: stageView.canContinue && canonicalModelReady,
       showWorkbench:
-        stageView.showWorkbench && state.view !== "home",
+        stageView.showWorkbench &&
+        canonicalModelReady &&
+        state.view !== "home",
       selectedModelProfileId: intake.selectedModelProfileId,
       modelProfiles: (Array.isArray(state.modelProfiles)
         ? state.modelProfiles
@@ -1720,6 +1731,10 @@
 
   function hydrateProjectState(state, project) {
     const next = clone(state);
+    const workspaceDefaultModelProfileId = next.modelProfileId;
+    const workspaceDefaultGenerationParameters = clone(
+      next.generationParameters
+    );
     next.analyzers = resetAnalyzerWorkspaceResults(next.analyzers);
     const metadata = safeObject(project?.metadata);
     const history = (Array.isArray(project?.versions) ? project.versions : [])
@@ -1844,6 +1859,29 @@
         ? "已恢复图片解析结果；原始图片需重新载入"
         : "已恢复项目最新版本"
       : "项目尚未保存提示词版本";
+    const hasCanonicalCreativeIntake =
+      projectMetadataIsCurrent &&
+      metadata.creativeIntake &&
+      typeof metadata.creativeIntake === "object" &&
+      !Array.isArray(metadata.creativeIntake);
+    if (
+      hasCanonicalCreativeIntake &&
+      !creativeDirectorStageView(next.creativeIntake.stage).canContinue
+    ) {
+      clearCreativeDownstreamWorkspace(next);
+      next.modelProfileId = workspaceDefaultModelProfileId;
+      next.generationParameters = workspaceDefaultGenerationParameters;
+      next.manualParameterKeys = [];
+      next.view = "home";
+      next.rawMergedResult = "";
+      next.analysisComplete = false;
+    } else if (
+      hasCanonicalCreativeIntake &&
+      creativeDirectorStageView(next.creativeIntake.stage).canContinue &&
+      !applyCanonicalModelToWorkspace(next)
+    ) {
+      next.view = "home";
+    }
     next.toast = `已打开作品：${next.projectName}`;
     return next;
   }
@@ -2709,7 +2747,10 @@
         if (
           creativeDirectorStageView(next.creativeIntake?.stage).canContinue
         ) {
-          applyCanonicalModelToWorkspace(next);
+          if (!applyCanonicalModelToWorkspace(next)) {
+            next.toast = "目标模型档案尚未加载完成，请稍后再试";
+            return next;
+          }
           next.view = "text";
           if (
             !String(next.draftInput || "").trim() &&
@@ -2777,6 +2818,12 @@
       case "MODEL_PROFILES_LOADED": {
         next.modelProfiles = Array.isArray(action.items) ? clone(action.items) : [];
         next.modelProfilesStatus = "ready";
+        if (
+          creativeDirectorStageView(next.creativeIntake?.stage).canContinue &&
+          applyCanonicalModelToWorkspace(next)
+        ) {
+          return next;
+        }
         const selected =
           next.modelProfiles.find((item) => item.profileId === next.modelProfileId) ||
           next.modelProfiles[0];
@@ -4744,7 +4791,17 @@
       const acceptedProjectRevision = state.projectRevision;
       if (input && !usesOverride) input.value = "";
       render();
-      await persistAcceptedCreativeIntake(acceptedProjectRevision);
+      const persisted = await persistAcceptedCreativeIntake(
+        acceptedProjectRevision
+      );
+      if (!persisted) {
+        state = app.reduceState(state, {
+          type: "DIRECTOR_REQUEST_FAILED",
+          error: "创作阶段已更新，但保存失败，请重试",
+        });
+        render();
+        return false;
+      }
       state = app.reduceState(state, {
         type: "DIRECTOR_REQUEST_SUCCEEDED",
       });
