@@ -196,6 +196,22 @@
     };
   }
 
+  function emptyCreativeIntake() {
+    return {
+      schemaVersion: 1,
+      revision: 0,
+      stage: "intake",
+      inputs: { text: "", images: [] },
+      directions: [],
+      selectedDirectionId: null,
+      brief: null,
+      selectedModelProfileId: null,
+      decomposition: null,
+      recipeStatus: "missing",
+      conflicts: [],
+    };
+  }
+
   function createInitialState() {
     return {
       view: "home",
@@ -216,6 +232,7 @@
       restoreFromVersion: null,
       workingRevision: 0,
       projectRevision: 0,
+      creativeIntake: emptyCreativeIntake(),
       textMode: "expand",
       draftInput: "",
       randomSeed: null,
@@ -328,6 +345,298 @@
       : {};
   }
 
+  const CREATIVE_INTAKE_STAGES = new Set([
+    "intake",
+    "direction_selected",
+    "brief_draft",
+    "brief_confirmed",
+    "model_selected",
+    "decomposition_draft",
+    "decomposition_confirmed",
+  ]);
+  const CREATIVE_INTAKE_RECIPE_STATUSES = new Set([
+    "missing",
+    "stale",
+    "ready",
+  ]);
+  const CREATIVE_INTAKE_SOURCE_TYPES = new Set([
+    "user",
+    "image",
+    "ai",
+    "model_rule",
+  ]);
+
+  function normalizeCreativeIntake(value) {
+    function fail() {
+      throw new TypeError("invalid creative intake");
+    }
+
+    function object(source, allowedKeys) {
+      if (!source || typeof source !== "object" || Array.isArray(source)) fail();
+      if (Object.keys(source).some((key) => !allowedKeys.has(key))) fail();
+      return source;
+    }
+
+    function array(source, maximum) {
+      if (!Array.isArray(source) || source.length > maximum) fail();
+      return source;
+    }
+
+    function text(source, maximum, allowEmpty = true) {
+      if (typeof source !== "string" || (!allowEmpty && !source)) fail();
+      let length = 0;
+      for (let index = 0; index < source.length; index += 1) {
+        const unit = source.charCodeAt(index);
+        if (unit >= 0xd800 && unit <= 0xdbff) {
+          const next = source.charCodeAt(index + 1);
+          if (!(next >= 0xdc00 && next <= 0xdfff)) fail();
+          index += 1;
+        } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+          fail();
+        }
+        length += 1;
+        if (length > maximum) fail();
+      }
+      return source;
+    }
+
+    function identifier(source) {
+      const result = text(source, 128, false);
+      if (/\s/u.test(result)) fail();
+      return result;
+    }
+
+    function unique(items, selector = (item) => item) {
+      const values = items.map(selector);
+      if (new Set(values).size !== values.length) fail();
+      return items;
+    }
+
+    function textArray(source, maximum) {
+      return unique(
+        array(source, maximum).map((entry) => text(entry, 4_096, false))
+      );
+    }
+
+    function sourceItem(source, imageIds) {
+      const item = object(source, new Set(["type", "refId"]));
+      const type = text(item.type, 64, false);
+      if (!CREATIVE_INTAKE_SOURCE_TYPES.has(type)) fail();
+      let refId = item.refId ?? null;
+      if (type === "user" || type === "ai") {
+        if (refId !== null) fail();
+      } else {
+        refId = identifier(refId);
+        if (type === "image" && !imageIds.has(refId)) fail();
+      }
+      return { type, refId };
+    }
+
+    function image(source) {
+      const item = object(
+        source,
+        new Set(["id", "name", "mimeType", "status", "requestedUses"])
+      );
+      const name = text(item.name, 512, false);
+      if (
+        name === "." ||
+        name === ".." ||
+        name.includes("/") ||
+        name.includes("\\") ||
+        name.includes(":")
+      ) {
+        fail();
+      }
+      return {
+        id: identifier(item.id),
+        name,
+        mimeType: text(item.mimeType, 128, false),
+        status: text(item.status, 128, false),
+        requestedUses: textArray(item.requestedUses, 32),
+      };
+    }
+
+    function briefItem(source, imageIds) {
+      const item = object(
+        source,
+        new Set(["id", "category", "text", "source", "locked"])
+      );
+      if (typeof item.locked !== "boolean") fail();
+      return {
+        id: identifier(item.id),
+        category: text(item.category, 128, false),
+        text: text(item.text, 200_000),
+        source: sourceItem(item.source, imageIds),
+        locked: item.locked,
+      };
+    }
+
+    function brief(source, imageIds) {
+      if (source === null) return null;
+      const item = object(
+        source,
+        new Set([
+          "status",
+          "summary",
+          "items",
+          "aiAdditions",
+          "openQuestions",
+        ])
+      );
+      const status = text(item.status, 32, false);
+      if (!new Set(["draft", "confirmed"]).has(status)) fail();
+      const items = unique(
+        array(item.items, 200).map((entry) => briefItem(entry, imageIds)),
+        (entry) => entry.id
+      );
+      return {
+        status,
+        summary: text(item.summary, 200_000),
+        items,
+        aiAdditions: textArray(item.aiAdditions, 200),
+        openQuestions: textArray(item.openQuestions, 200),
+      };
+    }
+
+    function decompositionBlock(source, imageIds) {
+      const item = object(
+        source,
+        new Set([
+          "id",
+          "category",
+          "zh",
+          "en",
+          "source",
+          "locked",
+          "approved",
+          "reason",
+          "risks",
+        ])
+      );
+      if (
+        typeof item.locked !== "boolean" ||
+        typeof item.approved !== "boolean"
+      ) {
+        fail();
+      }
+      return {
+        id: identifier(item.id),
+        category: text(item.category, 128, false),
+        zh: text(item.zh, 200_000),
+        en: text(item.en, 200_000),
+        source: sourceItem(item.source, imageIds),
+        locked: item.locked,
+        approved: item.approved,
+        reason: text(item.reason, 200_000),
+        risks: textArray(item.risks, 100),
+      };
+    }
+
+    function decomposition(source, imageIds) {
+      if (source === null) return null;
+      const item = object(source, new Set(["status", "blocks"]));
+      const status = text(item.status, 32, false);
+      if (!new Set(["draft", "confirmed"]).has(status)) fail();
+      return {
+        status,
+        blocks: unique(
+          array(item.blocks, 200).map((entry) =>
+            decompositionBlock(entry, imageIds)
+          ),
+          (entry) => entry.id
+        ),
+      };
+    }
+
+    function conflict(source) {
+      const item = object(
+        source,
+        new Set(["id", "code", "message", "status", "itemIds"])
+      );
+      const status = text(item.status, 32, false);
+      if (!new Set(["open", "resolved"]).has(status)) fail();
+      return {
+        id: identifier(item.id),
+        code: text(item.code, 128, false),
+        message: text(item.message, 200_000),
+        status,
+        itemIds: unique(
+          array(item.itemIds, 200).map((entry) => identifier(entry))
+        ),
+      };
+    }
+
+    try {
+      const intake = object(
+        value,
+        new Set([
+          "schemaVersion",
+          "revision",
+          "stage",
+          "inputs",
+          "directions",
+          "selectedDirectionId",
+          "brief",
+          "selectedModelProfileId",
+          "decomposition",
+          "recipeStatus",
+          "conflicts",
+        ])
+      );
+      if (intake.schemaVersion !== 1) fail();
+      if (!Number.isSafeInteger(intake.revision) || intake.revision < 0) fail();
+      const stage = text(intake.stage, 64, false);
+      if (!CREATIVE_INTAKE_STAGES.has(stage)) fail();
+      const inputs = object(intake.inputs, new Set(["text", "images"]));
+      const images = unique(array(inputs.images, 8).map(image), (item) => item.id);
+      const imageIds = new Set(images.map((item) => item.id));
+      const directions = unique(
+        array(intake.directions, 3).map((source) => {
+          const item = object(source, new Set(["id", "label", "summary"]));
+          return {
+            id: identifier(item.id),
+            label: text(item.label, 512, false),
+            summary: text(item.summary, 200_000),
+          };
+        }),
+        (item) => item.id
+      );
+      let selectedDirectionId = intake.selectedDirectionId;
+      if (selectedDirectionId !== null) {
+        selectedDirectionId = identifier(selectedDirectionId);
+        if (!directions.some((item) => item.id === selectedDirectionId)) fail();
+      }
+      let selectedModelProfileId = intake.selectedModelProfileId;
+      if (selectedModelProfileId !== null) {
+        selectedModelProfileId = identifier(selectedModelProfileId);
+      }
+      const recipeStatus = text(intake.recipeStatus, 32, false);
+      if (!CREATIVE_INTAKE_RECIPE_STATUSES.has(recipeStatus)) fail();
+      const conflicts = unique(
+        array(intake.conflicts, 100).map(conflict),
+        (item) => item.id
+      );
+      return {
+        schemaVersion: 1,
+        revision: intake.revision,
+        stage,
+        inputs: {
+          text: text(inputs.text, 200_000),
+          images,
+        },
+        directions,
+        selectedDirectionId,
+        brief: brief(intake.brief, imageIds),
+        selectedModelProfileId,
+        decomposition: decomposition(intake.decomposition, imageIds),
+        recipeStatus,
+        conflicts,
+      };
+    } catch {
+      return emptyCreativeIntake();
+    }
+  }
+
   function persistedVersionSnapshot(item) {
     const metadata = safeObject(item?.metadata);
     const version = Number(item?.version);
@@ -375,6 +684,9 @@
       (Number.isSafeInteger(projectWorkspaceVersion) &&
         projectWorkspaceVersion === latest.version);
 
+    next.creativeIntake = projectMetadataIsCurrent
+      ? normalizeCreativeIntake(metadata.creativeIntake)
+      : emptyCreativeIntake();
     next.projectId = typeof project?.id === "string" ? project.id : null;
     next.projectName =
       typeof project?.name === "string" && project.name.trim()
@@ -503,6 +815,7 @@
         draftInput: state.draftInput,
         settings: projectSettingsMetadata(state.settings),
         imageName: state.imageName,
+        creativeIntake: normalizeCreativeIntake(state.creativeIntake),
         workspaceBaseVersion: Number.isSafeInteger(state.version)
           ? state.version
           : 0,
@@ -648,7 +961,8 @@
       state.projectId ||
         String(state.projectName || "").trim() !== "未命名作品" ||
         String(state.draftInput || "").trim() ||
-        state.imageName
+        state.imageName ||
+        Number(state.creativeIntake?.revision) > 0
     );
     return Boolean(
       state.dirtyBlockIds?.length ||
@@ -1213,6 +1527,10 @@
         return next;
       case "SET_DRAFT":
         next.draftInput = action.value;
+        markProjectChanged(next);
+        return next;
+      case "CREATIVE_INTAKE_REPLACED":
+        next.creativeIntake = normalizeCreativeIntake(action.item);
         markProjectChanged(next);
         return next;
       case "SET_GENERATION_PARAMETER": {
@@ -2102,10 +2420,21 @@
     );
   }
 
+  function isCreativeIntakeResponseCurrent(request, sessionId, state) {
+    return Boolean(
+      request &&
+        request.sessionId === sessionId &&
+        request.projectRevision === state.projectRevision &&
+        request.creativeIntakeRevision === state.creativeIntake?.revision
+    );
+  }
+
   const api = {
     createInitialState,
     createNewProjectState,
     hydrateProjectState,
+    emptyCreativeIntake,
+    normalizeCreativeIntake,
     persistedVersionSnapshot,
     buildProjectPayload,
     buildVersionPayload,
@@ -2130,6 +2459,7 @@
     settingsWritePayload,
     enqueueByKey,
     isWorkspaceRequestCurrent,
+    isCreativeIntakeResponseCurrent,
     randomVariantBlockIds: Array.from(RANDOM_VARIANT_BLOCKS),
   };
 

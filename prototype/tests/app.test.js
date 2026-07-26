@@ -27,8 +27,29 @@ const {
   settingsWritePayload,
   enqueueByKey,
   isWorkspaceRequestCurrent,
+  emptyCreativeIntake,
+  normalizeCreativeIntake,
+  isCreativeIntakeResponseCurrent,
 } = require("../app.js");
 const unicode15 = require("../unicode15-data.js");
+
+function confirmedBriefFixture() {
+  return {
+    status: "confirmed",
+    summary: "A red dress on a runway.",
+    items: [
+      {
+        id: "item-outfit",
+        category: "outfit",
+        text: "red dress",
+        source: { type: "user", refId: null },
+        locked: true,
+      },
+    ],
+    aiAdditions: [],
+    openQuestions: [],
+  };
+}
 
 function createGeneratedState() {
   const blockIds = [
@@ -97,6 +118,259 @@ test("starts on a blank new-work screen", () => {
   assert.equal(state.view, "home");
   assert.equal(state.projectName, "未命名作品");
   assert.equal(state.output.positiveEn, "");
+});
+
+test("starts with an empty creative intake session", () => {
+  const state = createInitialState();
+  assert.equal(state.creativeIntake.schemaVersion, 1);
+  assert.equal(state.creativeIntake.stage, "intake");
+  assert.equal(state.creativeIntake.revision, 0);
+});
+
+test("replaces creative intake only with a normalized server item", () => {
+  const state = createInitialState();
+  const item = {
+    ...emptyCreativeIntake(),
+    revision: 1,
+    inputs: { text: "red dress, runway", images: [] },
+  };
+  const next = reduceState(state, {
+    type: "CREATIVE_INTAKE_REPLACED",
+    item,
+  });
+
+  assert.equal(next.creativeIntake.revision, 1);
+  assert.equal(next.creativeIntake.inputs.text, "red dress, runway");
+  assert.equal(next.hasUnsavedProjectChanges, true);
+  item.inputs.text = "mutated after dispatch";
+  assert.equal(next.creativeIntake.inputs.text, "red dress, runway");
+});
+
+test("creative intake normalization mirrors canonical containers enums and limits", () => {
+  const canonical = {
+    ...emptyCreativeIntake(),
+    revision: 4,
+    stage: "brief_confirmed",
+    directions: [
+      { id: "direction-one", label: "Runway", summary: "A runway study." },
+    ],
+    selectedDirectionId: "direction-one",
+    brief: confirmedBriefFixture(),
+    recipeStatus: "stale",
+  };
+  assert.deepEqual(normalizeCreativeIntake(canonical), canonical);
+
+  for (const malformed of [
+    { ...canonical, stage: "unsupported" },
+    { ...canonical, directions: "not-an-array" },
+    {
+      ...canonical,
+      directions: [
+        ...canonical.directions,
+        { id: "two", label: "Two", summary: "" },
+        { id: "three", label: "Three", summary: "" },
+        { id: "four", label: "Four", summary: "" },
+      ],
+    },
+    {
+      ...canonical,
+      inputs: { text: "x".repeat(200_001), images: [] },
+    },
+  ]) {
+    assert.deepEqual(normalizeCreativeIntake(malformed), emptyCreativeIntake());
+  }
+});
+
+test("persists creative intake in project metadata but not Recipe v1", () => {
+  const state = createInitialState();
+  state.creativeIntake = {
+    ...emptyCreativeIntake(),
+    revision: 4,
+    stage: "brief_confirmed",
+    brief: confirmedBriefFixture(),
+  };
+
+  assert.deepEqual(
+    buildProjectPayload(state).metadata.creativeIntake,
+    state.creativeIntake
+  );
+  assert.equal(
+    Object.hasOwn(buildVersionPayload(state).metadata, "creativeIntake"),
+    false
+  );
+});
+
+test("hydrates creative intake from current project metadata", () => {
+  const original = createInitialState();
+  const restored = hydrateProjectState(original, {
+    id: "project-one",
+    metadata: {
+      workspaceBaseVersion: 0,
+      creativeIntake: {
+        ...emptyCreativeIntake(),
+        revision: 4,
+        stage: "brief_confirmed",
+        brief: confirmedBriefFixture(),
+      },
+    },
+    versions: [],
+  });
+
+  assert.equal(restored.creativeIntake.stage, "brief_confirmed");
+  assert.equal(restored.creativeIntake.revision, 4);
+});
+
+test("absent malformed or stale historical creative intake metadata fails closed", () => {
+  const malformedCases = [
+    {},
+    { creativeIntake: null },
+    {
+      creativeIntake: {
+        ...emptyCreativeIntake(),
+        inputs: { text: "", images: "not-an-array" },
+      },
+    },
+  ];
+  for (const metadata of malformedCases) {
+    const restored = hydrateProjectState(createInitialState(), {
+      id: "project-one",
+      metadata,
+      versions: [],
+    });
+    assert.deepEqual(restored.creativeIntake, emptyCreativeIntake());
+  }
+
+  const stale = hydrateProjectState(createInitialState(), {
+    id: "project-one",
+    metadata: {
+      workspaceBaseVersion: 0,
+      creativeIntake: {
+        ...emptyCreativeIntake(),
+        revision: 8,
+        inputs: { text: "stale metadata", images: [] },
+      },
+    },
+    versions: [
+      {
+        id: "version-one",
+        version: 1,
+        metadata: {},
+      },
+    ],
+  });
+  assert.deepEqual(stale.creativeIntake, emptyCreativeIntake());
+});
+
+test("creating a new project resets creative intake and preserves global settings", () => {
+  const state = createInitialState();
+  state.settings.localTextModel = "custom-local-model";
+  state.creativeIntake = {
+    ...emptyCreativeIntake(),
+    revision: 2,
+    inputs: { text: "old project", images: [] },
+  };
+
+  const fresh = createNewProjectState(state);
+
+  assert.deepEqual(fresh.creativeIntake, emptyCreativeIntake());
+  assert.equal(fresh.settings.localTextModel, "custom-local-model");
+});
+
+test("metadata-only project save carries creative intake without a prompt version", () => {
+  let state = createInitialState();
+  state = reduceState(state, {
+    type: "CREATIVE_INTAKE_REPLACED",
+    item: {
+      ...emptyCreativeIntake(),
+      revision: 1,
+      inputs: { text: "metadata only", images: [] },
+    },
+  });
+
+  const commit = buildWorkspaceCommitPayload(state, {
+    operationId: "save-intake",
+    projectId: "project-intake",
+  });
+
+  assert.equal(commit.version, null);
+  assert.equal(commit.project.metadata.creativeIntake.revision, 1);
+  assert.equal(commit.project.metadata.creativeIntake.inputs.text, "metadata only");
+});
+
+test("creative intake metadata rejects image bytes paths and external API keys", () => {
+  const state = createInitialState();
+  state.settings.apiTextKey = "external-secret";
+  state.creativeIntake = {
+    ...emptyCreativeIntake(),
+    revision: 1,
+    inputs: {
+      text: "",
+      images: [
+        {
+          id: "image-one",
+          name: "C:\\private\\reference.png",
+          mimeType: "image/png",
+          status: "ready",
+          requestedUses: [],
+          bytes: "base64-image-bytes",
+          apiKey: "external-secret",
+        },
+      ],
+    },
+  };
+
+  const metadata = buildProjectPayload(state).metadata;
+
+  assert.deepEqual(metadata.creativeIntake, emptyCreativeIntake());
+  assert.equal(JSON.stringify(metadata).includes("base64-image-bytes"), false);
+  assert.equal(JSON.stringify(metadata).includes("C:\\private"), false);
+  assert.equal(JSON.stringify(metadata).includes("external-secret"), false);
+});
+
+test("creative intake changes participate in workspace discard confirmation", () => {
+  const state = reduceState(createInitialState(), {
+    type: "CREATIVE_INTAKE_REPLACED",
+    item: {
+      ...emptyCreativeIntake(),
+      revision: 1,
+      inputs: { text: "unsaved intake", images: [] },
+    },
+  });
+
+  assert.equal(shouldConfirmWorkspaceDiscard(state), true);
+});
+
+test("creative intake response guard rejects every stale request dimension", () => {
+  const state = createInitialState();
+  state.projectRevision = 7;
+  state.creativeIntake.revision = 5;
+  const request = {
+    sessionId: 3,
+    projectRevision: 7,
+    creativeIntakeRevision: 5,
+  };
+
+  assert.equal(isCreativeIntakeResponseCurrent(request, 3, state), true);
+  assert.equal(
+    isCreativeIntakeResponseCurrent({ ...request, sessionId: 2 }, 3, state),
+    false
+  );
+  assert.equal(
+    isCreativeIntakeResponseCurrent(
+      { ...request, projectRevision: 6 },
+      3,
+      state
+    ),
+    false
+  );
+  assert.equal(
+    isCreativeIntakeResponseCurrent(
+      { ...request, creativeIntakeRevision: 4 },
+      3,
+      state
+    ),
+    false
+  );
 });
 
 test("project list state covers loading ready empty and error data", () => {
