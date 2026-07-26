@@ -197,11 +197,49 @@
                   <option>先确认创作简报</option>
                 </select>
                 <div class="director-model-profile-status" id="directorModelProfileStatus">
-                  选择模型后显示档案就绪度与现有证据；本阶段不会访问模型网页。
+                  选择模型后显示档案就绪度与现有证据。
                 </div>
-                <button id="directorContinueBtn" class="primary-button" type="button" disabled>
-                  进入拆解
-                </button>
+                <details class="model-research-panel" id="modelResearchPanel">
+                  <summary>粘贴官网原始链接研究</summary>
+                  <form id="modelResearchForm">
+                    <label for="modelSourceUrl">模型官网原始链接</label>
+                    <div class="model-research-url-row">
+                      <input
+                        id="modelSourceUrl"
+                        type="url"
+                        maxlength="2048"
+                        placeholder="https://civitai.com/models/…"
+                        required
+                      />
+                      <button id="modelResearchSubmit" class="secondary-button" type="submit">
+                        研究这个模型
+                      </button>
+                    </div>
+                  </form>
+                  <section id="modelResearchResult" aria-live="polite">
+                    <p class="director-empty-state">仅支持已登记的官网原始页面；研究失败不会影响现有模型。</p>
+                  </section>
+                  <fieldset class="model-research-manual" id="modelResearchManual">
+                    <legend>人工补充模型身份</legend>
+                    <label>显示名称<input id="modelManualDisplayName" data-model-manual-field="displayName" maxlength="256" /></label>
+                    <label>模型家族<input data-model-manual-field="model.family" maxlength="256" /></label>
+                    <label>精确版本名<input data-model-manual-field="model.versionName" maxlength="256" /></label>
+                    <label>精确版本 ID<input data-model-manual-field="model.versionId" inputmode="numeric" maxlength="256" /></label>
+                    <label>基础模型<input data-model-manual-field="model.baseModel" maxlength="256" /></label>
+                    <label class="model-research-notes">备注<textarea data-model-manual-field="notes" maxlength="4096"></textarea></label>
+                  </fieldset>
+                  <div class="model-research-actions">
+                    <button id="modelResearchRetry" class="secondary-button" type="button">重试研究</button>
+                    <button id="modelResearchSave" class="secondary-button" type="button" disabled>保存新版本</button>
+                    <button id="modelResearchReview" class="secondary-button" type="button" disabled>提交审阅</button>
+                    <button id="modelResearchActivate" class="primary-button" type="button" disabled>确认并激活</button>
+                  </div>
+                </details>
+                <div class="director-model-actions">
+                  <button id="directorContinueBtn" class="primary-button" type="button" disabled>
+                    使用现有模型继续
+                  </button>
+                </div>
               </section>
             </aside>
           </section>

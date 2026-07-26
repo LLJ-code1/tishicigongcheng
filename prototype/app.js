@@ -1043,6 +1043,215 @@
     };
   }
 
+  function emptyModelResearch() {
+    return {
+      status: "idle",
+      sourceUrl: "",
+      run: null,
+      snapshots: [],
+      claims: [],
+      draftVersion: null,
+      versionHistory: [],
+      claimDecisions: {},
+      manualFields: {},
+      reviewNote: "",
+      reviewerNote: "",
+      activeVersionId: null,
+      warnings: [],
+      error: "",
+      requiresReconfirmation: false,
+    };
+  }
+
+  const MODEL_EVIDENCE_LABELS = Object.freeze({
+    original_source: "原始页面",
+    supplemental_source: "补充资料",
+    ai_inference: "AI 推断",
+    local_validation: "本地实测",
+    user_supplied: "人工补充",
+  });
+
+  function modelResearchPersistenceMetadata(value) {
+    const research = safeObject(value);
+    const run = safeObject(research.run);
+    const draft = safeObject(research.draftVersion);
+    const metadata = {};
+    if (typeof run.runId === "string" && run.runId) metadata.runId = run.runId;
+    if (typeof draft.versionId === "string" && draft.versionId) {
+      metadata.versionId = draft.versionId;
+    }
+    if (typeof research.activeVersionId === "string" && research.activeVersionId) {
+      metadata.activeVersionId = research.activeVersionId;
+    }
+    return metadata;
+  }
+
+  function buildModelResearchRenderModel(state) {
+    const research = state?.modelResearch || emptyModelResearch();
+    const claims = (Array.isArray(research.claims) ? research.claims : [])
+      .map((claim) => ({
+        claimId: String(claim?.claimId || ""),
+        fieldPath: String(claim?.fieldPath || ""),
+        value: clone(claim?.value),
+        evidenceClass: String(claim?.evidenceClass || ""),
+        evidenceLabel:
+          MODEL_EVIDENCE_LABELS[claim?.evidenceClass] || "未分类证据",
+        evidenceRefs: Array.isArray(claim?.evidenceRefs)
+          ? claim.evidenceRefs.map(String)
+          : [],
+        verificationStatus: String(claim?.verificationStatus || ""),
+        decision:
+          research.claimDecisions?.[claim?.claimId] ||
+          claim?.applicationStatus ||
+          "proposed",
+      }))
+      .sort(
+        (left, right) =>
+          left.fieldPath.localeCompare(right.fieldPath) ||
+          left.claimId.localeCompare(right.claimId)
+      );
+    const snapshots = (Array.isArray(research.snapshots)
+      ? research.snapshots
+      : []
+    ).map((snapshot) => ({
+      id: String(snapshot?.snapshotId || snapshot?.id || ""),
+      url: String(snapshot?.finalUrl || snapshot?.requestedUrl || ""),
+      retrievedAt: String(snapshot?.retrievedAt || ""),
+      hash: String(snapshot?.bodySha256 || ""),
+      status: String(snapshot?.fetchStatus || ""),
+      errorCode: String(snapshot?.errorCode || ""),
+    }));
+    const profile = safeObject(research.draftVersion?.profile);
+    const profileModel = safeObject(profile.model);
+    const manual = safeObject(research.manualFields);
+    const displayName = String(manual.displayName || profile.displayName || "").trim();
+    const versionName = String(
+      manual["model.versionName"] || profileModel.versionName || ""
+    ).trim();
+    const rawVersionId =
+      manual["model.versionId"] ?? profileModel.versionId ?? "";
+    const versionId = Number(rawVersionId);
+    const unresolved = claims.filter((claim) => claim.decision === "proposed");
+    const activeProfile = (Array.isArray(state?.modelProfiles)
+      ? state.modelProfiles
+      : []
+    ).find(
+      (item) =>
+        item?.profileId &&
+        item.profileId === research.draftVersion?.profileId
+    );
+    const busy = ["loading", "saving", "reviewing", "activating"].includes(
+      research.status
+    );
+    return {
+      status: research.status || "idle",
+      sourceUrl: String(research.sourceUrl || ""),
+      snapshots,
+      claims,
+      warnings: Array.isArray(research.warnings)
+        ? research.warnings.map(String)
+        : [],
+      error: String(research.error || ""),
+      versionId: String(research.draftVersion?.versionId || ""),
+      contentSha256: String(research.draftVersion?.contentSha256 || ""),
+      lifecycleStatus: String(research.draftVersion?.lifecycleStatus || ""),
+      replacesVersionId: String(
+        activeProfile?.profileVersionId || research.activeVersionId || ""
+      ),
+      counts: {
+        approved: claims.filter((claim) => claim.decision === "approved").length,
+        rejected: claims.filter((claim) => claim.decision === "rejected").length,
+        unresolved: unresolved.length,
+      },
+      canRetry:
+        research.status === "error" ||
+        research.status === "partial" ||
+        (research.status === "ready" &&
+          (research.warnings || []).length > 0),
+      canSave: Boolean(research.draftVersion?.versionId) && !busy,
+      canReview:
+        Boolean(research.draftVersion?.versionId) &&
+        Boolean(displayName && versionName) &&
+        Number.isSafeInteger(versionId) &&
+        versionId > 0 &&
+        unresolved.length === 0 &&
+        research.draftVersion?.lifecycleStatus === "draft" &&
+        !busy,
+      canActivate:
+        research.draftVersion?.lifecycleStatus === "reviewed" &&
+        Boolean(research.draftVersion?.versionId) &&
+        !busy,
+      requiresReconfirmation: Boolean(research.requiresReconfirmation),
+    };
+  }
+
+  async function researchModelSource({ sourceUrl, request }) {
+    return request("/api/model-research", {
+      method: "POST",
+      body: JSON.stringify({ sourceUrl: String(sourceUrl || "").trim() }),
+    });
+  }
+
+  async function saveModelResearchDraft({
+    versionId,
+    claimDecisions,
+    manualFields,
+    reviewNote,
+    request,
+  }) {
+    return request(`/api/model-profile-versions/${encodeURIComponent(versionId)}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        claimDecisions: clone(safeObject(claimDecisions)),
+        manualFields: clone(safeObject(manualFields)),
+        reviewNote: String(reviewNote || ""),
+      }),
+    });
+  }
+
+  async function reviewModelProfileVersion({ versionId, reviewerNote, request }) {
+    return request(
+      `/api/model-profile-versions/${encodeURIComponent(versionId)}/review`,
+      {
+        method: "POST",
+        body: JSON.stringify({ reviewerNote: String(reviewerNote || "") }),
+      }
+    );
+  }
+
+  async function activateModelProfileVersion({
+    versionId,
+    expectedActiveVersionId,
+    confirmedBrief,
+    confirmActivation,
+    request,
+    loadProfiles,
+  }) {
+    if (!confirmActivation()) return { cancelled: true };
+    try {
+      const activated = await request(
+        `/api/model-profile-versions/${encodeURIComponent(versionId)}/activate`,
+        {
+          method: "POST",
+          body: JSON.stringify({ expectedActiveVersionId }),
+        }
+      );
+      const catalog = await loadProfiles();
+      return {
+        item: clone(activated.item),
+        profiles: clone(catalog.items || []),
+        selectedProfileId: activated.item?.profileId || "",
+        confirmedBrief: confirmedBrief ? clone(confirmedBrief) : null,
+      };
+    } catch (error) {
+      if (error?.status === 409) {
+        error.currentCatalog = await loadProfiles();
+        error.requiresReconfirmation = true;
+      }
+      throw error;
+    }
+  }
+
   function createInitialState() {
     return {
       view: "home",
@@ -1064,6 +1273,7 @@
       workingRevision: 0,
       projectRevision: 0,
       creativeIntake: emptyCreativeIntake(),
+      modelResearch: emptyModelResearch(),
       directorMessages: [],
       directorBusy: false,
       directorError: "",
@@ -2179,6 +2389,24 @@
     next.creativeIntake = projectMetadataIsCurrent
       ? normalizeCreativeIntake(metadata.creativeIntake)
       : emptyCreativeIntake();
+    const persistedResearch = safeObject(metadata.modelResearch);
+    next.modelResearch = {
+      ...emptyModelResearch(),
+      run:
+        typeof persistedResearch.runId === "string"
+          ? { runId: persistedResearch.runId }
+          : null,
+      draftVersion:
+        typeof persistedResearch.versionId === "string"
+          ? { versionId: persistedResearch.versionId }
+          : null,
+      activeVersionId:
+        typeof persistedResearch.activeVersionId === "string"
+          ? persistedResearch.activeVersionId
+          : null,
+      status:
+        typeof persistedResearch.runId === "string" ? "recoverable" : "idle",
+    };
     next.directorMessages = reconstructDirectorMessages(next.creativeIntake);
     next.directorBusy = false;
     next.directorError = "";
@@ -2338,6 +2566,7 @@
         settings: projectSettingsMetadata(state.settings),
         imageName: state.imageName,
         creativeIntake: normalizeCreativeIntake(state.creativeIntake),
+        modelResearch: modelResearchPersistenceMetadata(state.modelResearch),
         workspaceBaseVersion: Number.isSafeInteger(state.version)
           ? state.version
           : 0,
@@ -3280,6 +3509,119 @@
       case "MODEL_PROFILES_LOADING":
         next.modelProfilesStatus = "loading";
         return next;
+      case "MODEL_RESEARCH_STARTED":
+        next.modelResearch = {
+          ...emptyModelResearch(),
+          sourceUrl: String(action.sourceUrl || "").trim(),
+          status: "loading",
+        };
+        return next;
+      case "MODEL_RESEARCH_SUCCEEDED": {
+        const item = safeObject(action.item);
+        const draftVersion = item.draftVersion
+          ? clone(item.draftVersion)
+          : null;
+        next.modelResearch = {
+          ...emptyModelResearch(),
+          sourceUrl:
+            next.modelResearch?.sourceUrl ||
+            String(item.run?.sourceUrl || ""),
+          status: "ready",
+          run: item.run ? clone(item.run) : null,
+          snapshots: Array.isArray(item.snapshots)
+            ? clone(item.snapshots)
+            : [],
+          claims: Array.isArray(item.claims) ? clone(item.claims) : [],
+          draftVersion,
+          versionHistory: draftVersion ? [clone(draftVersion)] : [],
+          claimDecisions: Object.fromEntries(
+            (Array.isArray(item.claims) ? item.claims : []).map((claim) => [
+              claim.claimId,
+              claim.applicationStatus || "proposed",
+            ])
+          ),
+          warnings: Array.isArray(item.warnings)
+            ? item.warnings.map(String)
+            : [],
+        };
+        return next;
+      }
+      case "MODEL_RESEARCH_FAILED":
+        next.modelResearch = {
+          ...(next.modelResearch || emptyModelResearch()),
+          status: "error",
+          error: String(action.error || "模型研究失败，请重试或人工补充"),
+        };
+        return next;
+      case "MODEL_CLAIM_DECISION_CHANGED":
+        if (!["proposed", "approved", "rejected"].includes(action.decision)) {
+          return next;
+        }
+        if (
+          !(next.modelResearch?.claims || []).some(
+            (claim) => claim.claimId === action.claimId
+          )
+        ) {
+          return next;
+        }
+        next.modelResearch.claimDecisions[action.claimId] = action.decision;
+        return next;
+      case "MODEL_MANUAL_FIELD_CHANGED":
+        if (
+          ![
+            "displayName",
+            "model.family",
+            "model.versionName",
+            "model.versionId",
+            "model.baseModel",
+            "notes",
+          ].includes(action.field)
+        ) {
+          return next;
+        }
+        next.modelResearch.manualFields[action.field] = Array.from(
+          String(action.value || "")
+        )
+          .slice(0, action.field === "notes" ? 4096 : 256)
+          .join("");
+        return next;
+      case "MODEL_RESEARCH_STATUS_CHANGED":
+        next.modelResearch.status = String(action.status || "idle");
+        next.modelResearch.error = String(action.error || "");
+        return next;
+      case "MODEL_DRAFT_SAVED": {
+        const version = clone(action.item);
+        next.modelResearch.draftVersion = version;
+        next.modelResearch.versionHistory = [
+          ...(next.modelResearch.versionHistory || []),
+          version,
+        ];
+        next.modelResearch.status = "ready";
+        next.modelResearch.error = "";
+        return next;
+      }
+      case "MODEL_VERSION_REVIEWED":
+        next.modelResearch.draftVersion = clone(action.item);
+        next.modelResearch.versionHistory = [
+          ...(next.modelResearch.versionHistory || []),
+          clone(action.item),
+        ];
+        next.modelResearch.status = "ready";
+        next.modelResearch.error = "";
+        return next;
+      case "MODEL_VERSION_ACTIVATED":
+        next.modelResearch.draftVersion = clone(action.item);
+        next.modelResearch.activeVersionId = action.item?.versionId || null;
+        next.modelResearch.status = "ready";
+        next.modelResearch.error = "";
+        next.modelResearch.requiresReconfirmation = false;
+        return next;
+      case "MODEL_ACTIVATION_STALE":
+        next.modelResearch.status = "ready";
+        next.modelResearch.error =
+          "当前激活版本已变化，请核对新版本后再次确认";
+        next.modelResearch.requiresReconfirmation = true;
+        return next;
       case "MODEL_PROFILES_LOADED": {
         next.modelProfiles = Array.isArray(action.items) ? clone(action.items) : [];
         next.modelProfilesStatus = "ready";
@@ -4151,6 +4493,13 @@
     createNewProjectState,
     hydrateProjectState,
     emptyCreativeIntake,
+    emptyModelResearch,
+    buildModelResearchRenderModel,
+    modelResearchPersistenceMetadata,
+    researchModelSource,
+    saveModelResearchDraft,
+    reviewModelProfileVersion,
+    activateModelProfileVersion,
     normalizeCreativeIntake,
     reconstructDirectorMessages,
     buildCreativeBriefGroups,
@@ -4907,6 +5256,123 @@
     workspaceRequestAborts.delete(request.controller);
     if (activeDirectorAbort === request.controller) {
       activeDirectorAbort = null;
+    }
+  }
+
+  async function loadModelProfileCatalog() {
+    return apiJson("/api/model-profiles");
+  }
+
+  async function runModelResearch() {
+    const sourceUrl = String($("#modelSourceUrl")?.value || "").trim();
+    if (!sourceUrl || state.modelResearch?.status === "loading") return;
+    dispatch({ type: "MODEL_RESEARCH_STARTED", sourceUrl });
+    try {
+      const result = await app.researchModelSource({
+        sourceUrl,
+        request: apiJson,
+      });
+      dispatch({ type: "MODEL_RESEARCH_SUCCEEDED", item: result.item });
+    } catch (error) {
+      dispatch({
+        type: "MODEL_RESEARCH_FAILED",
+        error: error.message || "模型研究失败，请重试或人工补充",
+      });
+    }
+  }
+
+  async function runModelResearchSave() {
+    const research = state.modelResearch;
+    if (!research?.draftVersion?.versionId) return;
+    dispatch({ type: "MODEL_RESEARCH_STATUS_CHANGED", status: "saving" });
+    try {
+      const result = await app.saveModelResearchDraft({
+        versionId: research.draftVersion.versionId,
+        claimDecisions: research.claimDecisions,
+        manualFields: research.manualFields,
+        reviewNote: research.reviewNote,
+        request: apiJson,
+      });
+      dispatch({ type: "MODEL_DRAFT_SAVED", item: result.item });
+      if (state.projectId) saveCurrentProject();
+    } catch (error) {
+      dispatch({
+        type: "MODEL_RESEARCH_STATUS_CHANGED",
+        status: "ready",
+        error: error.message || "模型研究草稿保存失败",
+      });
+    }
+  }
+
+  async function runModelResearchReview() {
+    const model = app.buildModelResearchRenderModel(state);
+    if (!model.canReview) return;
+    dispatch({ type: "MODEL_RESEARCH_STATUS_CHANGED", status: "reviewing" });
+    try {
+      const result = await app.reviewModelProfileVersion({
+        versionId: state.modelResearch.draftVersion.versionId,
+        reviewerNote: state.modelResearch.reviewerNote,
+        request: apiJson,
+      });
+      dispatch({ type: "MODEL_VERSION_REVIEWED", item: result.item });
+    } catch (error) {
+      dispatch({
+        type: "MODEL_RESEARCH_STATUS_CHANGED",
+        status: "ready",
+        error: error.message || "模型版本审阅失败",
+      });
+    }
+  }
+
+  async function runModelResearchActivation() {
+    const research = state.modelResearch;
+    const version = research?.draftVersion;
+    if (!version?.versionId) return;
+    const current = state.modelProfiles.find(
+      (profile) => profile.profileId === version.profileId
+    );
+    const expected =
+      current?.profileVersionId || research.activeVersionId || null;
+    dispatch({ type: "MODEL_RESEARCH_STATUS_CHANGED", status: "activating" });
+    try {
+      const result = await app.activateModelProfileVersion({
+        versionId: version.versionId,
+        expectedActiveVersionId: expected,
+        confirmedBrief: state.creativeIntake.brief,
+        confirmActivation: () =>
+          window.confirm(
+            `确认激活不可变版本 ${version.versionId}${
+              expected ? `，替换 ${expected}` : ""
+            }？`
+          ),
+        request: apiJson,
+        loadProfiles: loadModelProfileCatalog,
+      });
+      if (result.cancelled) {
+        dispatch({ type: "MODEL_RESEARCH_STATUS_CHANGED", status: "ready" });
+        return;
+      }
+      dispatch({ type: "MODEL_PROFILES_LOADED", items: result.profiles });
+      dispatch({ type: "MODEL_VERSION_ACTIVATED", item: result.item });
+      await transitionCreativeIntake({
+        type: "select_model",
+        modelProfileId: result.selectedProfileId,
+      });
+      if (state.projectId) saveCurrentProject();
+    } catch (error) {
+      if (error?.status === 409) {
+        dispatch({
+          type: "MODEL_PROFILES_LOADED",
+          items: error.currentCatalog?.items || [],
+        });
+        dispatch({ type: "MODEL_ACTIVATION_STALE" });
+      } else {
+        dispatch({
+          type: "MODEL_RESEARCH_STATUS_CHANGED",
+          status: "ready",
+          error: error.message || "模型版本激活失败",
+        });
+      }
     }
   }
 
@@ -6754,6 +7220,136 @@
     );
   }
 
+  function appendResearchText(parent, tag, text, className = "") {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    element.textContent = text;
+    parent.appendChild(element);
+    return element;
+  }
+
+  function renderModelResearch() {
+    const result = $("#modelResearchResult");
+    if (!result) return;
+    const model = app.buildModelResearchRenderModel(state);
+    result.replaceChildren();
+    if (model.error) {
+      appendResearchText(result, "p", model.error, "director-error-banner");
+    }
+    if (!model.snapshots.length && !model.claims.length && !model.error) {
+      appendResearchText(
+        result,
+        "p",
+        model.status === "loading"
+          ? "正在读取受支持的官网原始页面…"
+          : "提交官网原始链接后，这里会显示证据快照与待审阅结论。",
+        "director-empty-state"
+      );
+    }
+    for (const snapshot of model.snapshots) {
+      const card = document.createElement("article");
+      card.className = "model-research-snapshot";
+      appendResearchText(card, "strong", snapshot.url || "未取得最终地址");
+      appendResearchText(
+        card,
+        "span",
+        `状态：${snapshot.status || "未知"}；读取：${
+          snapshot.retrievedAt || "未记录"
+        }`
+      );
+      appendResearchText(
+        card,
+        "code",
+        `SHA-256：${snapshot.hash || "未取得"}`
+      );
+      if (snapshot.errorCode) {
+        appendResearchText(card, "span", `错误：${snapshot.errorCode}`);
+      }
+      result.appendChild(card);
+    }
+    for (const claim of model.claims) {
+      const card = document.createElement("article");
+      card.className = "model-research-claim";
+      card.dataset.claimId = claim.claimId;
+      appendResearchText(card, "strong", claim.fieldPath);
+      appendResearchText(
+        card,
+        "span",
+        typeof claim.value === "string"
+          ? claim.value
+          : JSON.stringify(claim.value)
+      );
+      appendResearchText(
+        card,
+        "span",
+        claim.evidenceLabel,
+        "model-evidence-badge"
+      );
+      appendResearchText(
+        card,
+        "small",
+        `证据：${claim.evidenceRefs.join("、") || "缺失"}；验证：${
+          claim.verificationStatus || "未验证"
+        }`
+      );
+      const controls = document.createElement("div");
+      controls.className = "model-research-claim-controls";
+      for (const [value, label] of [
+        ["proposed", "待决定"],
+        ["approved", "采用"],
+        ["rejected", "拒绝"],
+      ]) {
+        const wrapper = document.createElement("label");
+        const input = document.createElement("input");
+        input.type = "radio";
+        input.name = `model-claim-${claim.claimId}`;
+        input.value = value;
+        input.dataset.modelClaimId = claim.claimId;
+        input.checked = claim.decision === value;
+        wrapper.append(input, document.createTextNode(label));
+        controls.appendChild(wrapper);
+      }
+      card.appendChild(controls);
+      result.appendChild(card);
+    }
+    if (model.claims.length) {
+      appendResearchText(
+        result,
+        "p",
+        `采用 ${model.counts.approved}；拒绝 ${model.counts.rejected}；待决定 ${model.counts.unresolved}`
+      );
+    }
+    for (const warning of model.warnings) {
+      appendResearchText(result, "p", `待验证：${warning}`, "verification-badge warning");
+    }
+    if (model.versionId) {
+      appendResearchText(
+        result,
+        "p",
+        `不可变版本：${model.versionId}；哈希：${
+          model.contentSha256 || "未返回"
+        }；状态：${model.lifecycleStatus || "未知"}`
+      );
+      appendResearchText(
+        result,
+        "p",
+        model.replacesVersionId
+          ? `激活后将替换：${model.replacesVersionId}`
+          : "激活后将成为该模型的首个活动版本"
+      );
+    }
+    const submit = $("#modelResearchSubmit");
+    if (submit) submit.disabled = model.status === "loading";
+    const retry = $("#modelResearchRetry");
+    if (retry) retry.hidden = !model.canRetry;
+    const save = $("#modelResearchSave");
+    if (save) save.disabled = !model.canSave;
+    const review = $("#modelResearchReview");
+    if (review) review.disabled = !model.canReview;
+    const activate = $("#modelResearchActivate");
+    if (activate) activate.disabled = !model.canActivate;
+  }
+
   function renderDirector() {
     const model = app.buildDirectorRenderModel(state);
     const conversation = $("#directorConversation");
@@ -7052,6 +7648,7 @@
         }；证据：${evidence}`;
       }
     }
+    renderModelResearch();
 
     const workbenchBrief = $("#creativeWorkbenchBrief");
     if (workbenchBrief) {
@@ -8672,6 +9269,22 @@
       if (state.hasUnsavedProjectChanges) saveCurrentProject();
       return;
     }
+    if (button.id === "modelResearchRetry") {
+      runModelResearch();
+      return;
+    }
+    if (button.id === "modelResearchSave") {
+      runModelResearchSave();
+      return;
+    }
+    if (button.id === "modelResearchReview") {
+      runModelResearchReview();
+      return;
+    }
+    if (button.id === "modelResearchActivate") {
+      runModelResearchActivation();
+      return;
+    }
     if (button.dataset.nav) {
       if (button.dataset.nav === "home") startNewProject();
       else dispatch({ type: "NAVIGATE", view: button.dataset.nav });
@@ -9004,6 +9617,13 @@
       promptTemplateDialog.content = event.target.value;
     } else if (event.target.id === "creativeDirectorSkillEditor") {
       updateCreativeDirectorSkillCount();
+    } else if (event.target.dataset.modelManualField) {
+      state = app.reduceState(state, {
+        type: "MODEL_MANUAL_FIELD_CHANGED",
+        field: event.target.dataset.modelManualField,
+        value: event.target.value,
+      });
+      renderModelResearch();
     } else if (event.target.dataset.mixWeight) {
       const id = event.target.dataset.mixWeight;
       if (artistMix.has(id)) {
@@ -9103,6 +9723,15 @@
   });
 
   document.addEventListener("change", (event) => {
+    if (event.target.dataset.modelClaimId) {
+      state = app.reduceState(state, {
+        type: "MODEL_CLAIM_DECISION_CHANGED",
+        claimId: event.target.dataset.modelClaimId,
+        decision: event.target.value,
+      });
+      renderModelResearch();
+      return;
+    }
     if (event.target.id === "directorModelSelect") {
       if (event.target.value) {
         transitionCreativeIntake({
@@ -9229,6 +9858,10 @@
   $(".director-composer")?.addEventListener("submit", (event) => {
     event.preventDefault();
     sendCreativeDirectorMessage();
+  });
+  $("#modelResearchForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runModelResearch();
   });
   $(
     '.director-composer button[aria-label="停止当前请求"]'

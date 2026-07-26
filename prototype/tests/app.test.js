@@ -66,6 +66,13 @@ const {
   validateDirectorImageFileBatch,
   resolveCreativeBriefSourceLabel,
   shouldBindDirectorImageFile,
+  emptyModelResearch,
+  buildModelResearchRenderModel,
+  modelResearchPersistenceMetadata,
+  researchModelSource,
+  saveModelResearchDraft,
+  reviewModelProfileVersion,
+  activateModelProfileVersion,
 } = require("../app.js");
 const unicode15 = require("../unicode15-data.js");
 
@@ -5410,6 +5417,245 @@ test("AI edit preview state preserves multi-block reasons until confirmation", (
 
   assert.deepEqual(state.pendingEditPreview, preview);
   assert.equal(state.pendingEditPreview.diffs[0].reason, "用户要求替换环境。");
+});
+
+test("official model research state preserves existing model choices and renders evidence honestly", () => {
+  const state = createInitialState();
+  state.creativeIntake = creativeIntakeStageFixture("brief_confirmed");
+  state.modelProfilesStatus = "ready";
+  state.modelProfiles = [{ profileId: "existing-model", displayName: "Existing" }];
+  state.modelResearch = emptyModelResearch();
+
+  const loading = reduceState(state, {
+    type: "MODEL_RESEARCH_STARTED",
+    sourceUrl: "https://civitai.com/models/934764/example",
+  });
+  assert.equal(loading.modelResearch.status, "loading");
+  assert.equal(loading.modelProfiles.length, 1);
+
+  const succeeded = reduceState(loading, {
+    type: "MODEL_RESEARCH_SUCCEEDED",
+    item: {
+      run: { runId: "run-1" },
+      snapshots: [{
+        snapshotId: "snap-1",
+        finalUrl: "https://civitai.com/models/934764/example",
+        retrievedAt: "2026-07-26T10:00:00Z",
+        bodySha256: "a".repeat(64),
+        fetchStatus: "succeeded",
+        extractedText: "<script>not executable</script>",
+      }],
+      claims: [{
+        claimId: "claim-2",
+        fieldPath: "parameters.defaults.steps",
+        value: 28,
+        evidenceClass: "original_source",
+        evidenceRefs: ["snap-1"],
+        verificationStatus: "source_recorded",
+        applicationStatus: "proposed",
+      }],
+      draftVersion: {
+        versionId: "version-1",
+        contentSha256: "b".repeat(64),
+        lifecycleStatus: "draft",
+        profile: { displayName: "Example", model: { versionName: "v1", versionId: 22 } },
+      },
+      researchStatus: "pending_verification",
+      warnings: ["missing_local_validation"],
+    },
+  });
+  const model = buildModelResearchRenderModel(succeeded);
+  assert.equal(model.snapshots[0].url, "https://civitai.com/models/934764/example");
+  assert.equal(model.snapshots[0].hash, "a".repeat(64));
+  assert.equal(model.claims[0].evidenceLabel, "原始页面");
+  assert.equal(model.claims[0].decision, "proposed");
+  assert.equal(model.canRetry, true);
+  assert.equal(model.extractedSourceText, undefined);
+  assert.equal(succeeded.modelProfiles.length, 1);
+});
+
+test("official model research requests send only allowlisted lifecycle fields", async () => {
+  const calls = [];
+  const request = async (path, options) => {
+    calls.push({ path, options, body: JSON.parse(options.body) });
+    return { item: { versionId: "v-next" } };
+  };
+  await researchModelSource({
+    sourceUrl: "https://civitai.com/models/1/example",
+    ignored: "never-send",
+    request,
+  });
+  await saveModelResearchDraft({
+    versionId: "v-1",
+    claimDecisions: { "claim-1": "approved" },
+    manualFields: { displayName: "Example", notes: "manual" },
+    reviewNote: "checked",
+    snapshots: [{ extractedText: "never-send" }],
+    request,
+  });
+  await reviewModelProfileVersion({
+    versionId: "v-2",
+    reviewerNote: "reviewed",
+    request,
+  });
+  assert.deepEqual(calls.map((call) => call.body), [
+    { sourceUrl: "https://civitai.com/models/1/example" },
+    {
+      claimDecisions: { "claim-1": "approved" },
+      manualFields: { displayName: "Example", notes: "manual" },
+      reviewNote: "checked",
+    },
+    { reviewerNote: "reviewed" },
+  ]);
+});
+
+test("research reducer tracks immutable version history and gates review on identity and decisions", () => {
+  let state = createInitialState();
+  state.modelResearch = emptyModelResearch();
+  state = reduceState(state, {
+    type: "MODEL_RESEARCH_SUCCEEDED",
+    item: {
+      run: { runId: "run-1" },
+      snapshots: [],
+      claims: [{
+        claimId: "claim-1",
+        fieldPath: "displayName",
+        value: "Example",
+        evidenceClass: "original_source",
+        evidenceRefs: ["snap-1"],
+        verificationStatus: "source_recorded",
+        applicationStatus: "proposed",
+      }],
+      draftVersion: {
+        versionId: "v-1",
+        contentSha256: "1".repeat(64),
+        lifecycleStatus: "draft",
+        profile: { displayName: "Example", model: {} },
+      },
+    },
+  });
+  assert.equal(buildModelResearchRenderModel(state).canReview, false);
+  state = reduceState(state, {
+    type: "MODEL_CLAIM_DECISION_CHANGED",
+    claimId: "claim-1",
+    decision: "approved",
+  });
+  state = reduceState(state, {
+    type: "MODEL_MANUAL_FIELD_CHANGED",
+    field: "model.versionName",
+    value: "v1",
+  });
+  state = reduceState(state, {
+    type: "MODEL_MANUAL_FIELD_CHANGED",
+    field: "model.versionId",
+    value: "22",
+  });
+  state = reduceState(state, {
+    type: "MODEL_DRAFT_SAVED",
+    item: {
+      versionId: "v-2",
+      contentSha256: "2".repeat(64),
+      lifecycleStatus: "draft",
+      profile: {
+        displayName: "Example",
+        model: { versionName: "v1", versionId: 22 },
+      },
+    },
+  });
+  assert.deepEqual(
+    state.modelResearch.versionHistory.map((item) => item.versionId),
+    ["v-1", "v-2"]
+  );
+  assert.equal(buildModelResearchRenderModel(state).canReview, true);
+});
+
+test("activation uses compare-and-swap, refreshes profiles, selects activated profile, and preserves brief", async () => {
+  const brief = confirmedBriefFixture();
+  const calls = [];
+  const result = await activateModelProfileVersion({
+    versionId: "v-reviewed",
+    expectedActiveVersionId: "v-active",
+    confirmedBrief: brief,
+    confirmActivation: () => true,
+    request: async (path, options) => {
+      calls.push({ path, body: JSON.parse(options.body) });
+      return {
+        item: {
+          versionId: "v-reviewed",
+          profileId: "researched-profile",
+          lifecycleStatus: "active",
+        },
+      };
+    },
+    loadProfiles: async () => ({
+      items: [{ profileId: "researched-profile", displayName: "Researched" }],
+    }),
+  });
+  assert.deepEqual(calls[0].body, { expectedActiveVersionId: "v-active" });
+  assert.equal(result.selectedProfileId, "researched-profile");
+  assert.deepEqual(result.confirmedBrief, brief);
+  assert.notEqual(result.confirmedBrief, brief);
+});
+
+test("409 activation reloads the catalog and requires a fresh confirmation", async () => {
+  let loads = 0;
+  const error = Object.assign(new Error("active changed"), { status: 409 });
+  await assert.rejects(
+    activateModelProfileVersion({
+      versionId: "v-reviewed",
+      expectedActiveVersionId: null,
+      confirmActivation: () => true,
+      request: async () => { throw error; },
+      loadProfiles: async () => {
+        loads += 1;
+        return { items: [{ profileId: "current" }] };
+      },
+    }),
+    (caught) => caught === error && caught.requiresReconfirmation === true
+  );
+  assert.equal(loads, 1);
+
+  let state = createInitialState();
+  state.modelResearch = {
+    ...emptyModelResearch(),
+    status: "ready",
+    draftVersion: {
+      versionId: "v-reviewed",
+      lifecycleStatus: "reviewed",
+    },
+  };
+  state = reduceState(state, { type: "MODEL_ACTIVATION_STALE" });
+  const model = buildModelResearchRenderModel(state);
+  assert.equal(model.requiresReconfirmation, true);
+  assert.equal(model.canActivate, true);
+});
+
+test("project persistence keeps only research run/version IDs and never source page bodies", () => {
+  const metadata = modelResearchPersistenceMetadata({
+    run: { runId: "run-1", snapshots: [{ extractedText: "secret page" }] },
+    draftVersion: { versionId: "v-2", profile: { displayName: "Example" } },
+    activeVersionId: "v-active",
+    sourceUrl: "https://civitai.com/models/1/example",
+  });
+  assert.deepEqual(metadata, {
+    runId: "run-1",
+    versionId: "v-2",
+    activeVersionId: "v-active",
+  });
+  assert.equal(JSON.stringify(metadata).includes("secret page"), false);
+  assert.equal(JSON.stringify(metadata).includes("civitai.com"), false);
+});
+
+test("model gate contains official-link research, evidence review, manual supplement, retry and continue controls", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const source = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  assert.match(html, /modelResearchForm/);
+  assert.match(html, /粘贴官网原始链接研究/);
+  assert.match(html, /modelResearchResult/);
+  assert.match(html, /modelManualDisplayName/);
+  assert.match(html, /使用现有模型继续/);
+  assert.match(source, /textContent/);
+  assert.doesNotMatch(source, /modelResearchResult\.innerHTML/);
 });
 
 test("deterministic random plans map clothing into the dedicated outfit block", () => {
