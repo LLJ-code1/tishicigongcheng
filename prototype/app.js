@@ -1090,6 +1090,16 @@
   function recoverModelResearchState(state, run, version) {
     const next = clone(state);
     const prior = next.modelResearch || emptyModelResearch();
+    const validated = validateModelResearchRecovery(
+      {
+        runId: prior.run?.runId || null,
+        versionId: prior.draftVersion?.versionId || null,
+      },
+      run,
+      version
+    );
+    run = validated.run;
+    version = validated.version;
     const claims = Array.isArray(run?.claims) ? clone(run.claims) : [];
     next.modelResearch = {
       ...emptyModelResearch(),
@@ -1119,6 +1129,30 @@
         : [],
     };
     return next;
+  }
+
+  function validateModelResearchRecovery(request, run, version) {
+    const expectedRunId = request?.runId;
+    const expectedVersionId = request?.versionId;
+    const actualRunId = run?.runId;
+    const actualVersionId = version?.versionId;
+    const versionRunId = version?.researchRunId;
+    if (
+      typeof expectedRunId !== "string" ||
+      !expectedRunId ||
+      typeof expectedVersionId !== "string" ||
+      !expectedVersionId ||
+      actualRunId !== expectedRunId ||
+      actualVersionId !== expectedVersionId ||
+      versionRunId !== actualRunId
+    ) {
+      const error = new Error(
+        "model_research_recovery_mismatch: research run/version lineage mismatch"
+      );
+      error.code = "model_research_recovery_mismatch";
+      throw error;
+    }
+    return { run, version };
   }
 
   function createModelResearchRequestGuard(state, sessionId) {
@@ -4610,6 +4644,7 @@
     buildModelResearchRenderModel,
     modelResearchPersistenceMetadata,
     recoverModelResearchState,
+    validateModelResearchRecovery,
     createModelResearchRequestGuard,
     isModelResearchRequestCurrent,
     researchModelSource,
@@ -5413,10 +5448,15 @@
         }),
       ]);
       if (!isCurrentModelResearchRequest(request)) return;
+      const recovered = app.validateModelResearchRecovery(
+        request,
+        run.item,
+        version.item
+      );
       dispatch({
         type: "MODEL_RESEARCH_RECOVERED",
-        run: run.item,
-        version: version.item,
+        run: recovered.run,
+        version: recovered.version,
       });
     } catch (error) {
       if (isAbortError(error) || !isCurrentModelResearchRequest(request)) return;

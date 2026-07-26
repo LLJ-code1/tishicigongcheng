@@ -76,6 +76,7 @@ const {
   createModelResearchRequestGuard,
   isModelResearchRequestCurrent,
   recoverModelResearchState,
+  validateModelResearchRecovery,
 } = require("../app.js");
 const unicode15 = require("../unicode15-data.js");
 
@@ -5728,6 +5729,7 @@ test("reopen recovery rebuilds research snapshots claims decisions and exact imm
     },
     {
       versionId: "v-2",
+      researchRunId: "run-1",
       lifecycleStatus: "draft",
       claimDecisions: { "claim-1": "approved" },
       reviewNote: "saved note",
@@ -5742,6 +5744,35 @@ test("reopen recovery rebuilds research snapshots claims decisions and exact imm
   assert.equal(recovered.modelResearch.claimDecisions["claim-1"], "approved");
   assert.equal(recovered.modelResearch.reviewNote, "saved note");
   assert.equal(recovered.modelResearch.activeVersionId, "v-active");
+});
+
+test("reopen recovery fails closed when returned run/version identity or lineage mismatches the frozen request", () => {
+  const guard = {
+    runId: "run-1",
+    versionId: "v-1",
+  };
+  const run = { runId: "run-1", snapshots: [], claims: [] };
+  const version = {
+    versionId: "v-1",
+    researchRunId: "run-1",
+    lifecycleStatus: "draft",
+  };
+  assert.deepEqual(
+    validateModelResearchRecovery(guard, run, version),
+    { run, version }
+  );
+  for (const [badRun, badVersion] of [
+    [{ ...run, runId: "run-other" }, version],
+    [run, { ...version, versionId: "v-other" }],
+    [run, { ...version, researchRunId: "run-other" }],
+    [{ ...run, runId: "" }, version],
+    [run, { ...version, versionId: "" }],
+  ]) {
+    assert.throws(
+      () => validateModelResearchRecovery(guard, badRun, badVersion),
+      /model_research_recovery_mismatch/
+    );
+  }
 });
 
 test("research operation guard freezes workspace run and version and rejects every stale dimension", () => {
