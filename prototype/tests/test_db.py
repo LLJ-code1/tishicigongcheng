@@ -897,8 +897,16 @@ class PromptStudioDatabaseTests(unittest.TestCase):
             idempotency_key="save-intake-sanitized",
         )
 
+        with db.database(self.db_path) as connection:
+            stored_metadata = json.loads(
+                connection.execute(
+                    "SELECT metadata_json FROM projects WHERE id = ?",
+                    ("project-intake-sanitized",),
+                ).fetchone()[0]
+            )
         reopened = db.get_project("project-intake-sanitized", self.db_path)
 
+        self.assertEqual(stored_metadata, {"creativeIntake": session})
         self.assertEqual(reopened["metadata"]["creativeIntake"], session)
 
     def test_malformed_creative_intake_is_returned_as_sanitized_metadata(self):
