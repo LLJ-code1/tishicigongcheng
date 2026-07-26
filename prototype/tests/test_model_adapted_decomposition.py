@@ -242,9 +242,25 @@ class ModelAdaptedDecompositionTests(unittest.TestCase):
         )
 
         self.assertEqual(result["blocks"][4]["ruleRefs"], [])
+        self.assertIn(
+            "generic_fallback_no_approved_model_rule",
+            result["blocks"][4]["risks"],
+        )
+
+    def test_server_appends_exact_generic_fallback_marker(self):
+        subject = self.import_subject()
+        output = provider_output(use_rule=False)
+        output["blocks"][4]["risks"] = ["无风险"]
+
+        result = subject.normalize_decomposition_output(
+            output,
+            intake=confirmed_intake(),
+            profile_snapshot=profile_snapshot(),
+        )
+
         self.assertEqual(
             result["blocks"][4]["risks"],
-            ["未找到已批准的专用规则，使用通用表达。"],
+            ["无风险", "generic_fallback_no_approved_model_rule"],
         )
 
     def test_rejects_unapproved_or_mismatched_rule_lineage(self):
@@ -363,6 +379,53 @@ class ModelAdaptedDecompositionTests(unittest.TestCase):
             {"type": "image", "refId": "image-scene"},
         )
         self.assertEqual(result["blocks"][10]["zh"], "伞沿连续滴水")
+
+    def test_canonical_block_preserves_multiple_fact_level_sources(self):
+        subject = self.import_subject()
+        intake = confirmed_intake()
+        intake["brief"]["items"].append(
+            {
+                "id": "brief-image-action",
+                "category": "action",
+                "text": "黑伞高举过右肩",
+                "source": {"type": "image", "refId": "image-action"},
+                "locked": True,
+            }
+        )
+        output = provider_output()
+        output["blocks"][4]["zh"] = "右手握伞，左脚踏上台阶；黑伞高举过右肩"
+        output["blocks"][4]["semanticItemIds"] = [
+            "brief-action",
+            "brief-image-action",
+        ]
+
+        result = subject.normalize_decomposition_output(
+            output,
+            intake=intake,
+            profile_snapshot=profile_snapshot(),
+        )
+
+        self.assertEqual(
+            result["blocks"][4]["semanticItems"],
+            [
+                {
+                    "id": "brief-action",
+                    "text": "右手握伞，左脚踏上台阶",
+                    "source": {"type": "user", "refId": None},
+                    "locked": True,
+                },
+                {
+                    "id": "brief-image-action",
+                    "text": "黑伞高举过右肩",
+                    "source": {"type": "image", "refId": "image-action"},
+                    "locked": True,
+                },
+            ],
+        )
+        self.assertEqual(
+            result["blocks"][4]["source"],
+            {"type": "user", "refId": None},
+        )
 
     def test_rejects_missing_unlocked_item_ai_addition_or_unconfirmed_semantics(self):
         subject = self.import_subject()

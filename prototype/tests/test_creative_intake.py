@@ -537,6 +537,43 @@ class PromptStudioCreativeIntakeTests(unittest.TestCase):
             }],
         )
 
+    def test_decomposition_preserves_fact_level_multi_source_lineage(self):
+        value = state_with_decomposition()
+        value["inputs"]["images"] = [image("image-action")]
+        value["brief"]["items"].append(
+            {
+                "id": "item-image-action",
+                "category": "action",
+                "text": "hold umbrella above right shoulder",
+                "source": {"type": "image", "refId": "image-action"},
+                "locked": True,
+            }
+        )
+        value["decomposition"]["briefContentSha256"] = (
+            creative_intake.canonical_brief_sha256(value["brief"])
+        )
+        value["decomposition"]["blocks"][0]["semanticItems"] = [
+            {
+                "id": "item-1",
+                "text": "run",
+                "source": {"type": "user", "refId": None},
+                "locked": True,
+            },
+            {
+                "id": "item-image-action",
+                "text": "hold umbrella above right shoulder",
+                "source": {"type": "image", "refId": "image-action"},
+                "locked": True,
+            },
+        ]
+
+        normalized = creative_intake.normalize_creative_intake(value)
+
+        self.assertEqual(
+            normalized["decomposition"]["blocks"][0]["semanticItems"][1]["source"],
+            {"type": "image", "refId": "image-action"},
+        )
+
     def test_versioned_decomposition_rejects_bad_lineage_order_and_rule_refs(self):
         cases = []
         bad = state_with_decomposition()
@@ -567,6 +604,18 @@ class PromptStudioCreativeIntakeTests(unittest.TestCase):
             {**rule_ref("claim-one"), "evidenceRefs": ["unsafe ref"]}
         ]
         cases.append(("safe identifier", bad))
+        bad = state_with_decomposition()
+        bad["decomposition"]["blocks"][0].pop("semanticItems")
+        cases.append(("semanticItems", bad))
+        bad = state_with_decomposition()
+        bad["decomposition"]["blocks"][0]["semanticItems"][0]["text"] = "changed"
+        cases.append(("semanticItems", bad))
+        bad = state_with_decomposition()
+        bad["decomposition"]["blocks"][0]["semanticItems"][0]["surprise"] = True
+        cases.append(("unsupported fields", bad))
+        bad = state_with_decomposition()
+        bad["decomposition"]["blocks"][0]["risks"] = []
+        cases.append(("generic fallback", bad))
 
         for message, value in cases:
             with self.subTest(message=message), self.assertRaisesRegex(
@@ -648,6 +697,12 @@ class PromptStudioCreativeIntakeTests(unittest.TestCase):
             ("zh", lambda value: value["blocks"][0].__setitem__("zh", "篡改")),
             ("source", lambda value: value["blocks"][0].__setitem__("source", {"type": "ai", "refId": None})),
             ("locked", lambda value: value["blocks"][0].__setitem__("locked", False)),
+            (
+                "semantic item source",
+                lambda value: value["blocks"][0]["semanticItems"][0].__setitem__(
+                    "source", {"type": "ai", "refId": None}
+                ),
+            ),
             ("rule ref", lambda value: value["blocks"][0]["ruleRefs"].append(rule_ref("fabricated"))),
             ("risks", lambda value: value["blocks"][0]["risks"].append("fabricated")),
         )
@@ -747,18 +802,26 @@ def rule_ref(claim_id):
     }
 
 
-def decomposition_block(identifier, *, source=None, locked=False):
+def decomposition_block(
+    identifier, *, source=None, locked=False, semantic_items=None
+):
+    semantic_items = semantic_items or []
     return {
         "id": identifier,
         "category": "action",
         "zh": "奔跑",
         "en": "running",
-        "source": source or {"type": "user", "refId": None},
+        "source": source or {"type": "ai", "refId": None},
         "locked": locked,
         "approved": False,
         "reason": "From the brief.",
-        "risks": [],
+        "risks": (
+            ["generic_fallback_no_approved_model_rule"]
+            if identifier == BLOCK_IDS[0]
+            else []
+        ),
         "ruleRefs": [] if identifier == BLOCK_IDS[0] else [rule_ref("claim-prompt-language")],
+        "semanticItems": semantic_items,
     }
 
 
@@ -836,11 +899,39 @@ def draft_brief(locked=False):
 
 def approved_decomposition(brief=None):
     brief = brief or confirmed_brief()
+    semantic_items = [
+        {
+            "id": item["id"],
+            "text": item["text"],
+            "source": item["source"],
+            "locked": item["locked"],
+        }
+        for item in brief["items"]
+    ]
+    semantic_items.extend(
+        {
+            "id": f"ai-addition-{index}",
+            "text": text,
+            "source": {"type": "ai", "refId": None},
+            "locked": False,
+        }
+        for index, text in enumerate(brief["aiAdditions"])
+    )
     blocks = []
     for index, identifier in enumerate(BLOCK_IDS):
-        source = brief["items"][0]["source"] if index == 0 else {"type": "ai", "refId": None}
+        block_semantic_items = semantic_items if index == 0 else []
+        source = (
+            block_semantic_items[0]["source"]
+            if block_semantic_items
+            else {"type": "ai", "refId": None}
+        )
         blocks.append({
-            **decomposition_block(identifier, source=source, locked=index == 0),
+            **decomposition_block(
+                identifier,
+                source=source,
+                locked=any(item["locked"] for item in block_semantic_items),
+                semantic_items=block_semantic_items,
+            ),
             "approved": True,
         })
     return {

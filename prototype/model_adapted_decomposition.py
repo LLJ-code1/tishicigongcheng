@@ -72,6 +72,7 @@ _BLOCK_FIELDS = {
     "semanticItemIds",
 }
 _REPAIRABLE_CODES = {"invalid_provider_output", "invalid_blocks"}
+_GENERIC_FALLBACK_RISK = "generic_fallback_no_approved_model_rule"
 
 
 class DecompositionError(ValueError):
@@ -386,11 +387,9 @@ def normalize_decomposition_output(
             )
         en = _text(raw_block.get("en"), f"blocks[{index}].en")
         reason = _text(raw_block.get("reason"), f"blocks[{index}].reason")
-        if en and not normalized_refs and not risks:
-            _fail(
-                "invalid_provider_output",
-                "generic model adaptation must include a visible risk",
-            )
+        normalized_risks = list(risks)
+        if not normalized_refs and _GENERIC_FALLBACK_RISK not in normalized_risks:
+            normalized_risks.append(_GENERIC_FALLBACK_RISK)
         locked = raw_block.get("locked")
         approved = raw_block.get("approved")
         if not isinstance(locked, bool) or approved is not False:
@@ -408,8 +407,17 @@ def normalize_decomposition_output(
                 "locked": locked,
                 "approved": False,
                 "reason": reason,
-                "risks": list(risks),
+                "risks": normalized_risks,
                 "ruleRefs": normalized_refs,
+                "semanticItems": [
+                    {
+                        "id": item_id,
+                        "text": items_by_id[item_id]["text"],
+                        "source": deepcopy(items_by_id[item_id]["source"]),
+                        "locked": items_by_id[item_id]["locked"],
+                    }
+                    for item_id in normalized_semantic_ids
+                ],
             }
         )
 

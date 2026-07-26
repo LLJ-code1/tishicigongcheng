@@ -62,6 +62,11 @@ Markdown、代码围栏或解释性文字。
 5. 不得发明艺术家姓名、模型能力、规则、claim ID 或 evidence ID。
 6. 只有 `approvedRules` 可用于 `ruleRefs`；`warnings` 仅可形成风险提示，
    不得当作规则使用。
-7. 没有适用的已批准规则时可以使用通用英文表达，但 `ruleRefs` 必须为空，
-   且 `risks` 必须明确说明通用回退。
+7. 任何 `ruleRefs` 为空的块，其 `risks` 必须包含服务端定义的精确标记
+   `generic_fallback_no_approved_model_rule`。服务端会重新校验并补充该标记，
+   不信任模型自行声称“无风险”。
 8. `approved` 一律返回 `false`。不得返回十三块之外的块。
+
+服务端会把 `semanticItemIds` 展开成 canonical block 的 `semanticItems`
+逐事实数组（`id`, `text`, `source`, `locked`），以完整保留同一块内多个来源；
+块级 `source` 仅作为首条事实的兼容摘要。

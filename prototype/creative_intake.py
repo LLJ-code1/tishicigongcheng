@@ -301,7 +301,7 @@ def _decomposition(
             block,
             {
                 "id", "category", "zh", "en", "source", "locked", "approved",
-                "reason", "risks", "ruleRefs",
+                "reason", "risks", "ruleRefs", "semanticItems",
             },
             f"decomposition.blocks[{index}]",
         )
@@ -309,20 +309,87 @@ def _decomposition(
         approved = block.get("approved")
         if not isinstance(locked, bool) or not isinstance(approved, bool):
             _error("invalid_boolean", f"decomposition.blocks[{index}] locks and approval must be boolean")
+        raw_semantic_items = _array(
+            block.get("semanticItems", [] if brief is None else None),
+            f"decomposition.blocks[{index}].semanticItems",
+            maximum=200,
+        )
+        semantic_items = []
+        for item_index, raw_item in enumerate(raw_semantic_items):
+            item_path = (
+                f"decomposition.blocks[{index}].semanticItems[{item_index}]"
+            )
+            item = _mapping(raw_item, item_path)
+            _reject_unknown_keys(
+                item, {"id", "text", "source", "locked"}, item_path
+            )
+            item_locked = item.get("locked")
+            if not isinstance(item_locked, bool):
+                _error("invalid_boolean", f"{item_path}.locked must be boolean")
+            semantic_items.append(
+                {
+                    "id": _safe_identifier(item.get("id"), f"{item_path}.id"),
+                    "text": _text(
+                        item.get("text"), f"{item_path}.text", maximum=200_000
+                    ),
+                    "source": _source(
+                        item.get("source"), image_ids, f"{item_path}.source"
+                    ),
+                    "locked": item_locked,
+                }
+            )
+        semantic_ids = [item["id"] for item in semantic_items]
+        if len(semantic_ids) != len(set(semantic_ids)):
+            _error(
+                "duplicate_id",
+                f"decomposition.blocks[{index}].semanticItems contains duplicate IDs",
+            )
+        source = _source(
+            block.get("source"), image_ids, f"decomposition.blocks[{index}].source"
+        )
+        expected_source = (
+            semantic_items[0]["source"]
+            if semantic_items
+            else {"type": "ai", "refId": None}
+        )
+        if brief is not None and (
+            source != expected_source
+            or locked != any(item["locked"] for item in semantic_items)
+        ):
+            _error(
+                "semantic_lineage_mismatch",
+                f"decomposition.blocks[{index}] locked/source summary does not match semanticItems",
+            )
+        rule_refs = _rule_refs(
+            block.get("ruleRefs", []), f"decomposition.blocks[{index}].ruleRefs"
+        )
+        risks = _unique_text_array(
+            block.get("risks"),
+            f"decomposition.blocks[{index}].risks",
+            maximum=100,
+        )
+        if (
+            brief is not None
+            and not rule_refs
+            and "generic_fallback_no_approved_model_rule" not in risks
+        ):
+            _error(
+                "generic_fallback",
+                f"decomposition.blocks[{index}] generic fallback risk is required",
+            )
         blocks.append(
             {
                 "id": _identifier(block.get("id"), f"decomposition.blocks[{index}].id"),
                 "category": _text(block.get("category"), f"decomposition.blocks[{index}].category", maximum=128, allow_empty=False),
                 "zh": _text(block.get("zh"), f"decomposition.blocks[{index}].zh", maximum=200_000),
                 "en": _text(block.get("en"), f"decomposition.blocks[{index}].en", maximum=200_000),
-                "source": _source(block.get("source"), image_ids, f"decomposition.blocks[{index}].source"),
+                "source": source,
                 "locked": locked,
                 "approved": approved,
                 "reason": _text(block.get("reason"), f"decomposition.blocks[{index}].reason", maximum=200_000),
-                "risks": _unique_text_array(block.get("risks"), f"decomposition.blocks[{index}].risks", maximum=100),
-                "ruleRefs": _rule_refs(
-                    block.get("ruleRefs", []), f"decomposition.blocks[{index}].ruleRefs"
-                ),
+                "risks": risks,
+                "ruleRefs": rule_refs,
+                "semanticItems": semantic_items,
             }
         )
     _unique_identifiers(blocks, "decomposition.blocks")
@@ -352,6 +419,43 @@ def _decomposition(
             "locked_source_mismatch",
             "locked decomposition blocks must retain a confirmed brief source",
         )
+    if brief is not None:
+        expected_semantic_items = {
+            item["id"]: {
+                "id": item["id"],
+                "text": item["text"],
+                "source": item["source"],
+                "locked": item["locked"],
+            }
+            for item in brief["items"]
+        }
+        expected_semantic_items.update(
+            {
+                f"ai-addition-{index}": {
+                    "id": f"ai-addition-{index}",
+                    "text": text,
+                    "source": {"type": "ai", "refId": None},
+                    "locked": False,
+                }
+                for index, text in enumerate(brief["aiAdditions"])
+            }
+        )
+        actual_semantic_items = [
+            item for block in blocks for item in block["semanticItems"]
+        ]
+        actual_ids = [item["id"] for item in actual_semantic_items]
+        if (
+            len(actual_ids) != len(set(actual_ids))
+            or set(actual_ids) != set(expected_semantic_items)
+            or any(
+                item != expected_semantic_items.get(item["id"])
+                for item in actual_semantic_items
+            )
+        ):
+            _error(
+                "semantic_lineage_mismatch",
+                "decomposition semanticItems must preserve every confirmed fact exactly once",
+            )
     return {
         "status": status,
         "briefContentSha256": brief_hash,
@@ -776,6 +880,7 @@ _IMMUTABLE_DECOMPOSITION_BLOCK_FIELDS = (
     "locked",
     "ruleRefs",
     "risks",
+    "semanticItems",
 )
 
 
