@@ -1,0 +1,33 @@
+{
+  "profileId": "profile-anima",
+  "profileVersionId": "profile-version-7",
+  "profileContentSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "profile": {
+    "id": "profile-anima",
+    "displayName": "Anima"
+  },
+  "approvedRules": [
+    {
+      "claimId": "claim-language",
+      "fieldPath": "prompting.language",
+      "value": "Use concise English tags.",
+      "evidenceClass": "original_source",
+      "evidenceRefs": [
+        "snapshot-official"
+      ],
+      "rationale": "The official guide recommends concise English tags."
+    }
+  ],
+  "warnings": [
+    {
+      "claimId": "claim-proposed-cfg",
+      "decision": "proposed",
+      "message": "Unapproved model claim was not applied."
+    },
+    {
+      "claimId": "claim-rejected-artist",
+      "decision": "rejected",
+      "message": "Rejected model claim was not applied."
+    }
+  ]
+}
