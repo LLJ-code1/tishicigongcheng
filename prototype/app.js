@@ -43,6 +43,21 @@
   const DIRECTOR_IMAGE_USE_IDS = new Set(
     DIRECTOR_IMAGE_REQUESTED_USES.map((item) => item.id)
   );
+  const DECOMPOSITION_BLOCK_IDS = Object.freeze([
+    "identity",
+    "appearance",
+    "clothing",
+    "expression",
+    "action",
+    "interaction",
+    "scene",
+    "camera",
+    "lighting",
+    "style",
+    "effects",
+    "quality",
+    "negative",
+  ]);
   const SAFE_DIRECTOR_IMAGE_ID = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/u;
   const SAFE_EVIDENCE_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
   const PROMPT_WHITESPACE_PATTERN =
@@ -1398,6 +1413,12 @@
       directorImageAnalysisStatus: "idle",
       directorImageAnalysisFailures: [],
       directorRequestRevision: 0,
+      decompositionPreview: {
+        status: "idle",
+        error: "",
+        warnings: [],
+        returnedBlockIds: [],
+      },
       textMode: "expand",
       draftInput: "",
       randomSeed: null,
@@ -2248,6 +2269,7 @@
           "approved",
           "reason",
           "risks",
+          "ruleRefs",
         ])
       );
       if (
@@ -2266,16 +2288,53 @@
         approved: item.approved,
         reason: text(item.reason, 200_000),
         risks: textArray(item.risks, 100),
+        ruleRefs: array(item.ruleRefs || [], 100).map((entry) => {
+          const rule = object(
+            entry,
+            new Set(["claimId", "fieldPath", "evidenceRefs"])
+          );
+          return {
+            claimId: identifier(rule.claimId),
+            fieldPath: text(rule.fieldPath, 512, false),
+            evidenceRefs: unique(
+              array(rule.evidenceRefs, 100).map((ref) => identifier(ref))
+            ),
+          };
+        }),
       };
     }
 
     function decomposition(source, imageIds) {
       if (source === null) return null;
-      const item = object(source, new Set(["status", "blocks"]));
+      const item = object(
+        source,
+        new Set([
+          "status",
+          "briefContentSha256",
+          "profileVersionId",
+          "profileContentSha256",
+          "blocks",
+        ])
+      );
       const status = text(item.status, 32, false);
       if (!new Set(["draft", "confirmed"]).has(status)) fail();
       return {
         status,
+        ...(item.briefContentSha256 === undefined
+          ? {}
+          : { briefContentSha256: text(item.briefContentSha256, 64, false) }),
+        ...(item.profileVersionId === undefined
+          ? {}
+          : { profileVersionId: identifier(item.profileVersionId) }),
+        ...(item.profileContentSha256 === undefined
+          ? {}
+          : {
+              profileContentSha256: text(
+                item.profileContentSha256,
+                64,
+                false
+              ),
+            }),
         blocks: unique(
           array(item.blocks, 200).map((entry) =>
             decompositionBlock(entry, imageIds)
@@ -3563,6 +3622,38 @@
         next.directorImageAnalysisStatus =
           typeof action.status === "string" ? action.status : "idle";
         return next;
+      case "DECOMPOSITION_PREVIEW_STARTED":
+        next.decompositionPreview.status = "loading";
+        next.decompositionPreview.error = "";
+        return next;
+      case "DECOMPOSITION_PREVIEW_SUCCEEDED":
+        next.decompositionPreview.status = "ready";
+        next.decompositionPreview.error = "";
+        next.decompositionPreview.warnings = Array.isArray(action.warnings)
+          ? action.warnings.map(String)
+          : [];
+        return next;
+      case "DECOMPOSITION_PREVIEW_FAILED":
+        next.decompositionPreview.status = "error";
+        next.decompositionPreview.error =
+          action.error || "Decomposition preview failed";
+        return next;
+      case "DECOMPOSITION_BLOCK_RETURNED":
+        if (
+          action.blockId &&
+          !next.decompositionPreview.returnedBlockIds.includes(action.blockId)
+        ) {
+          next.decompositionPreview.returnedBlockIds.push(action.blockId);
+        }
+        return next;
+      case "DECOMPOSITION_PREVIEW_CLEARED":
+        next.decompositionPreview = {
+          status: "idle",
+          error: "",
+          warnings: [],
+          returnedBlockIds: [],
+        };
+        return next;
       case "ENTER_CREATIVE_WORKBENCH":
         if (
           creativeDirectorStageView(next.creativeIntake?.stage).canContinue
@@ -3588,6 +3679,14 @@
           const hadDownstream =
             creativeDirectorStageView(next.creativeIntake?.stage).canContinue;
         next.creativeIntake = normalizeCreativeIntake(action.item);
+        if (!next.creativeIntake.decomposition) {
+          next.decompositionPreview = {
+            status: "idle",
+            error: "",
+            warnings: [],
+            returnedBlockIds: [],
+          };
+        }
         if (
           !creativeDirectorStageView(next.creativeIntake.stage).canContinue
         ) {
@@ -4635,6 +4734,140 @@
     );
   }
 
+  function selectedDecompositionProfile(state) {
+    const profileId = state.creativeIntake?.selectedModelProfileId;
+    return (Array.isArray(state.modelProfiles) ? state.modelProfiles : []).find(
+      (item) => item?.profileId === profileId
+    );
+  }
+
+  function decompositionPreviewGuard(state, sessionId) {
+    const profile = selectedDecompositionProfile(state);
+    const profileVersionId = String(profile?.profileVersionId || "");
+    const profileContentSha256 = String(
+      profile?.profileContentSha256 || profile?.contentSha256 || ""
+    ).toLowerCase();
+    if (!profile || !profileVersionId || !/^[0-9a-f]{64}$/.test(profileContentSha256)) {
+      throw new Error("Selected model does not have an exact activated profile version");
+    }
+    return {
+      sessionId,
+      projectRevision: state.projectRevision,
+      creativeIntakeRevision: state.creativeIntake?.revision,
+      selectedModelProfileId: state.creativeIntake?.selectedModelProfileId,
+      profileVersionId,
+      profileContentSha256,
+    };
+  }
+
+  function isDecompositionPreviewCurrent(request, sessionId, state) {
+    if (!request || request.sessionId !== sessionId) return false;
+    let current;
+    try {
+      current = decompositionPreviewGuard(state, sessionId);
+    } catch {
+      return false;
+    }
+    return Object.keys(current).every((key) => current[key] === request[key]);
+  }
+
+  function buildDecompositionBlockReviewAction(intake, blockId, patch) {
+    const normalized = normalizeCreativeIntake(intake);
+    if (
+      normalized.stage !== "decomposition_draft" ||
+      normalized.decomposition?.status !== "draft"
+    ) {
+      throw new Error("Decomposition draft is not reviewable");
+    }
+    const keys = Object.keys(safeObject(patch));
+    if (
+      !keys.length ||
+      keys.some((key) => !["en", "reason", "approved"].includes(key))
+    ) {
+      throw new Error("Decomposition field is not editable");
+    }
+    if ("reason" in patch && !("en" in patch)) {
+      throw new Error("Edit reason requires an English edit");
+    }
+    const decomposition = clone(normalized.decomposition);
+    const block = decomposition.blocks.find((item) => item.id === blockId);
+    if (!block) throw new Error("Unknown decomposition block");
+    if ("en" in patch) {
+      const en = String(patch.en || "").trim();
+      const reason = String(patch.reason || "").trim();
+      if (!en || !reason) throw new Error("English edit and reason are required");
+      block.en = en;
+      block.reason = reason;
+      block.approved = false;
+    }
+    if ("approved" in patch && !("en" in patch)) {
+      if (typeof patch.approved !== "boolean") {
+        throw new Error("approved must be boolean");
+      }
+      block.approved = patch.approved;
+    }
+    return { type: "set_decomposition_draft", decomposition };
+  }
+
+  function canConfirmDecomposition(intake) {
+    try {
+      const normalized = normalizeCreativeIntake(intake);
+      return Boolean(
+        normalized.stage === "decomposition_draft" &&
+          normalized.decomposition?.status === "draft" &&
+          normalized.decomposition.blocks.length ===
+            DECOMPOSITION_BLOCK_IDS.length &&
+          normalized.decomposition.blocks.every(
+            (block, index) => block.id === DECOMPOSITION_BLOCK_IDS[index]
+          ) &&
+          normalized.decomposition.blocks.every((block) => block.approved) &&
+          !normalized.conflicts.some((conflict) => conflict.status === "open")
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  async function performDecompositionPreviewRequest({
+    getState,
+    sessionId,
+    guard,
+    apiCall,
+    persist,
+    signal,
+  }) {
+    if (!isDecompositionPreviewCurrent(guard, sessionId, getState())) {
+      return { accepted: false, stale: true };
+    }
+    const result = await apiCall("/api/creative-intake/decomposition-preview", {
+      method: "POST",
+      signal,
+      body: JSON.stringify({
+        current: normalizeCreativeIntake(getState().creativeIntake),
+        profileVersionId: guard.profileVersionId,
+        profileContentSha256: guard.profileContentSha256,
+      }),
+    });
+    if (!isDecompositionPreviewCurrent(guard, sessionId, getState())) {
+      return { accepted: false, stale: true };
+    }
+    const item = normalizeCreativeIntake(result.item);
+    const persisted = await persist(item);
+    if (!persisted) {
+      throw new Error("Decomposition preview could not be saved");
+    }
+    if (!isDecompositionPreviewCurrent(guard, sessionId, getState())) {
+      return { accepted: false, stale: true };
+    }
+    return {
+      accepted: true,
+      item,
+      warnings: Array.isArray(result.warnings)
+        ? result.warnings.map(String)
+        : [],
+    };
+  }
+
   const api = {
     createInitialState,
     createNewProjectState,
@@ -4713,6 +4946,11 @@
     enqueueByKey,
     isWorkspaceRequestCurrent,
     isCreativeIntakeResponseCurrent,
+    decompositionPreviewGuard,
+    isDecompositionPreviewCurrent,
+    buildDecompositionBlockReviewAction,
+    canConfirmDecomposition,
+    performDecompositionPreviewRequest,
     randomVariantBlockIds: Array.from(RANDOM_VARIANT_BLOCKS),
   };
 
@@ -4753,6 +4991,7 @@
   let activeVisionAbort = null;
   let activeDirectorImageAbort = null;
   let activeDirectorAbort = null;
+  let activeDecompositionPreviewAbort = null;
   let directorImageFileErrors = [];
   let directorAnalyzingImageIds = new Set();
   let lastCreativeIntakeTransitionOutcome = {
@@ -6171,6 +6410,126 @@
     } finally {
       finishCreativeIntakeRequest(request);
     }
+  }
+
+  async function generateDecompositionPreview() {
+    activeDecompositionPreviewAbort?.abort();
+    const controller = new AbortController();
+    activeDecompositionPreviewAbort = controller;
+    let guard;
+    try {
+      guard = app.decompositionPreviewGuard(state, workspaceSessionId);
+    } catch (error) {
+      state = app.reduceState(state, {
+        type: "DECOMPOSITION_PREVIEW_FAILED",
+        error: error.message,
+      });
+      render();
+      return false;
+    }
+    const previousState = state;
+    state = app.reduceState(state, { type: "DECOMPOSITION_PREVIEW_STARTED" });
+    render();
+    try {
+      const result = await apiJson(
+        "/api/creative-intake/decomposition-preview",
+        {
+          method: "POST",
+          signal: controller.signal,
+          body: JSON.stringify({
+            current: app.normalizeCreativeIntake(previousState.creativeIntake),
+            profileVersionId: guard.profileVersionId,
+            profileContentSha256: guard.profileContentSha256,
+          }),
+        }
+      );
+      if (
+        !app.isDecompositionPreviewCurrent(
+          guard,
+          workspaceSessionId,
+          state
+        )
+      ) {
+        return false;
+      }
+      const accepted = app.normalizeCreativeIntake(result.item);
+      state = app.reduceState(state, {
+        type: "CREATIVE_INTAKE_REPLACED",
+        item: accepted,
+      });
+      const persisted = await persistAcceptedCreativeIntake(
+        state.projectRevision
+      );
+      if (!persisted) {
+        state = app.rollbackCreativeIntakeAfterPersistenceFailure(
+          previousState,
+          state,
+          "拆解预览保存失败，已保留上一个有效版本"
+        );
+        state = app.reduceState(state, {
+          type: "DECOMPOSITION_PREVIEW_FAILED",
+          error: "拆解预览保存失败，已保留上一个有效版本",
+        });
+        render();
+        return false;
+      }
+      state = app.reduceState(state, {
+        type: "DECOMPOSITION_PREVIEW_SUCCEEDED",
+        warnings: result.warnings,
+      });
+      render();
+      return true;
+    } catch (error) {
+      if (
+        isAbortError(error) ||
+        !app.isDecompositionPreviewCurrent(guard, workspaceSessionId, state)
+      ) {
+        return false;
+      }
+      state = app.reduceState(state, {
+        type: "DECOMPOSITION_PREVIEW_FAILED",
+        error: error.message || "拆解预览生成失败，请明确重试",
+      });
+      render();
+      return false;
+    } finally {
+      if (activeDecompositionPreviewAbort === controller) {
+        activeDecompositionPreviewAbort = null;
+      }
+    }
+  }
+
+  async function reviewDecompositionBlock(blockId, patch, returned = false) {
+    let action;
+    try {
+      action = app.buildDecompositionBlockReviewAction(
+        state.creativeIntake,
+        blockId,
+        patch
+      );
+    } catch (error) {
+      state.toast = error.message;
+      render();
+      return false;
+    }
+    const accepted = await transitionCreativeIntake(action);
+    if (accepted && returned) {
+      state = app.reduceState(state, {
+        type: "DECOMPOSITION_BLOCK_RETURNED",
+        blockId,
+      });
+      render();
+    }
+    return accepted;
+  }
+
+  async function confirmReviewedDecomposition() {
+    if (!app.canConfirmDecomposition(state.creativeIntake)) {
+      state.toast = "全部 13 个区块通过审核后才能确认";
+      render();
+      return false;
+    }
+    return transitionCreativeIntake({ type: "confirm_decomposition" });
   }
 
   async function saveSettings() {
