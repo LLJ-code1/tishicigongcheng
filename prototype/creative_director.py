@@ -51,6 +51,104 @@ _IMAGE_USE_TYPES = {
 }
 
 
+def _strict_schema_object(properties: dict) -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": list(properties),
+        "properties": properties,
+    }
+
+
+def _local_response_format(current: dict) -> dict:
+    text = {"type": "string", "minLength": 1}
+    stage = current["stage"]
+    if stage == "intake" and (
+        current["inputs"]["text"] or current["inputs"]["images"]
+    ):
+        direction = _strict_schema_object(
+            {"id": text, "label": text, "summary": text}
+        )
+        action = _strict_schema_object(
+            {
+                "type": {"type": "string", "const": "set_directions"},
+                "directions": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "items": direction,
+                },
+            }
+        )
+    elif stage in {"direction_selected", "brief_draft"}:
+        source = _strict_schema_object(
+            {
+                "type": {
+                    "type": "string",
+                    "enum": ["user", "image", "ai"],
+                },
+                "refId": {"type": ["string", "null"]},
+            }
+        )
+        brief_item = _strict_schema_object(
+            {
+                "id": text,
+                "category": text,
+                "text": {"type": "string"},
+                "source": source,
+                "locked": {"type": "boolean"},
+            }
+        )
+        brief = _strict_schema_object(
+            {
+                "status": {"type": "string", "const": "draft"},
+                "summary": {"type": "string"},
+                "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": brief_item,
+                },
+                "aiAdditions": {"type": "array", "items": text},
+                "openQuestions": {"type": "array", "items": text},
+            }
+        )
+        conflict = _strict_schema_object(
+            {
+                "id": text,
+                "code": text,
+                "message": text,
+                "status": {
+                    "type": "string",
+                    "enum": ["open", "resolved"],
+                },
+                "itemIds": {"type": "array", "items": text},
+            }
+        )
+        action = _strict_schema_object(
+            {
+                "type": {"type": "string", "const": "set_brief_draft"},
+                "brief": brief,
+                "conflicts": {"type": "array", "items": conflict},
+                "approvedLockedItemIds": {
+                    "type": "array",
+                    "items": text,
+                },
+            }
+        )
+    else:
+        return {"type": "json_object"}
+
+    schema = _strict_schema_object({"message": text, "action": action})
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "creative_director_proposal",
+            "strict": True,
+            "schema": schema,
+        },
+    }
+
+
 class CreativeDirectorError(PromptEngineError):
     pass
 
@@ -405,30 +503,58 @@ def run_creative_director_turn(
     config = resolve_text_provider(settings, provider)
     if config["provider"] == "local":
         request_content = f"/no_think\n{request_content}"
-    body = apply_provider_request_options(
-        config,
+    messages = [
         {
-            "model": config["model"],
-            "messages": [
-                {
-                    "role": "system",
-                    "content": build_creative_director_system_prompt(
-                        skill_override
-                    ),
-                },
-                {"role": "user", "content": request_content},
-            ],
-            "temperature": 0.4,
-            "max_tokens": 4000,
-            "response_format": {"type": "json_object"},
-            "stream": False,
+            "role": "system",
+            "content": build_creative_director_system_prompt(skill_override),
         },
-    )
+        {"role": "user", "content": request_content},
+    ]
     caller = transport or default_transport
-    response = caller(config["url"], body, config["headers"], 90)
-    proposal = normalize_creative_director_proposal(
-        response_content(response)
+    response_format = (
+        _local_response_format(canonical_current)
+        if config["provider"] == "local"
+        else {"type": "json_object"}
     )
+
+    def call(current_messages: list[dict], temperature: float) -> str:
+        body = apply_provider_request_options(
+            config,
+            {
+                "model": config["model"],
+                "messages": current_messages,
+                "temperature": temperature,
+                "max_tokens": 4000,
+                "response_format": response_format,
+                "stream": False,
+            },
+        )
+        response = caller(config["url"], body, config["headers"], 90)
+        return response_content(response)
+
+    first_content = call(messages, 0.4)
+    try:
+        proposal = normalize_creative_director_proposal(first_content)
+    except CreativeDirectorError as first_error:
+        if first_error.code != "invalid_model_output":
+            raise
+        repair_message = (
+            f"上一次输出未通过严格 JSON 校验：{first_error.message}。"
+            "请重新输出完整对象，严格遵守系统消息中的精确动作结构；"
+            "检查括号配对，顶层对象只关闭一次，不得带解释、代码围栏或尾随字符。"
+        )
+        if config["provider"] == "local":
+            repair_message = f"/no_think\n{repair_message}"
+        proposal = normalize_creative_director_proposal(
+            call(
+                messages
+                + [
+                    {"role": "assistant", "content": first_content},
+                    {"role": "user", "content": repair_message},
+                ],
+                0.1,
+            )
+        )
     item = apply_creative_intake_transition(
         canonical_current,
         proposal["action"],

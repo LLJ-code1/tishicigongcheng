@@ -1694,6 +1694,13 @@ test("a director message is first recorded in canonical inputs without losing im
     ),
     null
   );
+  assert.equal(
+    buildDirectorMessageInputAction(
+      creativeIntakeStageFixture("direction_selected"),
+      "其他细节交给你决定"
+    ),
+    null
+  );
   assert.throws(
     () => buildDirectorMessageInputAction(intake, "x".repeat(20_001)),
     /20000/

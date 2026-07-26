@@ -1830,6 +1830,7 @@
     if (!normalizedMessage) {
       throw new TypeError("creative director message must not be empty");
     }
+    if (intake.stage !== "intake") return null;
     const currentText = intake.inputs.text.trim();
     if (
       currentText === normalizedMessage ||

@@ -28,6 +28,9 @@ class CreativeDirectorPromptTests(unittest.TestCase):
             "先形成并确认创作简报",
             "再生成最终提示词",
             "只输出一个严格 JSON 对象",
+            '"directions"',
+            '"approvedLockedItemIds"',
+            "不得把 `directions` 改名为 `value`",
         )
         for rule in required_rules:
             with self.subTest(rule=rule):
@@ -245,6 +248,40 @@ class CreativeDirectorTurnTests(unittest.TestCase):
                 else:
                     self.assertNotIn("Authorization", headers)
 
+    def test_local_turn_constrains_nonempty_intake_to_direction_schema(self):
+        state = creative_intake.apply_creative_intake_transition(
+            self.current,
+            {"type": "replace_inputs", "text": "雨夜", "images": []},
+        )
+        calls = []
+
+        def transport(_url, body, _headers, _timeout):
+            calls.append(body)
+            return self.direction_response()
+
+        creative_director.run_creative_director_turn(
+            current=state,
+            user_message="继续",
+            image_evidence=None,
+            provider="local",
+            settings=self.settings,
+            transport=transport,
+        )
+
+        response_format = calls[0]["response_format"]
+        self.assertEqual(response_format["type"], "json_schema")
+        action_schema = response_format["json_schema"]["schema"][
+            "properties"
+        ]["action"]
+        self.assertEqual(
+            action_schema["properties"]["type"]["const"],
+            "set_directions",
+        )
+        self.assertEqual(
+            action_schema["properties"]["directions"]["minItems"],
+            3,
+        )
+
     def test_turn_rejects_incomplete_provider_configuration_without_calling(self):
         original = copy.deepcopy(self.current)
         called = False
@@ -285,6 +322,36 @@ class CreativeDirectorTurnTests(unittest.TestCase):
             )
 
         self.assertEqual(self.current, original)
+
+    def test_turn_retries_one_invalid_json_response_with_strict_repair(self):
+        calls = []
+        responses = iter(
+            [
+                {
+                    "choices": [{"message": {"content": "not json"}}]
+                },
+                self.direction_response("修复后的严格 JSON。"),
+            ]
+        )
+
+        def transport(_url, body, _headers, _timeout):
+            calls.append(body)
+            return next(responses)
+
+        result = creative_director.run_creative_director_turn(
+            current=self.current,
+            user_message="继续",
+            image_evidence=None,
+            provider="local",
+            settings=self.settings,
+            transport=transport,
+        )
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(result["message"], "修复后的严格 JSON。")
+        self.assertEqual(calls[1]["temperature"], 0.1)
+        self.assertEqual(calls[1]["messages"][-2]["content"], "not json")
+        self.assertIn("严格 JSON 校验", calls[1]["messages"][-1]["content"])
 
     def test_turn_fails_closed_when_model_echoes_provider_secret(self):
         original = copy.deepcopy(self.current)
