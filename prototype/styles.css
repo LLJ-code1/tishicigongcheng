@@ -2950,6 +2950,11 @@ select:focus {
   color: var(--teal);
 }
 
+.director-attachment.is-disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
 .director-composer-actions .primary-button,
 .director-model-gate .primary-button {
   min-height: 32px;
@@ -2971,6 +2976,113 @@ select:focus {
   color: var(--faint);
   background: var(--surface-soft);
   font-size: 11px;
+}
+
+.director-image-drop-zone {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 7px;
+  color: var(--muted);
+  background: var(--surface-soft);
+  cursor: pointer;
+}
+
+.director-image-drop-zone strong,
+.director-image-drop-zone span {
+  overflow-wrap: anywhere;
+}
+
+.director-image-drop-zone:focus-visible,
+.director-image-drop-zone.is-dragging {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+  border-color: var(--teal);
+}
+
+.director-image-errors {
+  margin: 0;
+  padding: 7px 10px 7px 28px;
+  border-radius: 6px;
+  color: var(--danger);
+  background: #fff4f2;
+  overflow-wrap: anywhere;
+}
+
+.director-image-cards {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.director-image-card {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-soft);
+  overflow: hidden;
+}
+
+.director-image-card-main {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.director-image-card-main img,
+.director-image-card-placeholder {
+  width: 54px;
+  height: 54px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: #fff;
+}
+
+.director-image-card-placeholder {
+  display: grid;
+  place-items: center;
+  padding: 4px;
+  color: var(--faint);
+  font-size: 9px;
+  text-align: center;
+}
+
+.director-image-card-copy {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.director-image-card-copy strong,
+.director-image-card-copy span {
+  display: block;
+}
+
+.director-image-card-copy span {
+  margin-top: 3px;
+  color: var(--muted);
+}
+
+.director-image-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  max-width: 140px;
+}
+
+.director-image-card-actions button {
+  min-height: 26px;
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #fff;
 }
 
 .director-image-preview-main {

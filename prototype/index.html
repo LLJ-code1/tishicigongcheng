@@ -95,13 +95,19 @@
                   placeholder="例如：雨夜的复古高定走秀，红色丝绸礼服，舞台地面有水面反光……"
                 ></textarea>
                 <div class="director-composer-actions">
-                  <label class="director-attachment" for="directorImageInput">
-                    <span aria-hidden="true">＋</span> 添加一张参考图
+                  <label
+                    class="director-attachment"
+                    id="directorImageAddBtn"
+                    for="directorImageInput"
+                    aria-disabled="false"
+                  >
+                    <span aria-hidden="true">＋</span> 添加图片
                   </label>
                   <input
                     id="directorImageInput"
                     class="visually-hidden"
                     type="file"
+                    multiple
                     accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
                   />
                   <button id="directorSendBtn" class="primary-button" type="submit">发送给总监</button>
@@ -109,53 +115,29 @@
                 </div>
               </form>
 
-              <div class="director-image-preview" id="directorImagePreview" aria-live="polite">
-                <div class="director-image-preview-main">
-                  <img
-                    id="directorImagePreviewImage"
-                    class="hidden"
-                    alt="当前参考图本地预览"
-                  />
-                  <div>
-                    <strong class="director-preview-placeholder">尚未添加参考图</strong>
-                    <span>仅使用本地识图模型；不会将原图发送给外部文本提供商。</span>
-                  </div>
-                  <button
-                    class="director-remove-image"
-                    id="directorImageRemoveBtn"
-                    type="button"
-                    disabled
-                  >移除</button>
-                </div>
-                <fieldset class="director-image-uses" id="directorImageUses" disabled>
-                  <legend>希望借用参考图的哪些内容</legend>
-                  <div class="director-image-use-chips">
-                    <button type="button" data-director-image-use="character" aria-pressed="false">人物</button>
-                    <button type="button" data-director-image-use="appearance" aria-pressed="false">外貌</button>
-                    <button type="button" data-director-image-use="outfit" aria-pressed="false">服装</button>
-                    <button type="button" data-director-image-use="action" aria-pressed="false">动作</button>
-                    <button type="button" data-director-image-use="environment" aria-pressed="false">环境</button>
-                    <button type="button" data-director-image-use="composition" aria-pressed="false">构图</button>
-                    <button type="button" data-director-image-use="lighting" aria-pressed="false">光影</button>
-                    <button type="button" data-director-image-use="style" aria-pressed="false">风格</button>
-                    <button
-                      type="button"
-                      id="directorImageAiSuggest"
-                      class="is-selected"
-                      aria-pressed="true"
-                    >让 AI 建议</button>
-                  </div>
-                </fieldset>
-                <div class="director-image-analysis">
-                  <span id="directorImageAnalysisStatus">添加图片后，将在发送前进行本地分析。</span>
-                  <ul class="director-analysis-failures" hidden></ul>
-                  <button
-                    id="directorImageRetryBtn"
-                    class="secondary-button"
-                    type="button"
-                    hidden
-                  >重试本地分析</button>
-                </div>
+              <div
+                class="director-image-drop-zone"
+                id="directorImageDropZone"
+                role="button"
+                tabindex="0"
+                aria-controls="directorImageInput"
+              >
+                <strong>拖放最多 8 张参考图到这里</strong>
+                <span>支持 PNG、JPG、WEBP；每张最多 20 MB。仅使用本地识图模型，不会将原图发送给外部文本提供商。</span>
+              </div>
+              <ul
+                class="director-image-errors"
+                id="directorImageErrors"
+                role="status"
+                aria-live="polite"
+                hidden
+              ></ul>
+              <div
+                class="director-image-cards"
+                id="directorImageCards"
+                aria-live="polite"
+              >
+                <p class="director-empty-state">尚未添加参考图。</p>
               </div>
 
               <fieldset class="director-provider-controls" id="directorProviderControls">

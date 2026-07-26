@@ -224,6 +224,47 @@
     return { ok: true, error: "" };
   }
 
+  function validateDirectorImageFileBatch(
+    files,
+    currentReferences = [],
+    options = {}
+  ) {
+    const accepted = [];
+    const errors = [];
+    const availableSlots = Math.min(
+      Number.isSafeInteger(options.maxAccepted)
+        ? Math.max(0, options.maxAccepted)
+        : 8,
+      Math.max(
+        0,
+        8 -
+          (Array.isArray(currentReferences)
+            ? currentReferences.length
+            : 0)
+      )
+    );
+    for (const file of Array.from(files || [])) {
+      const validation = validateDirectorImageFile(file);
+      if (!validation.ok) {
+        errors.push({
+          name: pureImageFilename(file?.name || "未命名文件"),
+          error: validation.error,
+        });
+      } else if (accepted.length >= availableSlots) {
+        errors.push({
+          name: pureImageFilename(file.name),
+          error:
+            options.maxAccepted === 1
+              ? "本次只能选择 1 张图片"
+              : "最多只能添加 8 张参考图",
+        });
+      } else {
+        accepted.push(file);
+      }
+    }
+    return { accepted, errors };
+  }
+
   function directorImageMimeType(file) {
     const declared = String(file?.type || "").toLowerCase();
     if (["image/png", "image/jpeg", "image/webp"].includes(declared)) {
@@ -282,6 +323,35 @@
       if (!normalized.includes(value)) normalized.push(value);
     }
     return { ...clone(reference), requestedUses: normalized };
+  }
+
+  function buildDirectorImageCards(value, getAttachment) {
+    const intake = normalizeCreativeIntake(value);
+    const lookup =
+      typeof getAttachment === "function" ? getAttachment : () => null;
+    return intake.inputs.images.map((reference) => {
+      const attachment = lookup(reference.id);
+      const failures = Array.isArray(attachment?.failures)
+        ? attachment.failures
+            .map((failure) => String(failure?.error || "").trim())
+            .filter(Boolean)
+        : [];
+      const status = String(
+        attachment?.status ||
+          (attachment ? "idle" : "missing")
+      );
+      return {
+        id: reference.id,
+        name: reference.name,
+        previewUrl: String(attachment?.objectUrl || ""),
+        requestedUses: clone(reference.requestedUses),
+        aiSuggest: reference.requestedUses.length === 0,
+        status,
+        failures,
+        canRetry: status === "error" || status === "partial",
+        needsReattachment: !attachment,
+      };
+    });
   }
 
   function buildDirectorImageReplaceAction(intake, reference = null) {
@@ -1194,12 +1264,22 @@
     { id: "conflicts", label: "冲突" },
   ];
 
-  function creativeBriefItemRow(item) {
+  function resolveCreativeBriefSourceLabel(source, images = []) {
+    if (source?.type !== "image") return "";
+    const refId = String(source.refId || "");
+    const reference = Array.isArray(images)
+      ? images.find((image) => image?.id === refId)
+      : null;
+    return `图片：${reference?.name || refId}`;
+  }
+
+  function creativeBriefItemRow(item, images) {
     return {
       id: item.id,
       category: item.category,
       text: item.text,
       source: clone(item.source),
+      sourceLabel: resolveCreativeBriefSourceLabel(item.source, images),
       locked: item.locked,
       revisable: true,
     };
@@ -1213,7 +1293,7 @@
     );
     if (brief) {
       for (const item of brief.items) {
-        const row = creativeBriefItemRow(item);
+        const row = creativeBriefItemRow(item, intake.inputs.images);
         if (item.source.type === "user") groups.user.push(row);
         else if (item.source.type === "image") groups.image.push(row);
         else groups.ai.push(row);
@@ -4079,8 +4159,10 @@
     isSupportedImageFile,
     DIRECTOR_IMAGE_REQUESTED_USES,
     validateDirectorImageFile,
+    validateDirectorImageFileBatch,
     createDirectorImageReference,
     setDirectorImageRequestedUses,
+    buildDirectorImageCards,
     buildDirectorImageReplaceAction,
     buildDirectorImagesReplaceAction,
     shouldBindDirectorImageFile,
@@ -4092,6 +4174,7 @@
     createDirectorImageFlowGuard,
     resolveDirectorImageEvidence,
     resolveDirectorImageEvidenceCollection,
+    resolveCreativeBriefSourceLabel,
     compileBlocks,
     compileBlockFragment,
     composeArtistMix,
@@ -4149,6 +4232,7 @@
   let activeVisionAbort = null;
   let activeDirectorImageAbort = null;
   let activeDirectorAbort = null;
+  let directorImageFileErrors = [];
   let lastCreativeIntakeTransitionOutcome = {
     accepted: false,
     persisted: false,
@@ -4993,70 +5077,86 @@
     }
   }
 
-  async function attachDirectorImageFile(file) {
-    const validation = app.validateDirectorImageFile(file);
-    if (!validation.ok) {
-      state = app.reduceState(state, {
-        type: "DIRECTOR_REQUEST_FAILED",
-        error: validation.error,
-      });
+  async function attachDirectorImageFiles(files, { replaceId = "" } = {}) {
+    const currentReferences = state.creativeIntake.inputs.images;
+    const replacement = replaceId
+      ? currentReferences.find((item) => item.id === replaceId)
+      : null;
+    const batch = app.validateDirectorImageFileBatch(
+      files,
+      replacement
+        ? currentReferences.filter((item) => item.id !== replaceId)
+        : currentReferences,
+      replacement ? { maxAccepted: 1 } : {}
+    );
+    directorImageFileErrors = batch.errors;
+    if (!batch.accepted.length) {
       render();
       return false;
     }
-    const currentReference =
-      state.creativeIntake.inputs.images[0] || null;
-    if (
-      currentReference &&
-      !window.confirm(
-        "替换当前参考图？旧图的本地预览和分析证据会被清除。"
-      )
-    ) {
-      return false;
+    const acceptedFiles = replacement
+      ? batch.accepted.slice(0, 1)
+      : batch.accepted;
+    const created = acceptedFiles.map((file, index) => ({
+      file,
+      reference: app.createDirectorImageReference(
+        file,
+        () =>
+          replacement && index === 0
+            ? replacement.id
+            : app.createClientId("image")
+      ),
+    }));
+    let references = currentReferences.slice();
+    if (replacement) {
+      references = references.map((item) =>
+        item.id === replacement.id ? created[0].reference : item
+      );
+    } else {
+      references.push(...created.map((item) => item.reference));
     }
     directorImageFlowGuard.beginMutation(() => {
       activeDirectorImageAbort?.abort();
     });
     clearDirectorImageEvidence("idle");
-    const reference = app.createDirectorImageReference(
-      file,
-      () => app.createClientId("image")
-    );
     await transitionCreativeIntake(
-      app.buildDirectorImageReplaceAction(
-        state.creativeIntake,
-        reference
-      )
+      app.buildDirectorImagesReplaceAction(state.creativeIntake, references)
     );
-    if (
-      !app.shouldBindDirectorImageFile({
-        transitionOutcome: lastCreativeIntakeTransitionOutcome,
-        reference,
-        current: state.creativeIntake,
-      })
-    ) {
-      return false;
-    }
-    const previousAttachment =
-      directorImageCollectionController.get(reference.id);
-    if (previousAttachment) {
-      directorImageCollectionController.replace(reference.id, file);
-    } else {
-      directorImageCollectionController.bind(reference.id, file);
+    for (const { file, reference } of created) {
+      if (
+        !app.shouldBindDirectorImageFile({
+          transitionOutcome: lastCreativeIntakeTransitionOutcome,
+          reference,
+          current: state.creativeIntake,
+        })
+      ) {
+        continue;
+      }
+      if (directorImageCollectionController.get(reference.id)) {
+        directorImageCollectionController.replace(reference.id, file);
+      } else {
+        directorImageCollectionController.bind(reference.id, file);
+      }
     }
     clearDirectorImageEvidence("idle");
     render();
-    return true;
+    return lastCreativeIntakeTransitionOutcome.accepted;
   }
 
-  async function removeDirectorImage() {
-    const reference = state.creativeIntake.inputs.images[0] || null;
+  async function removeDirectorImage(imageId) {
+    const reference = state.creativeIntake.inputs.images.find(
+      (item) => item.id === imageId
+    );
     if (!reference || state.directorBusy) return false;
     directorImageFlowGuard.beginMutation(() => {
       activeDirectorImageAbort?.abort();
     });
     clearDirectorImageEvidence("idle");
+    const references = state.creativeIntake.inputs.images.filter(
+      (item) => item.id !== imageId
+    );
     await transitionCreativeIntake(
-      app.buildDirectorImageReplaceAction(state.creativeIntake)
+      app.buildDirectorImagesReplaceAction(state.creativeIntake, references)
     );
     if (!lastCreativeIntakeTransitionOutcome.accepted) return false;
     activeDirectorImageAbort?.abort();
@@ -5066,8 +5166,10 @@
     return true;
   }
 
-  async function setDirectorImageUses(requestedUses) {
-    const reference = state.creativeIntake.inputs.images[0] || null;
+  async function setDirectorImageUses(imageId, requestedUses) {
+    const reference = state.creativeIntake.inputs.images.find(
+      (item) => item.id === imageId
+    );
     if (!reference || state.directorBusy) return false;
     const updated = app.setDirectorImageRequestedUses(
       reference,
@@ -5083,8 +5185,11 @@
       activeDirectorImageAbort?.abort();
     });
     clearDirectorImageEvidence("idle");
+    const references = state.creativeIntake.inputs.images.map((item) =>
+      item.id === imageId ? updated : item
+    );
     await transitionCreativeIntake(
-      app.buildDirectorImageReplaceAction(state.creativeIntake, updated)
+      app.buildDirectorImagesReplaceAction(state.creativeIntake, references)
     );
     if (!lastCreativeIntakeTransitionOutcome.accepted) return false;
     clearDirectorImageEvidence("idle");
@@ -6790,7 +6895,8 @@
                             ? `<span class="director-source-badge director-source-badge--${escapeHtml(
                                 row.source.type
                               )}">${escapeHtml(
-                                sourceLabels[row.source.type] ||
+                                row.sourceLabel ||
+                                  sourceLabels[row.source.type] ||
                                   row.source.type
                               )}</span>`
                             : ""
@@ -6929,95 +7035,125 @@
         : "等待已选择的目标模型";
     }
 
-    const imagePreview = $("#directorImagePreview");
-    if (imagePreview) {
-      const reference = state.creativeIntake.inputs.images[0] || null;
-      const attachment = reference
-        ? directorImageCollectionController.get(reference.id)
-        : null;
-      const hasLocalFile =
-        Boolean(reference) && Boolean(attachment);
-      const previewImage = $("#directorImagePreviewImage");
-      const placeholder = imagePreview.querySelector(
-        ".director-preview-placeholder"
+    const imageCards = $("#directorImageCards");
+    if (imageCards) {
+      const useLabels = {
+        character: "人物",
+        appearance: "外貌",
+        outfit: "服装",
+        action: "动作",
+        environment: "环境",
+        composition: "构图",
+        lighting: "光影",
+        style: "风格",
+      };
+      const cards = app.buildDirectorImageCards(
+        state.creativeIntake,
+        (imageId) => directorImageCollectionController.get(imageId)
       );
-      if (previewImage) {
-        previewImage.classList.toggle("hidden", !hasLocalFile);
-        if (
-          hasLocalFile &&
-          previewImage.src !== attachment.objectUrl
-        ) {
-          previewImage.src = attachment.objectUrl;
-        } else if (!hasLocalFile) {
-          previewImage.removeAttribute("src");
-        }
-      }
-      if (placeholder) {
-        placeholder.textContent = reference
-          ? hasLocalFile
-            ? reference.name
-            : `${reference.name} · 需重新附加原图`
-          : "尚未添加参考图";
-      }
-      const uses = new Set(reference?.requestedUses || []);
-      $$("[data-director-image-use]", imagePreview).forEach((button) => {
-        const selected = uses.has(button.dataset.directorImageUse);
-        button.classList.toggle("is-selected", selected);
-        button.setAttribute("aria-pressed", selected ? "true" : "false");
-      });
-      const aiSuggest = $("#directorImageAiSuggest");
-      if (aiSuggest) {
-        const selected = Boolean(reference) && uses.size === 0;
-        aiSuggest.classList.toggle("is-selected", selected);
-        aiSuggest.setAttribute(
-          "aria-pressed",
-          selected ? "true" : "false"
-        );
-      }
-      const useFieldset = $("#directorImageUses");
-      if (useFieldset) {
-        useFieldset.disabled = !reference || model.busy;
-      }
-      const removeButton = $("#directorImageRemoveBtn");
-      if (removeButton) {
-        removeButton.disabled = !reference || model.busy;
-      }
-      const analysisStatus = $("#directorImageAnalysisStatus");
-      if (analysisStatus) {
-        analysisStatus.textContent =
-          {
-            idle: reference
-              ? "发送前将在本机分析；原图不会交给外部文本提供商。"
-              : "添加图片后，将在发送前进行本地分析。",
-            analyzing: "正在使用本地识图模型分析…",
-            ready: "本地分析完成，下一轮只发送有界文字证据。",
-            partial: "部分本地模型失败；已保留成功证据。",
-            error: "本地分析未产生证据；可重试或移除图片。",
-          }[model.imageAnalysisStatus] ||
-          "等待本地图片分析。";
-      }
-      const failureList = imagePreview.querySelector(
-        ".director-analysis-failures"
+      imageCards.innerHTML = cards.length
+        ? cards
+            .map((card) => {
+              const effectiveStatus =
+                model.imageAnalysisStatus === "analyzing"
+                  ? "analyzing"
+                  : card.status;
+              const statusText = {
+                missing: "需重新附加原图",
+                idle: "发送前将在本机分析",
+                analyzing: "正在本地分析…",
+                ready: "本地分析完成",
+                partial: "已保留成功证据，可重试失败项",
+                error: "分析失败，可单独重试",
+              }[effectiveStatus] || "等待本地分析";
+              return `
+                <article class="director-image-card" data-director-image-id="${escapeHtml(
+                  card.id
+                )}">
+                  <div class="director-image-card-main">
+                    ${
+                      card.previewUrl
+                        ? `<img src="${escapeHtml(card.previewUrl)}" alt="${escapeHtml(
+                            card.name
+                          )} 本地预览" />`
+                        : '<div class="director-image-card-placeholder" aria-hidden="true">无本地预览</div>'
+                    }
+                    <div class="director-image-card-copy">
+                      <strong>${escapeHtml(card.name)}</strong>
+                      <span>${escapeHtml(statusText)}</span>
+                    </div>
+                    <div class="director-image-card-actions">
+                      <button type="button" data-director-image-action="replace" ${
+                        model.busy ? "disabled" : ""
+                      }>替换</button>
+                      <button type="button" data-director-image-action="remove" ${
+                        model.busy ? "disabled" : ""
+                      }>删除</button>
+                      <button type="button" data-director-image-action="retry" ${
+                        !card.canRetry || model.busy ? "disabled" : ""
+                      }>重试</button>
+                    </div>
+                  </div>
+                  <fieldset class="director-image-uses" ${
+                    model.busy ? "disabled" : ""
+                  }>
+                    <legend>希望借用这张图的哪些内容</legend>
+                    <div class="director-image-use-chips">
+                      ${Object.entries(useLabels)
+                        .map(
+                          ([id, label]) => `
+                            <button type="button" data-director-image-use="${id}"
+                              aria-pressed="${
+                                card.requestedUses.includes(id)
+                                  ? "true"
+                                  : "false"
+                              }" class="${
+                                card.requestedUses.includes(id)
+                                  ? "is-selected"
+                                  : ""
+                              }">${label}</button>`
+                        )
+                        .join("")}
+                      <button type="button" data-director-image-action="suggest"
+                        aria-pressed="${card.aiSuggest ? "true" : "false"}"
+                        class="${card.aiSuggest ? "is-selected" : ""}">让 AI 建议</button>
+                    </div>
+                  </fieldset>
+                  ${
+                    card.failures.length
+                      ? `<ul class="director-analysis-failures">${card.failures
+                          .map(
+                            (failure) =>
+                              `<li>${escapeHtml(failure)}</li>`
+                          )
+                          .join("")}</ul>`
+                      : ""
+                  }
+                </article>`;
+            })
+            .join("")
+        : '<p class="director-empty-state">尚未添加参考图。</p>';
+    }
+    const addButton = $("#directorImageAddBtn");
+    const atImageLimit = state.creativeIntake.inputs.images.length >= 8;
+    if (addButton) {
+      addButton.classList.toggle("is-disabled", atImageLimit || model.busy);
+      addButton.setAttribute(
+        "aria-disabled",
+        atImageLimit || model.busy ? "true" : "false"
       );
-      if (failureList) {
-        failureList.hidden = !model.imageAnalysisFailures.length;
-        failureList.innerHTML = model.imageAnalysisFailures
-          .map(
-            (failure) =>
-              `<li>${escapeHtml(failure.id)}：${escapeHtml(
-                failure.error
-              )}</li>`
-          )
-          .join("");
-      }
-      const retryButton = $("#directorImageRetryBtn");
-      if (retryButton) {
-        retryButton.hidden =
-          !reference ||
-          !["partial", "error"].includes(model.imageAnalysisStatus);
-        retryButton.disabled =
-          model.busy || model.imageAnalysisStatus === "analyzing";
-      }
+    }
+    const imageInput = $("#directorImageInput");
+    if (imageInput) imageInput.disabled = atImageLimit || model.busy;
+    const imageErrors = $("#directorImageErrors");
+    if (imageErrors) {
+      imageErrors.hidden = !directorImageFileErrors.length;
+      imageErrors.innerHTML = directorImageFileErrors
+        .map(
+          (item) =>
+            `<li>${escapeHtml(item.name)}：${escapeHtml(item.error)}</li>`
+        )
+        .join("");
     }
 
     const workbench = $("#workbenchArea");
@@ -8443,8 +8579,11 @@
       return;
     }
     if (button.dataset.directorImageUse) {
-      const reference =
-        state.creativeIntake.inputs.images[0] || null;
+      const card = button.closest("[data-director-image-id]");
+      const imageId = card?.dataset.directorImageId || "";
+      const reference = state.creativeIntake.inputs.images.find(
+        (item) => item.id === imageId
+      );
       if (!reference) return;
       const uses = new Set(reference.requestedUses || []);
       if (uses.has(button.dataset.directorImageUse)) {
@@ -8453,27 +8592,31 @@
         uses.add(button.dataset.directorImageUse);
       }
       setDirectorImageUses(
+        imageId,
         app.DIRECTOR_IMAGE_REQUESTED_USES
           .map((item) => item.id)
           .filter((id) => uses.has(id))
       );
       return;
     }
-    if (button.id === "directorImageAiSuggest") {
-      setDirectorImageUses([]);
-      return;
-    }
-    if (button.id === "directorImageRemoveBtn") {
-      removeDirectorImage();
-      return;
-    }
-    if (button.id === "directorImageRetryBtn") {
-      ensureDirectorImageEvidence({
-        force: true,
-        retryImageIds: button.dataset.directorImageId
-          ? [button.dataset.directorImageId]
-          : [],
-      });
+    if (button.dataset.directorImageAction) {
+      const card = button.closest("[data-director-image-id]");
+      const imageId = card?.dataset.directorImageId || "";
+      if (!imageId) return;
+      if (button.dataset.directorImageAction === "suggest") {
+        setDirectorImageUses(imageId, []);
+      } else if (button.dataset.directorImageAction === "remove") {
+        removeDirectorImage(imageId);
+      } else if (button.dataset.directorImageAction === "retry") {
+        ensureDirectorImageEvidence({
+          force: true,
+          retryImageIds: [imageId],
+        });
+      } else if (button.dataset.directorImageAction === "replace") {
+        const input = $("#directorImageInput");
+        input.dataset.replaceId = imageId;
+        input.click();
+      }
       return;
     }
     if (button.id === "directorContinueBtn") {
@@ -9009,8 +9152,13 @@
       if (file) loadImageFile(file);
       event.target.value = "";
     } else if (event.target.id === "directorImageInput") {
-      const file = event.target.files?.[0];
-      if (file) attachDirectorImageFile(file);
+      const files = Array.from(event.target.files || []);
+      if (files.length) {
+        attachDirectorImageFiles(files, {
+          replaceId: event.target.dataset.replaceId || "",
+        });
+      }
+      delete event.target.dataset.replaceId;
       event.target.value = "";
     } else if (event.target.id === "backupFileInput") {
       const file = event.target.files?.[0];
@@ -9049,6 +9197,30 @@
     event.preventDefault();
     const file = event.dataTransfer.files?.[0];
     if (file) loadImageFile(file);
+  });
+
+  const directorImageDropZone = $("#directorImageDropZone");
+  directorImageDropZone?.addEventListener("click", () => {
+    const input = $("#directorImageInput");
+    delete input.dataset.replaceId;
+    input.click();
+  });
+  directorImageDropZone?.addEventListener("keydown", (event) => {
+    if (!["Enter", " "].includes(event.key)) return;
+    event.preventDefault();
+    directorImageDropZone.click();
+  });
+  directorImageDropZone?.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    directorImageDropZone.classList.add("is-dragging");
+  });
+  directorImageDropZone?.addEventListener("dragleave", () => {
+    directorImageDropZone.classList.remove("is-dragging");
+  });
+  directorImageDropZone?.addEventListener("drop", (event) => {
+    event.preventDefault();
+    directorImageDropZone.classList.remove("is-dragging");
+    attachDirectorImageFiles(Array.from(event.dataTransfer?.files || []));
   });
 
   $("#resourceForm").addEventListener("submit", (event) => {

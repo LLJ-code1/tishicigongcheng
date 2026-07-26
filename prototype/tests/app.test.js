@@ -61,6 +61,9 @@ const {
   createDirectorImageFlowGuard,
   resolveDirectorImageEvidence,
   resolveDirectorImageEvidenceCollection,
+  buildDirectorImageCards,
+  validateDirectorImageFileBatch,
+  resolveCreativeBriefSourceLabel,
   shouldBindDirectorImageFile,
 } = require("../app.js");
 const unicode15 = require("../unicode15-data.js");
@@ -1967,6 +1970,142 @@ test("creative brief groups use only canonical source lock question and conflict
   assert.equal(groups[5].rows[0].source, null);
 });
 
+test("director image cards preserve canonical order and expose independent controls", () => {
+  const intake = creativeIntakeStageFixture("brief_draft");
+  intake.inputs.images = [
+    {
+      id: "image-action",
+      name: "action.png",
+      mimeType: "image/png",
+      status: "local_reference_not_embedded",
+      requestedUses: ["action"],
+    },
+    {
+      id: "image-outfit",
+      name: "outfit.webp",
+      mimeType: "image/webp",
+      status: "local_reference_not_embedded",
+      requestedUses: [],
+    },
+  ];
+  const attachments = new Map([
+    [
+      "image-action",
+      {
+        objectUrl: "blob:action",
+        status: "ready",
+        failures: [],
+      },
+    ],
+    [
+      "image-outfit",
+      {
+        objectUrl: "blob:outfit",
+        status: "error",
+        failures: [{ id: "vision", error: "模型离线" }],
+      },
+    ],
+  ]);
+
+  const cards = buildDirectorImageCards(
+    intake,
+    (imageId) => attachments.get(imageId) || null
+  );
+
+  assert.deepEqual(
+    cards.map((card) => card.id),
+    ["image-action", "image-outfit"]
+  );
+  assert.deepEqual(cards[0].requestedUses, ["action"]);
+  assert.equal(cards[0].previewUrl, "blob:action");
+  assert.equal(cards[0].canRetry, false);
+  assert.equal(cards[1].aiSuggest, true);
+  assert.equal(cards[1].canRetry, true);
+  assert.equal(cards[1].status, "error");
+  assert.deepEqual(cards[1].failures, ["模型离线"]);
+});
+
+test("director image file batch accepts available slots and reports every rejected file", () => {
+  const png = (name) => ({ name, type: "image/png", size: 100 });
+  const current = Array.from({ length: 7 }, (_, index) => ({
+    id: `image-${index}`,
+  }));
+
+  const result = validateDirectorImageFileBatch(
+    [png("accepted.png"), png("over-limit.png"), {
+      name: "notes.txt",
+      type: "text/plain",
+      size: 20,
+    }],
+    current
+  );
+
+  assert.deepEqual(result.accepted.map((file) => file.name), [
+    "accepted.png",
+  ]);
+  assert.deepEqual(
+    result.errors.map((item) => item.name),
+    ["over-limit.png", "notes.txt"]
+  );
+  assert.match(result.errors[0].error, /8/);
+  assert.match(result.errors[1].error, /PNG|JPG|WEBP/);
+});
+
+test("director image replacement accepts only one file and reports the rest", () => {
+  const files = [
+    { name: "replacement.png", type: "image/png", size: 100 },
+    { name: "extra.png", type: "image/png", size: 100 },
+  ];
+
+  const result = validateDirectorImageFileBatch(files, [], {
+    maxAccepted: 1,
+  });
+
+  assert.deepEqual(result.accepted.map((file) => file.name), [
+    "replacement.png",
+  ]);
+  assert.deepEqual(result.errors, [
+    { name: "extra.png", error: "本次只能选择 1 张图片" },
+  ]);
+});
+
+test("image-sourced brief rows resolve canonical image names with stable ID fallback", () => {
+  const intake = creativeIntakeStageFixture("brief_draft");
+  intake.inputs.images = [
+    {
+      id: "image-known",
+      name: "coat-reference.jpg",
+      mimeType: "image/jpeg",
+      status: "local_reference_not_embedded",
+      requestedUses: ["outfit"],
+    },
+  ];
+  intake.brief.items = [
+    {
+      id: "known",
+      category: "outfit",
+      text: "借用外套",
+      source: { type: "image", refId: "image-known" },
+      locked: false,
+    },
+  ];
+
+  const rows = buildCreativeBriefGroups(intake).find(
+    (group) => group.id === "image"
+  ).rows;
+
+  assert.deepEqual(rows.map((row) => row.sourceLabel), [
+    "图片：coat-reference.jpg",
+  ]);
+  assert.equal(
+    resolveCreativeBriefSourceLabel(
+      { type: "image", refId: "image-missing" },
+      intake.inputs.images
+    ),
+    "图片：image-missing"
+  );
+});
+
 test("brief revision request is a bounded director message and never a canonical edit action", () => {
   const item = {
     id: "outfit-one",
@@ -3714,7 +3853,7 @@ test("unified creative director homepage replaces the split creation entry point
     "directorMessageInput",
     "directorSendBtn",
     "directorImageInput",
-    "directorImagePreview",
+    "directorImageCards",
     "directorProviderControls",
     "directorDirections",
     "directorBriefCard",
@@ -3761,7 +3900,7 @@ test("browser creative director production flow resolves every canonical image a
   assert.doesNotMatch(sendBody, /inputs\.images\[0\]/);
 });
 
-test("director homepage exposes one local-analysis image with use chips and recovery controls", () => {
+test("director homepage exposes multi-image drop cards and per-card recovery controls", () => {
   const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
   const source = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
   const css = fs.readFileSync(path.join(__dirname, "..", "styles.css"), "utf8");
@@ -3774,15 +3913,18 @@ test("director homepage exposes one local-analysis image with use chips and reco
   );
 
   for (const id of [
-    "directorImagePreviewImage",
-    "directorImageUses",
-    "directorImageAiSuggest",
-    "directorImageAnalysisStatus",
-    "directorImageRetryBtn",
-    "directorImageRemoveBtn",
+    "directorImageDropZone",
+    "directorImageAddBtn",
+    "directorImageCards",
+    "directorImageErrors",
   ]) {
     assert.match(html, new RegExp(`id=["']${id}["']`));
   }
+  assert.match(html, /id=["']directorImageInput["'][^>]*\bmultiple\b/);
+  assert.match(source, /buildDirectorImageCards/);
+  assert.match(source, /validateDirectorImageFileBatch/);
+  assert.match(source, /data-director-image-id/);
+  assert.match(source, /sourceLabel/);
   for (const use of [
     "character",
     "appearance",
@@ -3793,14 +3935,18 @@ test("director homepage exposes one local-analysis image with use chips and reco
     "lighting",
     "style",
   ]) {
-    assert.match(html, new RegExp(`data-director-image-use=["']${use}["']`));
+    assert.match(source, new RegExp(`${use}:\\s*"[^"]+"`));
   }
   assert.match(html, /仅使用本地识图模型/);
   assert.match(html, /不会将原图发送给外部文本/);
   assert.match(source, /performDirectorImageAnalysis/);
   assert.match(source, /\/api\/vision\/analyze/);
-  assert.match(source, /window\.confirm\([^)]*替换当前参考图/s);
-  assert.match(css, /\.director-image-use-chips/);
+  assert.match(source, /data-director-image-action="replace"/);
+  assert.match(source, /data-director-image-action="remove"/);
+  assert.match(source, /data-director-image-action="retry"/);
+  assert.match(css, /\.director-image-card/);
+  assert.match(css, /\.director-image-drop-zone:focus-visible/);
+  assert.match(css, /overflow-wrap:\s*anywhere/);
   assert.match(css, /\.director-analysis-failures/);
 });
 
