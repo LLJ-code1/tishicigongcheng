@@ -36,6 +36,7 @@ const {
   isCreativeIntakeResponseCurrent,
   reconstructDirectorMessages,
   buildCreativeDirectorRequest,
+  buildDirectorMessageInputAction,
   buildCreativeIntakeTransitionRequest,
   acceptCreativeIntakeResponse,
   canConfirmCreativeBrief,
@@ -919,6 +920,40 @@ test("creative intake response must advance exactly one canonical revision", () 
   assert.deepEqual(state.directorMessages, []);
 });
 
+test("a director message is first recorded in canonical inputs without losing images", () => {
+  const intake = emptyCreativeIntake();
+  intake.inputs.text = "红裙";
+  intake.inputs.images = [
+    {
+      id: "image-one",
+      name: "pose.png",
+      mimeType: "image/png",
+      status: "local_reference_not_embedded",
+      requestedUses: ["action"],
+    },
+  ];
+
+  assert.deepEqual(
+    buildDirectorMessageInputAction(intake, "向前奔跑"),
+    {
+      type: "replace_inputs",
+      text: "红裙\n向前奔跑",
+      images: intake.inputs.images,
+    }
+  );
+  assert.equal(
+    buildDirectorMessageInputAction(
+      { ...intake, inputs: { ...intake.inputs, text: "红裙\n向前奔跑" } },
+      "向前奔跑"
+    ),
+    null
+  );
+  assert.throws(
+    () => buildDirectorMessageInputAction(intake, "x".repeat(20_001)),
+    /20000/
+  );
+});
+
 test("director response rejects non-text invalid-Unicode and oversized prose atomically", () => {
   const state = createInitialState();
   const request = buildCreativeDirectorRequest(state, 4, "红裙，奔跑");
@@ -998,6 +1033,63 @@ test("canonical model selection does not mutate the current Recipe model", () =>
   assert.equal(next.modelProfileId, "recipe-model");
   assert.deepEqual(next.blocks, []);
   assert.equal(next.hasUnsavedChanges, false);
+});
+
+test("entering the workbench applies the canonical target model and its defaults", () => {
+  const state = createInitialState();
+  state.creativeIntake = creativeIntakeStageFixture("model_selected");
+  state.creativeIntake.selectedModelProfileId = "director-target";
+  state.modelProfileId = "recipe-model";
+  state.modelProfiles = [
+    {
+      profileId: "recipe-model",
+      defaultParameters: { steps: 12, cfg: 2 },
+    },
+    {
+      profileId: "director-target",
+      defaultParameters: { steps: 28, cfg: 6.5 },
+    },
+  ];
+
+  const next = reduceState(state, { type: "ENTER_CREATIVE_WORKBENCH" });
+
+  assert.equal(next.view, "text");
+  assert.equal(next.modelProfileId, "director-target");
+  assert.equal(next.generationParameters.steps, 28);
+  assert.equal(next.generationParameters.cfg, 6.5);
+});
+
+test("reopening a brief clears stale downstream workspace content", () => {
+  const state = createInitialState();
+  state.view = "text";
+  state.creativeIntake = creativeIntakeStageFixture("model_selected");
+  state.draftInput = "old brief";
+  state.blocks = [{ id: "subject", en: ["old"], zh: ["旧"], weight: 100 }];
+  state.appliedBlocks = structuredClone(state.blocks);
+  state.output.positiveEn = "old";
+  state.previewOutput = { ...state.output };
+  state.pendingChange = { type: "old" };
+  state.pendingEditPreview = { affectedIds: ["subject"] };
+  state.recipeHash = "old-hash";
+  state.randomPlan = { seed: 7 };
+
+  const reopened = creativeIntakeStageFixture("brief_draft");
+  reopened.recipeStatus = "missing";
+  const next = reduceState(state, {
+    type: "CREATIVE_INTAKE_REPLACED",
+    item: reopened,
+  });
+
+  assert.equal(next.view, "home");
+  assert.equal(next.draftInput, "");
+  assert.deepEqual(next.blocks, []);
+  assert.deepEqual(next.appliedBlocks, []);
+  assert.equal(next.output.positiveEn, "");
+  assert.equal(next.previewOutput, null);
+  assert.equal(next.pendingChange, null);
+  assert.equal(next.pendingEditPreview, null);
+  assert.equal(next.recipeHash, "");
+  assert.equal(next.randomPlan, null);
 });
 
 test("deterministic creative intake requests share the stale guard and only use loaded model IDs", () => {

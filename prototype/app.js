@@ -753,6 +753,47 @@
     };
   }
 
+  function applyCanonicalModelToWorkspace(state) {
+    const profileId = state.creativeIntake?.selectedModelProfileId;
+    const profile = state.modelProfiles.find(
+      (item) => item.profileId === profileId
+    );
+    if (!profile) return;
+    state.modelProfileId = profile.profileId;
+    for (const [key, value] of Object.entries(
+      safeObject(profile.defaultParameters)
+    )) {
+      if (
+        key in state.generationParameters &&
+        !state.manualParameterKeys.includes(key)
+      ) {
+        state.generationParameters[key] = clone(value);
+      }
+    }
+  }
+
+  function clearCreativeDownstreamWorkspace(state) {
+    state.draftInput = "";
+    state.blocks = [];
+    state.appliedBlocks = [];
+    state.dirtyBlockIds = [];
+    state.previewOutput = null;
+    state.output = emptyOutput();
+    state.outputChecks = {
+      preservedUserIntent: true,
+      bilingualAligned: true,
+      conflicts: [],
+      assumptions: [],
+    };
+    state.pendingEditPreview = null;
+    state.pendingChange = null;
+    state.recipeHash = "";
+    state.randomPlan = null;
+    state.instructionHistory = [];
+    state.selectedVariantBlockIds = [];
+    state.hasUnsavedChanges = false;
+  }
+
   function resetAnalyzerWorkspaceResults(analyzers) {
     const next = clone(analyzers || {});
     Object.values(next).forEach((model) => {
@@ -985,6 +1026,34 @@
             ? state.settings.creativeDirectorSkillOverride
             : "",
       },
+    };
+  }
+
+  function buildDirectorMessageInputAction(value, message) {
+    const intake = normalizeCreativeIntake(value);
+    const normalizedMessage = String(message ?? "").trim();
+    if (!normalizedMessage) {
+      throw new TypeError("creative director message must not be empty");
+    }
+    const currentText = intake.inputs.text.trim();
+    if (
+      currentText === normalizedMessage ||
+      currentText.endsWith(`\n${normalizedMessage}`)
+    ) {
+      return null;
+    }
+    const text = currentText
+      ? `${currentText}\n${normalizedMessage}`
+      : normalizedMessage;
+    if (Array.from(text).length > 20_000) {
+      throw new TypeError(
+        "creative director canonical input exceeds 20000 characters"
+      );
+    }
+    return {
+      type: "replace_inputs",
+      text,
+      images: clone(intake.inputs.images),
     };
   }
 
@@ -2640,6 +2709,7 @@
         if (
           creativeDirectorStageView(next.creativeIntake?.stage).canContinue
         ) {
+          applyCanonicalModelToWorkspace(next);
           next.view = "text";
           if (
             !String(next.draftInput || "").trim() &&
@@ -2653,14 +2723,21 @@
         }
         return next;
       case "CREATIVE_INTAKE_REPLACED":
+        {
+          const hadDownstream =
+            creativeDirectorStageView(next.creativeIntake?.stage).canContinue;
         next.creativeIntake = normalizeCreativeIntake(action.item);
         if (
           !creativeDirectorStageView(next.creativeIntake.stage).canContinue
         ) {
           next.view = "home";
+          if (hadDownstream) {
+            clearCreativeDownstreamWorkspace(next);
+          }
         }
         markProjectChanged(next);
         return next;
+        }
       case "SET_GENERATION_PARAMETER": {
         const key = action.key;
         if (!(key in safeObject(next.generationParameters))) return next;
@@ -3567,6 +3644,7 @@
     buildCreativeBriefGroups,
     buildBriefRevisionMessage,
     buildCreativeDirectorRequest,
+    buildDirectorMessageInputAction,
     buildCreativeIntakeTransitionRequest,
     acceptCreativeIntakeResponse,
     canConfirmCreativeBrief,
@@ -4585,6 +4663,25 @@
       state = app.reduceState(state, {
         type: "DIRECTOR_REQUEST_FAILED",
         error: "请先描述你想创作的画面。",
+      });
+      render();
+      return;
+    }
+    try {
+      const inputAction = app.buildDirectorMessageInputAction(
+        state.creativeIntake,
+        message
+      );
+      if (
+        inputAction &&
+        !(await transitionCreativeIntake(inputAction))
+      ) {
+        return;
+      }
+    } catch (error) {
+      state = app.reduceState(state, {
+        type: "DIRECTOR_REQUEST_FAILED",
+        error: error.message || "创作输入无法保存",
       });
       render();
       return;
