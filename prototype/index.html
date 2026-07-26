@@ -23,8 +23,6 @@
 
         <nav class="top-nav" aria-label="主要导航">
           <button type="button" data-nav="home">新建作品</button>
-          <button type="button" data-nav="text">文生图</button>
-          <button type="button" data-nav="image">图片解析</button>
         </nav>
 
         <div class="top-actions">
@@ -57,24 +55,127 @@
             <p>从一句想法开始，或上传图片拆解画面。第一阶段只处理提示词，不进行出图。</p>
           </div>
 
-          <div class="creation-choices">
-            <button class="creation-choice text-choice" type="button" data-nav="text">
-              <span class="choice-index">01</span>
-              <span class="choice-copy">
-                <strong>文生图</strong>
-                <span>全随机、拓展提示词、参考提示词库</span>
-              </span>
-              <span class="choice-arrow">→</span>
-            </button>
-            <button class="creation-choice image-choice" type="button" data-nav="image">
-              <span class="choice-index">02</span>
-              <span class="choice-copy">
-                <strong>图片解析</strong>
-                <span>本地多模型识图、合并、双语重写</span>
-              </span>
-              <span class="choice-arrow">→</span>
-            </button>
-          </div>
+          <section class="director-shell" aria-labelledby="directorTitle">
+            <div class="director-intake-panel">
+              <div class="director-panel-heading">
+                <div>
+                  <p class="eyebrow">CREATIVE DIRECTOR</p>
+                  <h2 id="directorTitle">把创作意图交给创作总监</h2>
+                </div>
+                <span class="director-stage-badge">第一步：描述</span>
+              </div>
+
+              <div
+                class="director-conversation"
+                id="directorConversation"
+                role="log"
+                aria-live="polite"
+                aria-label="创作总监对话"
+              >
+                <article class="director-message director-message--assistant">
+                  <span class="director-message-role">创作总监</span>
+                  <p>告诉我你想创作的画面、角色或情绪。我会先整理为可确认的创作简报。</p>
+                </article>
+                <article class="director-message director-message--system">
+                  <span class="director-source-badge">本地工作区</span>
+                  <p>目前还没有引用素材；可附上一张参考图。</p>
+                </article>
+              </div>
+
+              <div class="director-error-banner" role="status" hidden>
+                本地服务暂不可用。请检查模型服务，或改用 API 推理来源。
+              </div>
+
+              <form class="director-composer" aria-label="创作意图输入">
+                <label class="visually-hidden" for="directorMessageInput">描述你的创作意图</label>
+                <textarea
+                  id="directorMessageInput"
+                  rows="4"
+                  maxlength="2000"
+                  placeholder="例如：雨夜的复古高定走秀，红色丝绸礼服，舞台地面有水面反光……"
+                ></textarea>
+                <div class="director-composer-actions">
+                  <label class="director-attachment" for="directorImageInput">
+                    <span aria-hidden="true">＋</span> 添加一张参考图
+                  </label>
+                  <input
+                    id="directorImageInput"
+                    class="visually-hidden"
+                    type="file"
+                    accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+                  />
+                  <button id="directorSendBtn" class="primary-button" type="submit">发送给总监</button>
+                  <button class="secondary-button" type="button" disabled aria-label="停止当前请求">停止</button>
+                </div>
+              </form>
+
+              <div class="director-image-preview" id="directorImagePreview" aria-live="polite">
+                <span class="director-preview-placeholder">尚未添加参考图</span>
+                <button class="director-remove-image" type="button" disabled>移除</button>
+              </div>
+
+              <fieldset class="director-provider-controls" id="directorProviderControls">
+                <legend>本次任务的推理来源</legend>
+                <label><input type="radio" name="directorProvider" value="local" checked /> 本地模型</label>
+                <label><input type="radio" name="directorProvider" value="api" /> API 推理</label>
+                <span class="director-provider-status">本地服务可用</span>
+              </fieldset>
+            </div>
+
+            <aside class="director-review-panel" aria-label="创作总监的阶段性输出">
+              <section class="director-directions" id="directorDirections" aria-labelledby="directorDirectionsTitle">
+                <div class="director-section-heading">
+                  <div>
+                    <p class="eyebrow">DIRECTIONS</p>
+                    <h3 id="directorDirectionsTitle">创作方向</h3>
+                  </div>
+                  <span>等待你的描述</span>
+                </div>
+                <button class="director-direction" type="button" disabled>
+                  <strong>方向将在对话后生成</strong>
+                  <span>选择一个方向后，创作总监会整理简报。</span>
+                </button>
+              </section>
+
+              <section class="director-brief-card" id="directorBriefCard" aria-labelledby="directorBriefTitle">
+                <div class="director-section-heading">
+                  <div>
+                    <p class="eyebrow">CONFIRMATION</p>
+                    <h3 id="directorBriefTitle">创作简报</h3>
+                  </div>
+                  <span class="director-lock-badge">待确认</span>
+                </div>
+                <p>确认方向后，这里会明确保留来自你的描述、参考图和模型建议的内容来源。</p>
+                <ul class="director-brief-list">
+                  <li><span class="director-source-badge">用户输入</span> 主体与情绪</li>
+                  <li><span class="director-source-badge director-source-badge--image">参考图</span> 视觉线索</li>
+                </ul>
+                <button class="secondary-button" type="button" disabled>确认简报</button>
+              </section>
+
+              <section
+                class="director-model-gate is-locked"
+                id="directorModelGate"
+                data-canonical-stage-required="brief_confirmed"
+                aria-labelledby="directorModelGateTitle"
+              >
+                <div class="director-section-heading">
+                  <div>
+                    <p class="eyebrow">MODEL GATE</p>
+                    <h3 id="directorModelGateTitle">选择目标模型</h3>
+                  </div>
+                  <span class="director-lock-badge">简报确认后解锁</span>
+                </div>
+                <label for="directorModelSelect">模型配置</label>
+                <select id="directorModelSelect" disabled>
+                  <option>先确认创作简报</option>
+                </select>
+                <button id="directorContinueBtn" class="primary-button" type="button" disabled>
+                  继续进入工作台
+                </button>
+              </section>
+            </aside>
+          </section>
 
           <section class="recent-projects" aria-labelledby="recentProjectsTitle">
             <div class="section-heading">
@@ -125,7 +226,7 @@
           </div>
         </section>
 
-        <section class="workbench hidden" id="workbenchArea">
+        <section class="workbench hidden" id="workbenchArea" data-canonical-stage-required="model_selected">
           <aside class="source-pane">
             <section id="textView">
               <div class="pane-title">

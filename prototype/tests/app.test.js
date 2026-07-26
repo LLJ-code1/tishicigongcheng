@@ -1463,6 +1463,41 @@ test("static prototype exposes every major review surface", () => {
   assert.ok(unicodeDataIndex < appScriptIndex);
 });
 
+test("unified creative director homepage replaces the split creation entry points", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const css = fs.readFileSync(path.join(__dirname, "..", "styles.css"), "utf8");
+  const home = html.match(
+    /<section class="home-view" id="homeView">([\s\S]*?)<section class="workbench/
+  )?.[1];
+  const nav = html.match(/<nav class="top-nav"[\s\S]*?<\/nav>/)?.[0];
+
+  assert.ok(home, "the home surface precedes the retained workbench");
+  assert.ok(nav, "the primary navigation remains available");
+  for (const id of [
+    "directorConversation",
+    "directorMessageInput",
+    "directorSendBtn",
+    "directorImageInput",
+    "directorImagePreview",
+    "directorProviderControls",
+    "directorDirections",
+    "directorBriefCard",
+    "directorModelGate",
+    "directorContinueBtn",
+  ]) {
+    assert.match(home, new RegExp(`id=["']${id}["']`));
+  }
+
+  assert.doesNotMatch(home, /creation-choice|data-nav=["'](?:text|image)["']/);
+  assert.doesNotMatch(nav, /data-nav=["'](?:text|image)["']/);
+  assert.match(html, /id=["']workbenchArea["'][^>]*data-canonical-stage-required=["']model_selected["']/);
+  assert.match(css, /\.director-conversation[\s\S]*overflow-y:\s*auto/);
+  assert.match(css, /\.director-model-gate\.is-locked/);
+  assert.match(css, /\.director-error-banner/);
+  assert.match(css, /\.director-source-badge/);
+  assert.match(css, /\.director-lock-badge/);
+});
+
 test("prototype targets a 1920x1080 desktop workspace without mobile navigation", () => {
   const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
   const css = fs.readFileSync(path.join(__dirname, "..", "styles.css"), "utf8");
