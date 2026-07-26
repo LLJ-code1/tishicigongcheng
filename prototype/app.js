@@ -1455,6 +1455,9 @@
       randomCatalogStatus: "idle",
       instructionHistory: [],
       sourceRefs: [],
+      loras: [],
+      loraProfiles: [],
+      loraProfilesStatus: "idle",
       pendingEditPreview: null,
       pendingChange: null,
       recipeHash: "",
@@ -1571,6 +1574,7 @@
     state.randomPlan = null;
     state.instructionHistory = [];
     state.sourceRefs = [];
+    state.loras = [];
     state.selectedVariantBlockIds = [];
     state.hasUnsavedChanges = false;
   }
@@ -2699,6 +2703,9 @@
     next.sourceRefs = Array.isArray(latestRecipe.sourceRefs)
       ? clone(latestRecipe.sourceRefs)
       : [];
+    next.loras = Array.isArray(latestRecipe.loras)
+      ? clone(latestRecipe.loras)
+      : [];
     next.recipeHash =
       typeof latestMetadata.recipeHash === "string"
         ? latestMetadata.recipeHash
@@ -2878,6 +2885,7 @@
         ? [{ name: state.imageName, status: "local_reference_not_embedded" }]
         : [],
       sourceRefs: Array.isArray(state.sourceRefs) ? clone(state.sourceRefs) : [],
+      loras: Array.isArray(state.loras) ? clone(state.loras) : [],
     };
     if (Number.isSafeInteger(state.restoreFromVersion)) {
       metadata.restoredFromVersion = state.restoreFromVersion;
@@ -4027,9 +4035,77 @@
         next.modelProfilesStatus = "error";
         next.toast = action.error || "出图模型档案加载失败";
         return next;
+      case "LORA_PROFILES_LOADING":
+        next.loraProfilesStatus = "loading";
+        return next;
+      case "LORA_PROFILES_LOADED":
+        try {
+          next.loraProfiles = (Array.isArray(action.items) ? action.items : []).map(
+            normalizeLoraProfile
+          );
+          next.loraProfilesStatus = "ready";
+        } catch {
+          next.loraProfiles = [];
+          next.loraProfilesStatus = "error";
+          next.toast = "LoRA 档案响应无效";
+        }
+        return next;
+      case "LORA_PROFILES_FAILED":
+        next.loraProfilesStatus = "error";
+        next.toast = action.error || "LoRA 档案加载失败";
+        return next;
+      case "LORA_PROFILE_UPSERTED": {
+        let item;
+        try {
+          item = normalizeLoraProfile(action.item);
+        } catch {
+          next.toast = "LoRA 档案响应无效";
+          return next;
+        }
+        const index = next.loraProfiles.findIndex(
+          (profile) => profile.id === item.id
+        );
+        if (index >= 0) next.loraProfiles[index] = item;
+        else next.loraProfiles.push(item);
+        next.loraProfiles.sort((left, right) =>
+          left.name.localeCompare(right.name, "zh-CN")
+        );
+        next.loraProfilesStatus = "ready";
+        return next;
+      }
+      case "LORA_PROFILE_DELETED":
+        next.loraProfiles = next.loraProfiles.filter(
+          (profile) => profile.id !== action.id
+        );
+        return next;
+      case "TOGGLE_LORA_PROFILE": {
+        const selectedIndex = next.loras.findIndex(
+          (item) => item.assetId === action.id
+        );
+        if (selectedIndex >= 0) {
+          next.loras.splice(selectedIndex, 1);
+          markWorkspaceChanged(next);
+          next.toast = "已从当前配方移除 LoRA";
+          return next;
+        }
+        const model = buildLoraProfileRenderModel(next);
+        const candidate = model.items.find((item) => item.id === action.id);
+        if (!candidate || !candidate.canSelect || candidate.historical) {
+          next.toast = candidate?.statusLabel || "LoRA 档案不可用";
+          return next;
+        }
+        next.loras.push(loraProfileToRecipe(candidate, model.modelProfileId));
+        markWorkspaceChanged(next);
+        next.toast = `已加入 LoRA：${candidate.name}`;
+        return next;
+      }
       case "SELECT_MODEL_PROFILE":
         if (!next.modelProfiles.some((item) => item.profileId === action.profileId)) {
           return next;
+        }
+        if (next.modelProfileId !== action.profileId && next.loras.length) {
+          next.loras = [];
+          next.toast = "切换出图模型后已清空 LoRA 选择，请重新确认兼容性";
         }
         next.modelProfileId = action.profileId;
         markWorkspaceChanged(next);
@@ -5161,6 +5237,139 @@
     };
   }
 
+  function normalizeLoraProfile(value) {
+    const item = safeObject(value);
+    const requiredText = (field) => {
+      const result = String(item[field] || "").trim();
+      if (!result) throw new Error(`Invalid LoRA profile ${field}`);
+      return result;
+    };
+    const arrayOfText = (field) => {
+      if (!Array.isArray(item[field])) {
+        throw new Error(`Invalid LoRA profile ${field}`);
+      }
+      const result = item[field].map((entry) => String(entry || "").trim());
+      if (result.some((entry) => !entry) || new Set(result).size !== result.length) {
+        throw new Error(`Invalid LoRA profile ${field}`);
+      }
+      return result;
+    };
+    const weight = Number(item.suggestedWeight);
+    if (!Number.isFinite(weight) || weight < 0 || weight > 2) {
+      throw new Error("Invalid LoRA profile suggestedWeight");
+    }
+    return {
+      id: requiredText("id"),
+      name: requiredText("name"),
+      version: requiredText("version"),
+      sourceUrl: requiredText("sourceUrl"),
+      triggerWords: arrayOfText("triggerWords"),
+      suggestedWeight: weight,
+      notes: String(item.notes || ""),
+      compatibleModelProfileIds: arrayOfText("compatibleModelProfileIds"),
+      conflictLoraProfileIds: arrayOfText("conflictLoraProfileIds"),
+      compatibilityNotes: String(item.compatibilityNotes || ""),
+      createdAt: String(item.createdAt || ""),
+      updatedAt: String(item.updatedAt || ""),
+    };
+  }
+
+  function loraProfileToRecipe(profile, modelProfileId) {
+    const item = normalizeLoraProfile(profile);
+    const compatible = item.compatibleModelProfileIds.includes(modelProfileId);
+    return {
+      assetId: item.id,
+      name: item.name,
+      versionId: item.version,
+      filename: null,
+      sha256: null,
+      weight: item.suggestedWeight,
+      triggerWords: clone(item.triggerWords),
+      enabled: true,
+      compatibilityStatus: compatible ? "compatible" : "candidate",
+      sourceRefs: [{ type: "original_link", url: item.sourceUrl }],
+    };
+  }
+
+  function historicalLoraProfile(item) {
+    const original = (item.sourceRefs || []).find(
+      (reference) => reference?.type === "original_link"
+    );
+    return {
+      id: String(item.assetId || ""),
+      name: String(item.name || item.assetId || ""),
+      version: String(item.versionId || ""),
+      sourceUrl: String(original?.url || ""),
+      triggerWords: Array.isArray(item.triggerWords)
+        ? item.triggerWords.map(String)
+        : [],
+      suggestedWeight: Number(item.weight),
+      notes: "",
+      compatibleModelProfileIds: [],
+      conflictLoraProfileIds: [],
+      compatibilityNotes: "档案已删除；保留历史 Recipe 快照",
+      updatedAt: "",
+      selected: true,
+      canSelect: true,
+      statusLabel: "历史快照",
+      historical: true,
+    };
+  }
+
+  function buildLoraProfileRenderModel(state) {
+    const profiles = (Array.isArray(state?.loraProfiles)
+      ? state.loraProfiles
+      : []
+    ).map(normalizeLoraProfile);
+    const selected = Array.isArray(state?.loras) ? state.loras : [];
+    const selectedIds = new Set(selected.map((item) => item.assetId));
+    const modelProfileId =
+      state?.creativeIntake?.selectedModelProfileId ||
+      state?.modelProfileId ||
+      "";
+    const byId = new Map(profiles.map((item) => [item.id, item]));
+    const items = profiles.map((profile) => {
+      const isSelected = selectedIds.has(profile.id);
+      const modelConflict =
+        profile.compatibleModelProfileIds.length > 0 &&
+        !profile.compatibleModelProfileIds.includes(modelProfileId);
+      const selectedConflict = selected.some((item) => {
+        if (item.assetId === profile.id) return false;
+        const other = byId.get(item.assetId);
+        return (
+          profile.conflictLoraProfileIds.includes(item.assetId) ||
+          Boolean(other?.conflictLoraProfileIds.includes(profile.id))
+        );
+      });
+      let statusLabel = "待确认兼容性";
+      if (isSelected) statusLabel = "已选择";
+      else if (modelConflict) statusLabel = "模型不兼容";
+      else if (selectedConflict) statusLabel = "与已选 LoRA 冲突";
+      else if (profile.compatibleModelProfileIds.includes(modelProfileId)) {
+        statusLabel = "适用于当前模型";
+      }
+      return {
+        ...profile,
+        selected: isSelected,
+        canSelect: isSelected || (!modelConflict && !selectedConflict),
+        statusLabel,
+        historical: false,
+      };
+    });
+    for (const item of selected) {
+      if (!byId.has(item.assetId)) items.push(historicalLoraProfile(item));
+    }
+    return {
+      status: ["idle", "loading", "ready", "error"].includes(
+        state?.loraProfilesStatus
+      )
+        ? state.loraProfilesStatus
+        : "idle",
+      modelProfileId,
+      items,
+    };
+  }
+
   function normalizeDecompositionWarnings(value) {
     if (!Array.isArray(value) || value.length > 100) {
       throw new Error("Invalid decomposition warning");
@@ -5437,6 +5646,7 @@
     canConfirmDecomposition,
     buildDecompositionPreviewRenderModel,
     buildConfirmedDecompositionWorkbench,
+    buildLoraProfileRenderModel,
     normalizeDecompositionWarnings,
     validateDecompositionPreviewResponse,
     performDecompositionPreviewRequest,
@@ -5465,6 +5675,7 @@
   let resourceSearchTimer = null;
   let resourceRequestId = 0;
   let decompositionEditingBlockId = "";
+  let editingLoraProfileId = "";
   let previewResourceId = "";
   let favoriteResources = [];
   const favoriteMutationQueue = new Map();
@@ -6122,6 +6333,19 @@
       dispatch({
         type: "MODEL_PROFILES_FAILED",
         error: error.message || "出图模型档案加载失败",
+      });
+    }
+  }
+
+  async function loadLoraProfiles() {
+    dispatch({ type: "LORA_PROFILES_LOADING" });
+    try {
+      const result = await apiJson("/api/lora-profiles");
+      dispatch({ type: "LORA_PROFILES_LOADED", items: result.items || [] });
+    } catch (error) {
+      dispatch({
+        type: "LORA_PROFILES_FAILED",
+        error: error.message || "LoRA 档案加载失败",
       });
     }
   }
@@ -10257,6 +10481,136 @@
     }
   }
 
+  function splitLoraEditorList(value) {
+    const items = String(value || "")
+      .split(/[\n,，]+/u)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    return [...new Set(items)];
+  }
+
+  function fillLoraProfileEditor(profile = null) {
+    editingLoraProfileId = profile?.id || "";
+    const values = {
+      loraProfileId: profile?.id || "",
+      loraProfileUpdatedAt: profile?.updatedAt || "",
+      loraProfileName: profile?.name || "",
+      loraProfileVersion: profile?.version || "",
+      loraProfileSourceUrl: profile?.sourceUrl || "",
+      loraProfileTriggerWords: (profile?.triggerWords || []).join(", "),
+      loraProfileWeight: profile?.suggestedWeight ?? 0.8,
+      loraProfileNotes: profile?.notes || "",
+      loraCompatibleModels: (profile?.compatibleModelProfileIds || []).join(", "),
+      loraConflictProfiles: (profile?.conflictLoraProfileIds || []).join(", "),
+      loraCompatibilityNotes: profile?.compatibilityNotes || "",
+    };
+    for (const [id, value] of Object.entries(values)) {
+      const input = $(`#${id}`);
+      if (input) input.value = value;
+    }
+    const remove = $("#deleteLoraProfile");
+    if (remove) remove.disabled = !profile || Boolean(profile.historical);
+  }
+
+  function renderLoraProfiles() {
+    const container = $("#loraProfileList");
+    if (!container) return;
+    const model = app.buildLoraProfileRenderModel(state);
+    if (model.status === "loading" && !model.items.length) {
+      container.innerHTML = '<p class="director-empty-state">正在读取 LoRA 档案……</p>';
+      return;
+    }
+    if (!model.items.length) {
+      container.innerHTML = '<p class="director-empty-state">尚未建立 LoRA 档案。</p>';
+      return;
+    }
+    container.innerHTML = model.items
+      .map(
+        (item) => `<article class="lora-profile-card${item.selected ? " is-selected" : ""}${item.canSelect ? "" : " is-blocked"}" data-lora-profile="${escapeHtml(item.id)}">
+          <div>
+            <strong>${escapeHtml(item.name)} · ${escapeHtml(item.version)}</strong>
+            <small>${escapeHtml(item.statusLabel)} · 权重 ${escapeHtml(item.suggestedWeight)} · ${escapeHtml(item.triggerWords.join(", ") || "无触发词")}</small>
+            ${item.compatibilityNotes ? `<small>${escapeHtml(item.compatibilityNotes)}</small>` : ""}
+          </div>
+          <div class="lora-profile-card-actions">
+            <button class="secondary-button" type="button" data-lora-toggle="${escapeHtml(item.id)}"${item.canSelect ? "" : " disabled"}>${item.selected ? "移出配方" : "加入配方"}</button>
+            <button class="secondary-button" type="button" data-lora-edit="${escapeHtml(item.id)}"${item.historical ? " disabled" : ""}>编辑</button>
+          </div>
+        </article>`
+      )
+      .join("");
+  }
+
+  async function saveLoraProfileFromEditor() {
+    const payload = {
+      ...(editingLoraProfileId ? { id: editingLoraProfileId } : {}),
+      name: $("#loraProfileName").value.trim(),
+      version: $("#loraProfileVersion").value.trim(),
+      sourceUrl: $("#loraProfileSourceUrl").value.trim(),
+      triggerWords: splitLoraEditorList($("#loraProfileTriggerWords").value),
+      suggestedWeight: Number($("#loraProfileWeight").value),
+      notes: $("#loraProfileNotes").value.trim(),
+      compatibleModelProfileIds: splitLoraEditorList(
+        $("#loraCompatibleModels").value
+      ),
+      conflictLoraProfileIds: splitLoraEditorList(
+        $("#loraConflictProfiles").value
+      ),
+      compatibilityNotes: $("#loraCompatibilityNotes").value.trim(),
+    };
+    if (editingLoraProfileId) {
+      payload.baseUpdatedAt = $("#loraProfileUpdatedAt").value;
+    }
+    try {
+      const result = await apiJson(
+        editingLoraProfileId
+          ? `/api/lora-profiles/${encodeURIComponent(editingLoraProfileId)}`
+          : "/api/lora-profiles",
+        {
+          method: editingLoraProfileId ? "PUT" : "POST",
+          body: JSON.stringify(payload),
+        }
+      );
+      state = app.reduceState(state, {
+        type: "LORA_PROFILE_UPSERTED",
+        item: result.item,
+      });
+      fillLoraProfileEditor(result.item);
+      state.toast = "LoRA 档案已保存";
+      render();
+    } catch (error) {
+      if (error.code === "lora_profile_conflict") loadLoraProfiles();
+      state.toast = error.message || "LoRA 档案保存失败";
+      renderToast();
+    }
+  }
+
+  async function deleteEditingLoraProfile() {
+    const profile = state.loraProfiles.find(
+      (item) => item.id === editingLoraProfileId
+    );
+    if (!profile || !window.confirm(`删除 LoRA 档案“${profile.name}”？历史 Recipe 不受影响。`)) {
+      return;
+    }
+    try {
+      await apiJson(
+        `/api/lora-profiles/${encodeURIComponent(profile.id)}?baseUpdatedAt=${encodeURIComponent(profile.updatedAt)}`,
+        { method: "DELETE" }
+      );
+      state = app.reduceState(state, {
+        type: "LORA_PROFILE_DELETED",
+        id: profile.id,
+      });
+      fillLoraProfileEditor();
+      state.toast = "LoRA 档案已删除；历史 Recipe 快照仍保留";
+      render();
+    } catch (error) {
+      if (error.code === "lora_profile_conflict") loadLoraProfiles();
+      state.toast = error.message || "LoRA 档案删除失败";
+      renderToast();
+    }
+  }
+
   function renderRecipeConsole() {
     const parameters = state.generationParameters || {};
     const modelSelect = $("#recipeModelProfile");
@@ -10363,6 +10717,7 @@
     }
     const applyButton = $('[data-action="apply-edit"]');
     if (applyButton) applyButton.disabled = !preview?.ready;
+    renderLoraProfiles();
   }
 
   async function copyText(text) {
@@ -10425,6 +10780,26 @@
 
     if (button.dataset.openProject) {
       openProject(button.dataset.openProject);
+      return;
+    }
+    if (button.dataset.loraToggle) {
+      dispatch({ type: "TOGGLE_LORA_PROFILE", id: button.dataset.loraToggle });
+      return;
+    }
+    if (button.dataset.loraEdit) {
+      const profile = state.loraProfiles.find(
+        (item) => item.id === button.dataset.loraEdit
+      );
+      if (profile) fillLoraProfileEditor(profile);
+      return;
+    }
+    if (button.id === "newLoraProfile") {
+      fillLoraProfileEditor();
+      $("#loraProfileName")?.focus();
+      return;
+    }
+    if (button.id === "deleteLoraProfile") {
+      deleteEditingLoraProfile();
       return;
     }
     if (button.dataset.directorDirection) {
@@ -11154,6 +11529,10 @@
     event.preventDefault();
     runModelResearch();
   });
+  $("#loraProfileForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    saveLoraProfileFromEditor();
+  });
   $(
     '.director-composer button[aria-label="停止当前请求"]'
   )?.addEventListener("click", () => {
@@ -11231,6 +11610,7 @@
   loadProjects();
   loadSettings();
   loadModelProfiles();
+  loadLoraProfiles();
   loadLocalLlmStatus();
   loadVisionStatus();
   loadFavoriteResources();

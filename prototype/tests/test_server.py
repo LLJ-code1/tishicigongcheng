@@ -1375,6 +1375,74 @@ class PromptStudioServerTests(unittest.TestCase):
         with urlopen(request) as response:
             return response.status, json.loads(response.read().decode("utf-8"))
 
+    def test_lora_profile_crud_routes_are_strict_and_conflict_safe(self):
+        payload = {
+            "id": "lora-rain-style",
+            "name": "Rain Style",
+            "version": "v1",
+            "sourceUrl": "https://civitai.com/models/123/rain-style",
+            "triggerWords": ["rain style"],
+            "suggestedWeight": 0.8,
+            "notes": "雨夜",
+            "compatibleModelProfileIds": ["anima-1.1-v1"],
+            "conflictLoraProfileIds": [],
+            "compatibilityNotes": "Anima 候选兼容",
+        }
+        status, body = self.json_request("/api/lora-profiles", payload)
+        self.assertEqual(status, 201)
+        created = body["item"]
+
+        with urlopen(f"{self.base_url}/api/lora-profiles") as response:
+            listed = json.loads(response.read().decode("utf-8"))["items"]
+        self.assertEqual(listed, [created])
+        with urlopen(
+            f"{self.base_url}/api/lora-profiles/{created['id']}"
+        ) as response:
+            self.assertEqual(
+                json.loads(response.read().decode("utf-8"))["item"], created
+            )
+
+        status, body = self.json_request(
+            f"/api/lora-profiles/{created['id']}",
+            {
+                **payload,
+                "name": "Rain Style Revised",
+                "baseUpdatedAt": created["updatedAt"],
+            },
+            method="PUT",
+        )
+        self.assertEqual(status, 200)
+        updated = body["item"]
+        self.assertEqual(updated["name"], "Rain Style Revised")
+
+        stale = self.assert_http_error_json(
+            Request(
+                f"{self.base_url}/api/lora-profiles/{created['id']}",
+                data=json.dumps(
+                    {**payload, "baseUpdatedAt": created["updatedAt"]}
+                ).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="PUT",
+            ),
+            409,
+        )
+        self.assertEqual(stale["code"], "lora_profile_conflict")
+
+        request = Request(
+            f"{self.base_url}/api/lora-profiles/{created['id']}?baseUpdatedAt={quote(updated['updatedAt'], safe='')}",
+            headers={"Content-Type": "application/json"},
+            method="DELETE",
+        )
+        with urlopen(request) as response:
+            self.assertEqual(response.status, 200)
+        missing = self.assert_http_error_json(
+            Request(
+                f"{self.base_url}/api/lora-profiles/{created['id']}"
+            ),
+            404,
+        )
+        self.assertEqual(missing["code"], "not_found")
+
     def test_decomposition_preview_uses_fake_provider_and_returns_draft(self):
         with (
             patch(

@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import backup  # noqa: E402
 import db  # noqa: E402
 import creative_intake  # noqa: E402
+import lora_profile_store  # noqa: E402
 from ai_edit_engine import AIEditError, create_ai_edit_preview  # noqa: E402
 from random_sampler import RandomSamplerError  # noqa: E402
 from recipe import (  # noqa: E402
@@ -599,6 +600,64 @@ class FullWorkflowIntegrationTests(unittest.TestCase):
                     },
                 }
             )
+
+    def test_lora_profile_deletion_does_not_change_saved_recipe_or_backup(self):
+        profile = lora_profile_store.create_lora_profile(
+            {
+                "id": "lora-rain-history",
+                "name": "Rain History",
+                "version": "v1",
+                "sourceUrl": "https://example.com/lora/rain-history",
+                "triggerWords": ["rain history"],
+                "suggestedWeight": 0.75,
+                "notes": "历史快照测试",
+                "compatibleModelProfileIds": ["anima-1.1-v1"],
+                "conflictLoraProfileIds": [],
+                "compatibilityNotes": "仅用于已确认模型",
+            },
+            db_path=self.database,
+        )
+        recipe, _ = self.initial_recipe()
+        expected_lora = {
+            "assetId": profile["id"],
+            "name": profile["name"],
+            "versionId": profile["version"],
+            "filename": None,
+            "sha256": None,
+            "weight": profile["suggestedWeight"],
+            "triggerWords": profile["triggerWords"],
+            "enabled": True,
+            "compatibilityStatus": "compatible",
+            "sourceRefs": [{"type": "original_link", "url": profile["sourceUrl"]}],
+        }
+        recipe["loras"] = [expected_lora]
+        recipe = normalize_recipe(recipe)
+        self.commit(
+            "save-lora-history",
+            {"id": "project-lora-history", "name": "LoRA history"},
+            self.version_payload(recipe, "version-lora-history", 0, "manual"),
+            create=True,
+        )
+
+        self.assertTrue(
+            lora_profile_store.delete_lora_profile(
+                profile["id"],
+                base_updated_at=profile["updatedAt"],
+                db_path=self.database,
+            )
+        )
+        reopened = db.get_project("project-lora-history", self.database)
+        self.assertEqual(reopened["versions"][0]["metadata"]["recipe"]["loras"], [expected_lora])
+
+        archive = self.root / "lora-history.zip"
+        backup.export_database(archive, db_path=self.database)
+        restored_database = self.root / "lora-history-restored.db"
+        backup.restore_backup(archive, restored_database)
+        restored = db.get_project("project-lora-history", restored_database)
+        self.assertEqual(restored["versions"][0]["metadata"]["recipe"]["loras"], [expected_lora])
+        self.assertEqual(
+            lora_profile_store.list_lora_profiles(db_path=restored_database), []
+        )
 
     def test_concurrent_identical_workspace_replays_create_one_version(self):
         recipe, _ = self.initial_recipe()

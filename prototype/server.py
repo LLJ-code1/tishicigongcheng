@@ -90,6 +90,7 @@ from model_profiles import (
 )
 import model_profile_store
 import model_research
+import lora_profile_store
 import creative_intake
 from model_adapted_decomposition import (
     DecompositionError,
@@ -1679,6 +1680,16 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
                 },
                 409,
             )
+        except lora_profile_store.LoraProfileConflictError as error:
+            self._send_json_if_possible(
+                {
+                    "error": str(error),
+                    "code": "lora_profile_conflict",
+                    "expectedUpdatedAt": error.expected,
+                    "actualUpdatedAt": error.actual,
+                },
+                409,
+            )
         except BackupValidationError as error:
             self._send_json_if_possible(
                 {"error": str(error), "code": "invalid_backup"},
@@ -1900,6 +1911,16 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             return self.handle_model_profiles_get(
                 unquote(parsed.path.rsplit("/", 1)[-1])
             )
+        if parsed.path == "/api/lora-profiles":
+            return self.handle_lora_profiles_get("")
+        if parsed.path.startswith("/api/lora-profiles/"):
+            raw_id = parsed.path[len("/api/lora-profiles/") :]
+            if not raw_id or "/" in raw_id or "\\" in raw_id:
+                return self.send_json(
+                    {"error": "LoRA 档案 ID 无效", "code": "invalid_id"},
+                    status=400,
+                )
+            return self.handle_lora_profiles_get(unquote(raw_id))
         research_parts = parsed.path.split("/")
         if (
             len(research_parts) == 4
@@ -2000,6 +2021,8 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             return self.handle_model_adapted_decomposition()
         if parsed.path == "/api/model-research":
             return self.handle_model_research_create()
+        if parsed.path == "/api/lora-profiles":
+            return self.handle_lora_profile_create()
         research_version_parts = parsed.path.split("/")
         if (
             len(research_version_parts) == 5
@@ -2055,6 +2078,14 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             return self.handle_project_update(project_id)
         if parsed.path == "/api/settings":
             return self.handle_settings_put()
+        if parsed.path.startswith("/api/lora-profiles/"):
+            raw_id = parsed.path[len("/api/lora-profiles/") :]
+            if not raw_id or "/" in raw_id or "\\" in raw_id:
+                return self.send_json(
+                    {"error": "LoRA 档案 ID 无效", "code": "invalid_id"},
+                    status=400,
+                )
+            return self.handle_lora_profile_update(unquote(raw_id))
         version_parts = parsed.path.split("/")
         if (
             len(version_parts) == 4
@@ -2078,6 +2109,21 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         ):
             favorite_id = unquote(favorite_parts[3])
             return self.handle_favorite_delete(favorite_id)
+        if parsed.path.startswith("/api/lora-profiles/"):
+            raw_id = parsed.path[len("/api/lora-profiles/") :]
+            if not raw_id or "/" in raw_id or "\\" in raw_id:
+                return self.send_json(
+                    {"error": "LoRA 档案 ID 无效", "code": "invalid_id"},
+                    status=400,
+                )
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            if set(query) != {"baseUpdatedAt"} or len(query["baseUpdatedAt"]) != 1:
+                return self.send_json(
+                    {"error": "baseUpdatedAt 查询参数无效"}, status=400
+                )
+            return self.handle_lora_profile_delete(
+                unquote(raw_id), query["baseUpdatedAt"][0]
+            )
         return self.send_json({"error": "未找到 API"}, status=404)
 
     def handle_projects_get(self, path: str) -> None:
@@ -2289,6 +2335,47 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
                 item for item in items if item["profileId"] not in researched_ids
             ]
         })
+
+    def handle_lora_profiles_get(self, profile_id: str) -> None:
+        if not profile_id:
+            return self.send_json(
+                {"items": lora_profile_store.list_lora_profiles()}
+            )
+        item = lora_profile_store.get_lora_profile(profile_id)
+        if item is None:
+            return self.send_json(
+                {"error": "LoRA 档案不存在", "code": "not_found"},
+                status=404,
+            )
+        self.send_json({"item": item})
+
+    def handle_lora_profile_create(self) -> None:
+        item = lora_profile_store.create_lora_profile(self.read_json())
+        self.send_json({"item": item}, status=201)
+
+    def handle_lora_profile_update(self, profile_id: str) -> None:
+        item = lora_profile_store.update_lora_profile(
+            profile_id, self.read_json()
+        )
+        if item is None:
+            return self.send_json(
+                {"error": "LoRA 档案不存在", "code": "not_found"},
+                status=404,
+            )
+        self.send_json({"item": item})
+
+    def handle_lora_profile_delete(
+        self, profile_id: str, base_updated_at: str
+    ) -> None:
+        deleted = lora_profile_store.delete_lora_profile(
+            profile_id, base_updated_at=base_updated_at
+        )
+        if not deleted:
+            return self.send_json(
+                {"error": "LoRA 档案不存在", "code": "not_found"},
+                status=404,
+            )
+        self.send_json({"deleted": True, "id": profile_id})
 
     @staticmethod
     def _strict_payload(payload: dict, allowed: set[str]) -> None:

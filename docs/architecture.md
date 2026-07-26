@@ -36,7 +36,7 @@ Prompt Studio 本地后端 :57913
 不是真实状态；只有经过 `creative_intake.py` 校验的动作才能改变 canonical session。
 
 会话仍跟随现有项目元数据，通过 `workspace/commit` 的同一原子事务保存，因此不会
-增加 SQLite 表或修改 `PRAGMA user_version = 1`。项目重新打开、逻辑备份和隔离恢复
+单独增加 SQLite 表。项目重新打开、逻辑备份和隔离恢复
 会保留该元数据；历史项目缺少或带有无效 `creativeIntake` 时，前端安全地回退为空会话。
 
 图片字节只发送给本地 `/api/vision/analyze`。浏览器以稳定图片 ID 管理最多八个独立
@@ -52,7 +52,8 @@ brief 借用项通过 `source: {"type":"image","refId":"<图片 ID>"}` 追溯来
 100,000 字符；空字符串表示恢复默认。官网原始链接研究和不可变模型档案生命周期已
 接通。确认 brief 选择模型后，`model_adapted_decomposition.py` 只读取当前激活的精确
 档案版本/Hash 和已批准 claim，生成语义层与模型适配层分离的十三块；逐块审核确认后
-一次投影到工作台和 Recipe。LoRA-lite 档案仍由后续独立阶段接入。
+一次投影到工作台和 Recipe。LoRA-lite 以用户明确登记的 HTTPS 原始链接、版本、触发词、
+建议权重、兼容模型与冲突记录为边界；选择必须由用户触发，切换模型会清空选择并重新确认。
 
 拆解异步结果同时绑定项目修订、会话修订、模型 ID、档案版本和内容 Hash。更改 brief
 或模型会清除当前拆解并把 Recipe 标记为 stale；历史 Recipe 保持不可变。确认交接会把
@@ -105,14 +106,16 @@ Prompt Studio 当前已持久化：
   修改/撤销历史
 - 角色、画师收藏和结构块配方收藏
 - 设置
+- `resources.type=lora_profile` 的 LoRA-lite 元数据档案；Recipe 内嵌当次选择快照，目录
+  条目以后被编辑或删除也不会改写历史版本
 
 当前仅存在于前端会话内存：
 
 - “新建资源”创建的自建素材
 - 单结构块“保存为资源”的结果
 
-`resources` 表以及参考提示词库、中文释义缓存、可检索图片解析记录属于预留/目标
-能力；表或界面入口存在不代表完整持久化链路已经接通。
+`resources` 表中的其他自建素材、参考提示词库、中文释义缓存和可检索图片解析记录仍属
+预留/目标能力；LoRA-lite 已接通不代表这些资源类型也已完成。
 
 `词库原稿/` 负责人工维护随机元素，`scripts/build_random_wordlists.py` 负责严格校验并
 生成可重建审查目录。`GET /api/text/random-catalog` 可读目录；实验开关开启时，
@@ -121,8 +124,9 @@ Prompt Studio 当前已持久化：
 随机蓝图。
 
 逻辑备份模块只读取 Prompt Studio 数据记录，输出带 manifest、大小和 SHA-256 的 JSON
-或 ZIP。HTTP 恢复只写 `.prompt-studio-recovery/` 隔离数据库，不替换当前库；模型、
-LoRA、图片、API Key 和内部幂等账本不进入备份。
+或 ZIP。HTTP 恢复只写 `.prompt-studio-recovery/` 隔离数据库，不替换当前库；LoRA-lite
+元数据作为 `resources` 记录进入全库备份，但模型/LoRA 文件、图片二进制、API Key 和
+内部幂等账本不进入备份。
 
 ## SQLite 覆盖库
 
@@ -132,14 +136,14 @@ LoRA、图片、API Key 和内部幂等账本不进入备份。
 prototype/data/prompt_studio.db
 ```
 
-数据库使用 `PRAGMA user_version = 1` 和 Prompt Studio 专用
+数据库使用 `PRAGMA user_version = 2` 和 Prompt Studio 专用
 `application_id` 标记结构。服务启动时只初始化一次：
 
-1. 空库直接创建 v1，不生成人工故障回滚副本。
+1. 空库直接创建 v2，不生成人工故障回滚副本。
 2. 未登记版本的旧库先做完整性、表、字段、索引、唯一约束和外键检查；额外的
    trigger/view 也视为不兼容结构，在任何备份或写入前拒绝。
 3. 兼容旧库通过 SQLite backup API 写入 `.prompt-studio-recovery/`，验证人工故障
-   回滚副本后才在原库登记 v1。
+   回滚副本后才迁移并登记 v2。
 4. 未来版本、错误应用标识、残缺或损坏文件会在写入前拒绝。
 
 该人工故障回滚副本可能包含本机 API Key，已被 Git 忽略，只用于迁移故障时由用户
@@ -149,7 +153,7 @@ prototype/data/prompt_studio.db
 
 - `projects`：作品记录。
 - `prompt_versions`：作品提示词版本。
-- `resources`：用户自建素材和后续参考库资源的预留表；当前前端尚未写入。
+- `resources`：`type=lora_profile` 已用于 LoRA-lite；其余自建素材和参考库资源仍预留。
 - `favorites`：角色、画师和结构块配方等已接入收藏。
 - `settings`：用户偏好、本地路径及使用保留前缀的内部幂等账本。账本不会由设置 API
   返回，也不会进入逻辑备份。
@@ -189,6 +193,8 @@ prototype/data/prompt_studio.db
 - `PUT /api/model-profile-versions/<versionId>`
 - `POST /api/model-profile-versions/<versionId>/review`
 - `POST /api/model-profile-versions/<versionId>/activate`
+- `GET|POST /api/lora-profiles`
+- `GET|PUT|DELETE /api/lora-profiles/<id>`
 - `POST /api/recipe/resolve`
 
 确定性词库与 AI 局部编辑：

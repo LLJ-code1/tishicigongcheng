@@ -849,6 +849,36 @@
                 <label><span>Img2Img Denoise</span><input id="recipeDenoise" data-generation-param="denoiseStrength" type="number" min="0" max="1" step="0.01" placeholder="可选" /></label>
               </div>
               <p class="parameter-precedence">参数优先级：手动覆盖 › 任务预设 › LoRA 要求 › 模型默认。每项来源随版本保存。</p>
+              <section class="lora-profile-panel" id="loraProfilePanel" aria-labelledby="loraProfileTitle">
+                <div class="lora-profile-heading">
+                  <div>
+                    <strong id="loraProfileTitle">LoRA-lite 档案</strong>
+                    <span>选择必须由你确认；冲突项不会自动启用。</span>
+                  </div>
+                  <button class="secondary-button" id="newLoraProfile" type="button">新建档案</button>
+                </div>
+                <p class="lora-file-safety">只保存资料和配方引用，不会扫描、下载、移动或删除 LoRA 文件。</p>
+                <div class="lora-profile-list" id="loraProfileList" aria-live="polite">
+                  <p class="director-empty-state">正在读取 LoRA 档案……</p>
+                </div>
+                <form class="lora-profile-form" id="loraProfileForm">
+                  <input id="loraProfileId" type="hidden" />
+                  <input id="loraProfileUpdatedAt" type="hidden" />
+                  <label>名称<input id="loraProfileName" maxlength="512" required /></label>
+                  <label>版本<input id="loraProfileVersion" maxlength="128" required /></label>
+                  <label class="lora-wide">原始链接<input id="loraProfileSourceUrl" type="url" maxlength="2048" placeholder="https://…" required /></label>
+                  <label class="lora-wide">触发词<textarea id="loraProfileTriggerWords" maxlength="4096" placeholder="用逗号或换行分隔" required></textarea></label>
+                  <label>建议权重<input id="loraProfileWeight" type="number" min="0" max="2" step="0.05" value="0.8" required /></label>
+                  <label class="lora-wide">适用模型 ID<input id="loraCompatibleModels" maxlength="4096" placeholder="用逗号或换行分隔；例如 anima-1.1-v1" /></label>
+                  <label class="lora-wide">冲突 LoRA ID<input id="loraConflictProfiles" maxlength="4096" placeholder="用逗号或换行分隔" /></label>
+                  <label class="lora-wide">兼容/冲突说明<textarea id="loraCompatibilityNotes" maxlength="4096"></textarea></label>
+                  <label class="lora-wide">用户备注<textarea id="loraProfileNotes" maxlength="4096"></textarea></label>
+                  <div class="lora-profile-actions lora-wide">
+                    <button class="primary-button" id="saveLoraProfile" type="submit">保存档案</button>
+                    <button class="secondary-button" id="deleteLoraProfile" type="button" disabled>删除档案</button>
+                  </div>
+                </form>
+              </section>
               <div class="wordlist-console">
                 <div>
                   <strong>确定性词库计划</strong>

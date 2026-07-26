@@ -40,6 +40,8 @@ metadata-only `POST /api/workspace/commit`，与尚未保存的 Recipe 编辑相
 | `POST` | `/api/workspace/commit` | 原子保存项目头和可选完整版本 |
 | `GET` | `/api/model-profiles` | 列出模型档案 |
 | `GET` | `/api/model-profiles/<id>` | 读取单个模型档案及验证状态 |
+| `GET` / `POST` | `/api/lora-profiles` | 列出或创建 LoRA-lite 档案 |
+| `GET` / `PUT` / `DELETE` | `/api/lora-profiles/<id>` | 读取、CAS 更新或 CAS 删除 LoRA-lite 档案 |
 | `POST` | `/api/recipe/resolve` | 合成并校验 Recipe v1、参数来源和 Hash |
 | `GET` | `/api/text/random-catalog` | 读取词库目录、版本和发布门禁状态 |
 | `POST` | `/api/text/random-plan` | 计算确定性抽样计划，不调用文本模型 |
@@ -380,6 +382,38 @@ manual_override > task_preset > lora_requirement > model_default
 `generationReady=false`，尺寸状态为 `unverified`。调用方不得把候选尺寸展示成已验证
 推荐。
 
+### LoRA-lite 档案与 Recipe 快照
+
+创建档案只接受元数据，不接收本地路径、文件名、Hash 或页面正文：
+
+```http
+POST /api/lora-profiles
+Content-Type: application/json
+
+{
+  "id":"lora-rain-style",
+  "name":"Rain Style",
+  "version":"v1",
+  "sourceUrl":"https://example.com/lora/rain-style",
+  "triggerWords":["rain style"],
+  "suggestedWeight":0.8,
+  "notes":"雨夜质感",
+  "compatibleModelProfileIds":["anima-1.1-v1"],
+  "conflictLoraProfileIds":[],
+  "compatibilityNotes":"已人工核对基础模型"
+}
+```
+
+`sourceUrl` 必须是无凭据、无 fragment、默认端口的 HTTPS 链接。更新正文需携带
+`baseUpdatedAt`；删除用
+`DELETE /api/lora-profiles/<id>?baseUpdatedAt=<encoded timestamp>`。过期基线返回
+`409 lora_profile_conflict`，调用方必须刷新后让用户重新确认，不能覆盖新版本。
+
+只有用户在当前基础模型下明确选择的档案才进入 Recipe。切换模型会清空当前 LoRA
+选择；冲突或明确不兼容的档案不可选。保存时写入名称、版本、触发词、权重、兼容状态
+和原始链接快照，因此之后编辑或删除目录档案不会改变历史 Recipe。该功能不会扫描、
+下载、移动或删除 LoRA 文件，也不执行自动官网研究或组合推荐。
+
 ## 官网模型研究、审核与激活
 
 只提交注册 adapter 支持的原始 `https://` 模型页：
@@ -507,7 +541,8 @@ GET /api/backups/export?scope=project&projectId=<encoded-id>
 ```
 
 导出的 ZIP 是逻辑 JSON 包。它包含项目/版本，以及全库导出时的资源、收藏和安全设置；
-排除 API Key、接口 URL、内部幂等账本、模型、LoRA、图片和其他二进制文件。
+`lora_profile` 元数据随 resources 导出，但 API Key、接口 URL、内部幂等账本、模型/LoRA
+文件、图片和其他二进制文件仍被排除。
 
 校验和恢复接口接收原始备份字节，`Content-Type` 可为 `application/zip`、
 `application/json` 或 `application/octet-stream`：

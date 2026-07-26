@@ -86,6 +86,7 @@ const {
   normalizeDecompositionWarnings,
   buildDecompositionPreviewRenderModel,
   buildConfirmedDecompositionWorkbench,
+  buildLoraProfileRenderModel,
 } = require("../app.js");
 
 const DECOMPOSITION_BLOCK_IDS = [
@@ -6241,6 +6242,159 @@ test("confirmed decomposition handoff fails closed on stale semantic or model li
       /confirmed decomposition handoff is stale/
     );
   }
+});
+
+test("LoRA-lite selection is explicit conflict-safe and enters Recipe metadata", () => {
+  let state = createInitialState();
+  state.modelProfileId = "anima-1.1-v1";
+  state.loraProfiles = [
+    {
+      id: "lora-rain",
+      name: "Rain",
+      version: "v1",
+      sourceUrl: "https://example.com/rain",
+      triggerWords: ["rain style"],
+      suggestedWeight: 0.8,
+      notes: "",
+      compatibleModelProfileIds: ["anima-1.1-v1"],
+      conflictLoraProfileIds: ["lora-dry"],
+      compatibilityNotes: "Anima compatible",
+      createdAt: "2026-07-26T00:00:00+00:00",
+      updatedAt: "2026-07-26T00:00:00+00:00",
+    },
+    {
+      id: "lora-dry",
+      name: "Dry",
+      version: "v2",
+      sourceUrl: "https://example.com/dry",
+      triggerWords: ["dry style"],
+      suggestedWeight: 0.6,
+      notes: "",
+      compatibleModelProfileIds: ["other-model"],
+      conflictLoraProfileIds: ["lora-rain"],
+      compatibilityNotes: "Not for Anima",
+      createdAt: "2026-07-26T00:00:00+00:00",
+      updatedAt: "2026-07-26T00:00:00+00:00",
+    },
+  ];
+
+  let model = buildLoraProfileRenderModel(state);
+  assert.equal(model.items[0].selected, false);
+  assert.equal(model.items[0].canSelect, true);
+  assert.equal(model.items[1].canSelect, false);
+  assert.match(model.items[1].statusLabel, /模型不兼容/);
+
+  state = reduceState(state, { type: "TOGGLE_LORA_PROFILE", id: "lora-rain" });
+  assert.equal(state.loras.length, 1);
+  assert.deepEqual(state.loras[0], {
+    assetId: "lora-rain",
+    name: "Rain",
+    versionId: "v1",
+    filename: null,
+    sha256: null,
+    weight: 0.8,
+    triggerWords: ["rain style"],
+    enabled: true,
+    compatibilityStatus: "compatible",
+    sourceRefs: [{ type: "original_link", url: "https://example.com/rain" }],
+  });
+  model = buildLoraProfileRenderModel(state);
+  assert.equal(model.items[0].selected, true);
+  assert.equal(model.items[1].canSelect, false);
+
+  const unchangedRevision = state.workingRevision;
+  state = reduceState(state, { type: "TOGGLE_LORA_PROFILE", id: "lora-dry" });
+  assert.equal(state.workingRevision, unchangedRevision);
+  assert.equal(state.loras.length, 1);
+
+  const version = buildVersionPayload(state);
+  assert.deepEqual(version.metadata.loras, state.loras);
+
+  state.modelProfiles = [
+    { profileId: "anima-1.1-v1" },
+    { profileId: "other-model" },
+  ];
+  state = reduceState(state, {
+    type: "SELECT_MODEL_PROFILE",
+    profileId: "other-model",
+  });
+  assert.deepEqual(state.loras, []);
+  assert.match(state.toast, /已清空 LoRA 选择/);
+});
+
+test("LoRA-lite recovery keeps embedded snapshot when catalog entry was deleted", () => {
+  const state = createInitialState();
+  const lora = {
+    assetId: "lora-history",
+    name: "Historical",
+    versionId: "v1",
+    filename: null,
+    sha256: null,
+    weight: 0.7,
+    triggerWords: ["historical"],
+    enabled: true,
+    compatibilityStatus: "candidate",
+    sourceRefs: [{ type: "original_link", url: "https://example.com/history" }],
+  };
+  const project = {
+    id: "project-lora-history",
+    name: "LoRA history",
+    metadata: { workspaceBaseVersion: 1 },
+    versions: [{
+      id: "version-lora-history",
+      version: 1,
+      source: "manual",
+      positiveEn: "",
+      positiveZh: "",
+      negativeEn: "",
+      negativeZh: "",
+      blocks: [],
+      metadata: {
+        recipe: {
+          model: { profileId: "anima-1.1-v1" },
+          parameters: {},
+          loras: [lora],
+          instructionHistory: [],
+          sourceRefs: [],
+        },
+      },
+    }],
+  };
+  const recovered = hydrateProjectState(state, project);
+  assert.deepEqual(recovered.loras, [lora]);
+  assert.deepEqual(buildLoraProfileRenderModel(recovered).items[0], {
+    id: "lora-history",
+    name: "Historical",
+    version: "v1",
+    sourceUrl: "https://example.com/history",
+    triggerWords: ["historical"],
+    suggestedWeight: 0.7,
+    notes: "",
+    compatibleModelProfileIds: [],
+    conflictLoraProfileIds: [],
+    compatibilityNotes: "档案已删除；保留历史 Recipe 快照",
+    updatedAt: "",
+    selected: true,
+    canSelect: true,
+    statusLabel: "历史快照",
+    historical: true,
+  });
+});
+
+test("LoRA-lite DOM exposes editor list and explicit file-safety notice", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const source = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+  for (const id of [
+    "loraProfilePanel", "loraProfileList", "loraProfileForm",
+    "loraProfileName", "loraProfileVersion", "loraProfileSourceUrl",
+    "loraProfileTriggerWords", "loraProfileWeight", "loraProfileNotes",
+    "loraCompatibleModels", "loraConflictProfiles", "loraCompatibilityNotes",
+    "saveLoraProfile", "deleteLoraProfile",
+  ]) assert.match(html, new RegExp(`id="${id}"`));
+  assert.match(html, /不会扫描、下载、移动或删除 LoRA 文件/);
+  assert.match(source, /button\.dataset\.loraToggle/);
+  assert.match(source, /loraProfileForm"\)\?\.addEventListener\("submit"/);
+  assert.match(source, /loadLoraProfiles\(\);/);
 });
 
 test("decomposition warning labels distinguish legacy notices from structured evidence", () => {

@@ -3706,6 +3706,88 @@ select:focus {
   font-style: normal;
 }
 
+.lora-profile-panel {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-soft);
+}
+
+.lora-profile-heading,
+.lora-profile-actions,
+.lora-profile-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.lora-profile-heading span,
+.lora-file-safety,
+.lora-profile-card small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.lora-file-safety {
+  margin: 8px 0 12px;
+}
+
+.lora-profile-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.lora-profile-card {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.lora-profile-card.is-selected {
+  border-color: var(--teal);
+}
+
+.lora-profile-card.is-blocked strong::after {
+  content: " · 不可启用";
+  color: var(--danger);
+}
+
+.lora-profile-card-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.lora-profile-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.lora-profile-form label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.lora-profile-form input,
+.lora-profile-form textarea {
+  width: 100%;
+}
+
+.lora-profile-form textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.lora-wide {
+  grid-column: 1 / -1;
+}
+
 .decomposition-preview-panel {
   container-type: inline-size;
   display: grid;

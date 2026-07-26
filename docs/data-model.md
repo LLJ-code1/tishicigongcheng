@@ -14,9 +14,9 @@ metadata-only workspace commit 保存，不会伪造 Recipe 版本。
 
 ## 数据库结构版本
 
-Prompt Studio SQLite 当前为 schema v1，并使用专用 `application_id` 防止把其他
-SQLite 文件误当工作区。首次启动对兼容的旧 v0 库先生成本地精确人工故障回滚副本，
-再只登记结构版本；空库直接创建 v1。未来版本、残缺结构、错误应用标识和完整性失败
+Prompt Studio SQLite 当前为 schema v2，并使用专用 `application_id` 防止把其他
+SQLite 文件误当工作区。首次启动对兼容的旧 v0/v1 库先生成本地精确人工故障回滚副本，
+再迁移并登记结构版本；空库直接创建 v2。未来版本、残缺结构、错误应用标识和完整性失败
 会在写入前拒绝。
 
 `.prompt-studio-recovery/` 人工故障回滚副本可能含本机密钥，只用于迁移故障时由用户
@@ -56,7 +56,7 @@ SQLite 文件误当工作区。首次启动对兼容的旧 v0 库先生成本地
 创意意图会话是项目元数据中的一个版本化领域对象，而不是新 SQLite 表。保存时前端把
 规范化后的值放入 `project.metadata.creativeIntake`，并通过
 `POST /api/workspace/commit` 与项目头（以及可选的提示词版本）一同在一个事务中提交。
-因此 SQLite 仍为 schema v1，`PRAGMA user_version` 不变；项目重开、逻辑备份和隔离恢复
+该领域对象本身不要求新增表；项目重开、逻辑备份和隔离恢复
 会自然保留这份元数据。
 
 顶层对象的 `schemaVersion` 固定为 `1`，且不接受未知字段：
@@ -176,7 +176,8 @@ Recipe 不是新 SQLite 表，而是随每个不可变提示词版本保存的�
 - `model`：档案 ID、模型名、精确版本 ID 和验证状态
 - `prompts`：中英文正向/负向提示词
 - `blocks`：十三个规范块
-- `loras`
+- `loras`：当次明确选择的 LoRA 快照，含档案 ID、名称/版本、权重、触发词、兼容状态
+  和原始链接；不依赖当前目录重新解析
 - `parameters`：sampler、scheduler、steps、CFG、resolution、generationSeed 和可选
   denoiseStrength；每项保存值与来源
 - `randomPlan`：目录/Hash/抽样器/映射版本、Seed、抽中项、冲突和重抽轨迹
@@ -220,9 +221,9 @@ claim 的 `application_status` 初始为 `proposed`，只有 `approved` 的 allo
 
 ## resources
 
-用户资源预留表，目标用于保存“我的素材”、参考提示词库和本地覆盖资源。当前前端的
-“新建资源”和结构块“保存为资源”只加入本次页面会话内存，尚未写入该表；持久参考
-提示词库的界面也尚未上线。不要把表已存在等同于对应产品链路已接通。
+通用用户资源表。`type=lora_profile` 已用于 LoRA-lite 元数据档案；前端可创建、编辑、
+删除并用 `updated_at` 做 CAS。其他“新建资源”、单块素材和持久参考提示词库仍只在
+会话或后续范围，不能因 LoRA 这一种类型已接通而视为全部资源链路完成。
 
 关键字段：
 
@@ -237,6 +238,12 @@ claim 的 `application_status` 初始为 `proposed`，只有 `approved` 的 allo
 - `metadata_json`
 - `created_at`
 - `updated_at`
+
+LoRA-lite 的 `metadata_json` 保存 `version`、HTTPS `sourceUrl`、`triggerWords`、
+`suggestedWeight`（0–2）、`notes`、`compatibleModelProfileIds`、
+`conflictLoraProfileIds` 和 `compatibilityNotes`。档案不保存文件路径、文件名或 Hash，
+不会扫描、下载、移动或删除 LoRA 文件。删除目录档案不会删除版本 Recipe 中已经内嵌的
+LoRA 快照。
 
 ## favorites
 
@@ -309,7 +316,8 @@ SQLite，GET 返回空值与 `*Configured` 标记；空白 PUT 不会清除已�
 记录。全库可包含 projects/versions、resources、favorites 和安全设置；单项目只包含
 目标项目及版本。每个文件记录大小和 SHA-256。
 
-备份明确排除 API Key、接口 URL、内部幂等账本、模型、LoRA、图片和其他二进制资产。
+备份明确排除 API Key、接口 URL、内部幂等账本、模型/LoRA 文件、图片和其他二进制
+资产；全库备份仍包含安全的 `lora_profile` 元数据记录。
 检查阶段不打开数据库；恢复只允许显式非默认目标，现有目标在一个事务中写入，新目标
 通过临时库验证后原子替换。HTTP 层始终恢复到 `.prompt-studio-recovery/` 隔离库并返回
 `activated=false`。
