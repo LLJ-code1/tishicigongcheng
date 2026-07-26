@@ -683,6 +683,67 @@ class PromptStudioServerTests(unittest.TestCase):
         self.assertTrue(payload["snapshots"])
         self.assertTrue(payload["claims"])
         self.assertEqual(payload["draftVersion"]["lifecycleStatus"], "draft")
+        error = self.assert_http_error_json(
+            Request(
+                f"{self.base_url}/api/model-profile-versions/{payload['draftVersion']['versionId']}",
+                data=json.dumps({
+                    "claimDecisions": {},
+                    "manualFields": {"parameters.defaults.steps": 99},
+                    "reviewNote": "must be rejected",
+                }).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="PUT",
+            ),
+            400,
+        )
+        self.assertEqual(error["code"], "unsupported_field")
+        invalid_updates = (
+            (
+                {
+                    "claimDecisions": {"missing-claim": "approved"},
+                    "manualFields": {},
+                    "reviewNote": "unknown claim",
+                },
+                "unknown_claim",
+            ),
+            (
+                {
+                    "claimDecisions": {
+                        payload["claims"][0]["claimId"]: "invented"
+                    },
+                    "manualFields": {},
+                    "reviewNote": "invalid decision",
+                },
+                "invalid_application_status",
+            ),
+            (
+                {
+                    "claimDecisions": {},
+                    "manualFields": {},
+                    "reviewNote": "snapshot tamper",
+                    "snapshots": [{"extractedText": "changed"}],
+                },
+                "invalid_request",
+            ),
+        )
+        for update, expected_code in invalid_updates:
+            with self.subTest(expected_code=expected_code):
+                rejected = self.assert_http_error_json(
+                    Request(
+                        f"{self.base_url}/api/model-profile-versions/{payload['draftVersion']['versionId']}",
+                        data=json.dumps(update).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="PUT",
+                    ),
+                    400,
+                )
+                self.assertEqual(rejected["code"], expected_code)
+        self.assert_http_error_json(
+            Request(
+                f"{self.base_url}/api/model-research/{payload['run']['runId']}/extra"
+            ),
+            404,
+        )
 
     def test_model_research_review_activation_and_catalog_lifecycle(self):
         source_url = "https://civitai.com/models/934764/example"

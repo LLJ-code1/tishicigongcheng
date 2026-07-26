@@ -85,6 +85,8 @@ from model_profiles import (
     model_reference,
     profile_default_parameters,
     validated_resolution_presets,
+    validate_researched_model_profile,
+    ModelProfileError,
 )
 import model_profile_store
 import model_research
@@ -1515,6 +1517,14 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
                 {"error": str(error), "code": error.code},
                 409 if error.code == "active_version_changed" else 400,
             )
+        except ModelProfileError:
+            self._send_json_if_possible(
+                {
+                    "error": "researched model profile is invalid",
+                    "code": "invalid_model_profile",
+                },
+                422,
+            )
         except LockedConflictError as error:
             detail = error.as_dict()
             self._send_json_if_possible(
@@ -1689,9 +1699,19 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             return self.handle_model_profiles_get(
                 unquote(parsed.path.rsplit("/", 1)[-1])
             )
-        if parsed.path.startswith("/api/model-research/"):
+        research_parts = parsed.path.split("/")
+        if (
+            len(research_parts) == 4
+            and research_parts[1:3] == ["api", "model-research"]
+            and research_parts[3]
+        ):
             return self.handle_model_research_get(
-                unquote(parsed.path.rsplit("/", 1)[-1])
+                unquote(research_parts[3])
+            )
+        if parsed.path.startswith("/api/model-research/"):
+            return self.send_json(
+                {"error": "research route not found", "code": "not_found"},
+                status=404,
             )
         if parsed.path == "/api/text/random-catalog":
             return self.handle_random_catalog_get()
@@ -2030,9 +2050,12 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         researched = model_profile_store.list_active_profile_versions(
             db_path=prompt_db.DEFAULT_DB_PATH
         )
-        researched_items = [
-            self._researched_profile_api_item(version) for version in researched
-        ]
+        researched_items = []
+        for version in researched:
+            try:
+                researched_items.append(self._researched_profile_api_item(version))
+            except ModelProfileError:
+                continue
         if profile_id:
             for item in researched_items:
                 if item["profileId"] == profile_id:
@@ -2063,6 +2086,7 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         profile = deepcopy(version["profile"])
         profile_id = profile.pop("id", profile.get("profileId"))
         profile["profileId"] = profile_id
+        profile = validate_researched_model_profile(profile)
         research = profile.get("metadata", {}).get("research", {})
         warnings = list(research.get("warnings", []))
         evidence = profile.get("evidence", [])
@@ -2081,6 +2105,12 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             "warnings": warnings,
             "generationReady": bool(validated),
         }
+
+    @staticmethod
+    def _validate_stored_researched_profile(profile: dict) -> dict:
+        candidate = deepcopy(profile)
+        candidate["profileId"] = candidate.pop("id", candidate.get("profileId"))
+        return validate_researched_model_profile(candidate)
 
     def handle_model_research_create(self) -> None:
         payload = self.read_json()
@@ -2111,6 +2141,7 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
                 *profile["metadata"]["research"]["warnings"],
                 "retryable_fetch_failure",
             ]))
+        self._validate_stored_researched_profile(profile)
         draft = model_profile_store.create_profile_draft(
             run["runId"], profile, result.claims,
             db_path=prompt_db.DEFAULT_DB_PATH,
@@ -2166,7 +2197,14 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             raise model_profile_store.ProfileStoreError(
                 "not_draft", "only a draft may be revised"
             )
-        allowed_manual = set(model_research.ALLOWED_CLAIM_PATHS) | {"displayName"}
+        allowed_manual = {
+            "displayName",
+            "model.family",
+            "model.versionName",
+            "model.versionId",
+            "model.baseModel",
+            "notes",
+        }
         if any(path not in allowed_manual for path in manual):
             raise model_research.ResearchError(
                 "unsupported_field", "manual field is not allowlisted"
@@ -2180,7 +2218,8 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
                 ).values()
             ]
         projection_manual = {
-            path: value for path, value in manual.items() if path != "displayName"
+            path: value for path, value in manual.items()
+            if path not in {"displayName", "notes"}
         }
         projected, _ = model_research.apply_claim_decisions(
             parent["profile"], claims, decisions, projection_manual
@@ -2196,8 +2235,16 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
                     "invalid_request", "displayName is invalid"
                 )
             projected["displayName"] = display_name.strip()
+        if "notes" in manual:
+            notes = manual["notes"]
+            if not isinstance(notes, str) or len(notes) > 4096:
+                raise model_research.ResearchError(
+                    "invalid_request", "notes is invalid"
+                )
+            projected.setdefault("metadata", {})["notes"] = notes
         projected["id"] = parent["profileId"]
         projected.pop("profileId", None)
+        self._validate_stored_researched_profile(projected)
         item = model_profile_store.revise_profile_draft(
             version_id, projected, decisions, note,
             db_path=prompt_db.DEFAULT_DB_PATH,
@@ -2214,9 +2261,18 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             raise model_profile_store.ProfileStoreError(
                 "unknown_version", "profile version does not exist"
             )
+        self._validate_stored_researched_profile(version["profile"])
         model = version["profile"].get("model", {})
-        if not isinstance(model.get("versionId"), int) or isinstance(
-            model.get("versionId"), bool
+        display_name = version["profile"].get("displayName")
+        version_name = model.get("versionName")
+        exact_model_version_id = model.get("versionId")
+        if (
+            not isinstance(display_name, str)
+            or not display_name.strip()
+            or not isinstance(version_name, str)
+            or not version_name.strip()
+            or not isinstance(exact_model_version_id, int)
+            or isinstance(exact_model_version_id, bool)
         ):
             raise model_profile_store.ProfileStoreError(
                 "unresolved_model_identity",
@@ -2235,6 +2291,14 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             raise model_research.ResearchError(
                 "invalid_request", "expectedActiveVersionId is required"
             )
+        version = model_profile_store.get_profile_version(
+            version_id, db_path=prompt_db.DEFAULT_DB_PATH
+        )
+        if version is None:
+            raise model_profile_store.ProfileStoreError(
+                "unknown_version", "profile version does not exist"
+            )
+        self._validate_stored_researched_profile(version["profile"])
         item = model_profile_store.activate_profile_version(
             version_id, payload["expectedActiveVersionId"],
             db_path=prompt_db.DEFAULT_DB_PATH,
