@@ -128,6 +128,13 @@ def _source(value: object, image_ids: set[str], label: str) -> dict:
     return {"type": source_type, "refId": ref_id}
 
 
+def _image_name(value: object, label: str) -> str:
+    name = _text(value, label, maximum=512, allow_empty=False)
+    if "/" in name or "\\" in name or ":" in name or name in {".", ".."}:
+        _error("invalid_image_name", f"{label} must be a plain filename, not a path")
+    return name
+
+
 def _image(value: object, label: str) -> dict:
     image = _mapping(value, label)
     _reject_unknown_keys(
@@ -140,7 +147,7 @@ def _image(value: object, label: str) -> dict:
     )
     return {
         "id": _identifier(image.get("id"), f"{label}.id"),
-        "name": _text(image.get("name"), f"{label}.name", maximum=512, allow_empty=False),
+        "name": _image_name(image.get("name"), f"{label}.name"),
         "mimeType": _text(
             image.get("mimeType"), f"{label}.mimeType", maximum=128, allow_empty=False
         ),

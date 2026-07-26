@@ -162,6 +162,24 @@ class PromptStudioCreativeIntakeTests(unittest.TestCase):
         with self.assertRaisesRegex(creative_intake.CreativeIntakeValidationError, "unsupported fields"):
             creative_intake.normalize_creative_intake(value)
 
+    def test_normalize_rejects_image_paths_and_sensitive_image_fields(self):
+        cases = (
+            ("windows path", lambda value: value.__setitem__("name", r"C:\\references\\image.png")),
+            ("posix path", lambda value: value.__setitem__("name", "/tmp/image.png")),
+            ("directory traversal", lambda value: value.__setitem__("name", "../image.png")),
+            ("image bytes", lambda value: value.__setitem__("bytes", "not-allowed")),
+            ("filesystem path", lambda value: value.__setitem__("path", "reference.png")),
+            ("api key", lambda value: value.__setitem__("apiKey", "secret")),
+        )
+        for label, mutate in cases:
+            with self.subTest(label=label):
+                value = creative_intake.empty_creative_intake()
+                item = image("image-1")
+                mutate(item)
+                value["inputs"]["images"] = [item]
+                with self.assertRaises(creative_intake.CreativeIntakeValidationError):
+                    creative_intake.normalize_creative_intake(value)
+
 
 def image(identifier):
     return {
