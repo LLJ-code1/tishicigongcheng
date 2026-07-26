@@ -233,6 +233,12 @@
       workingRevision: 0,
       projectRevision: 0,
       creativeIntake: emptyCreativeIntake(),
+      directorMessages: [],
+      directorBusy: false,
+      directorError: "",
+      directorImageEvidence: null,
+      directorImageAnalysisStatus: "idle",
+      directorRequestRevision: 0,
       textMode: "expand",
       draftInput: "",
       randomSeed: null,
@@ -302,6 +308,7 @@
         apiTextUrl: "",
         apiTextModel: "",
         apiTextKey: "",
+        creativeDirectorSkillOverride: "",
         expansionLevel: "balanced",
         visionProvider: "local",
         residency: "smart",
@@ -366,6 +373,311 @@
     "ai",
     "model_rule",
   ]);
+
+  function creativeDirectorStageView(stage) {
+    const index = CREATIVE_INTAKE_STAGE_ORDER.indexOf(stage);
+    const safeIndex = index < 0 ? 0 : index;
+    return {
+      showDirections: true,
+      showBrief:
+        safeIndex >= CREATIVE_INTAKE_STAGE_ORDER.indexOf("brief_draft"),
+      showModelGate:
+        safeIndex >= CREATIVE_INTAKE_STAGE_ORDER.indexOf("brief_confirmed"),
+      canContinue:
+        safeIndex >= CREATIVE_INTAKE_STAGE_ORDER.indexOf("model_selected"),
+      showWorkbench:
+        safeIndex >= CREATIVE_INTAKE_STAGE_ORDER.indexOf("model_selected"),
+    };
+  }
+
+  function canConfirmCreativeBrief(value) {
+    const intake = normalizeCreativeIntake(value);
+    return Boolean(
+      intake.stage === "brief_draft" &&
+        intake.brief &&
+        intake.brief.status === "draft" &&
+        !intake.brief.openQuestions.length &&
+        !intake.conflicts.some((conflict) => conflict.status === "open")
+    );
+  }
+
+  function reconstructDirectorMessages(value) {
+    const intake = normalizeCreativeIntake(value);
+    const messages = [];
+    if (intake.inputs.text.trim()) {
+      messages.push({ role: "user", text: intake.inputs.text.trim() });
+    }
+    if (intake.directions.length) {
+      messages.push({
+        role: "assistant",
+        text: `创作方向：${intake.directions
+          .map((direction) =>
+            `${direction.label}${direction.summary ? ` — ${direction.summary}` : ""}`
+          )
+          .join("；")}`,
+      });
+    }
+    const selected = intake.directions.find(
+      (direction) => direction.id === intake.selectedDirectionId
+    );
+    if (selected) {
+      messages.push({
+        role: "system",
+        text: `已选择方向：${selected.label}`,
+      });
+    }
+    if (intake.brief) {
+      messages.push({
+        role: "assistant",
+        text: `创作简报：${intake.brief.summary}`,
+      });
+      if (intake.brief.status === "confirmed") {
+        messages.push({
+          role: "system",
+          text: "创作简报已确认并锁定。",
+        });
+      }
+    }
+    if (intake.selectedModelProfileId) {
+      messages.push({
+        role: "system",
+        text: `已选择目标模型：${intake.selectedModelProfileId}`,
+      });
+    }
+    return messages;
+  }
+
+  function creativeIntakeRequestGuard(state, sessionId) {
+    return {
+      sessionId,
+      projectRevision: state.projectRevision,
+      creativeIntakeRevision: state.creativeIntake?.revision,
+    };
+  }
+
+  function buildCreativeDirectorRequest(state, sessionId, message) {
+    const normalizedMessage = String(message ?? "").trim();
+    if (!normalizedMessage) {
+      throw new TypeError("creative director message must not be empty");
+    }
+    const evidence = state.directorImageEvidence
+      ? [clone(state.directorImageEvidence)]
+      : [];
+    return {
+      path: "/api/creative-intake/director",
+      guard: creativeIntakeRequestGuard(state, sessionId),
+      body: {
+        current: normalizeCreativeIntake(state.creativeIntake),
+        message: normalizedMessage,
+        imageEvidence: evidence,
+        provider: state.settings?.textProvider || "local",
+        skillOverride:
+          typeof state.settings?.creativeDirectorSkillOverride === "string"
+            ? state.settings.creativeDirectorSkillOverride
+            : "",
+      },
+    };
+  }
+
+  function buildCreativeIntakeTransitionRequest(
+    state,
+    sessionId,
+    action
+  ) {
+    if (!action || typeof action !== "object" || Array.isArray(action)) {
+      throw new TypeError("creative intake action must be an object");
+    }
+    if (action.type === "select_model") {
+      const profileId = action.modelProfileId;
+      if (
+        !state.modelProfiles?.some(
+          (profile) => profile.profileId === profileId
+        )
+      ) {
+        throw new TypeError("select_model requires a loaded model profile");
+      }
+    }
+    return {
+      path: "/api/creative-intake/transition",
+      guard: creativeIntakeRequestGuard(state, sessionId),
+      body: {
+        current: normalizeCreativeIntake(state.creativeIntake),
+        action: clone(action),
+      },
+    };
+  }
+
+  function sortedJsonValue(value) {
+    if (Array.isArray(value)) return value.map(sortedJsonValue);
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.keys(value)
+          .sort()
+          .map((key) => [key, sortedJsonValue(value[key])])
+      );
+    }
+    return value;
+  }
+
+  function requireCanonicalCreativeIntake(value) {
+    const normalized = normalizeCreativeIntake(value);
+    if (
+      !value ||
+      typeof value !== "object" ||
+      Array.isArray(value) ||
+      JSON.stringify(sortedJsonValue(value)) !==
+        JSON.stringify(sortedJsonValue(normalized))
+    ) {
+      throw new TypeError(
+        "creative director response requires a canonical creative intake item"
+      );
+    }
+    return normalized;
+  }
+
+  function acceptCreativeIntakeResponse(
+    state,
+    request,
+    sessionId,
+    response,
+    userMessage = ""
+  ) {
+    if (!isCreativeIntakeResponseCurrent(request, sessionId, state)) {
+      return { accepted: false, state };
+    }
+    if (!response || typeof response !== "object" || Array.isArray(response)) {
+      throw new TypeError("creative intake response must be an object");
+    }
+    const canonicalItem = requireCanonicalCreativeIntake(response.item);
+    let next = state;
+    const normalizedUserMessage = String(userMessage ?? "").trim();
+    if (normalizedUserMessage) {
+      next = reduceState(next, {
+        type: "DIRECTOR_MESSAGE_ADDED",
+        message: { role: "user", text: normalizedUserMessage },
+      });
+    }
+    const assistantMessage = String(response.message ?? "").trim();
+    if (assistantMessage) {
+      next = reduceState(next, {
+        type: "DIRECTOR_MESSAGE_ADDED",
+        message: { role: "assistant", text: assistantMessage },
+      });
+    }
+    next = reduceState(next, {
+      type: "CREATIVE_INTAKE_REPLACED",
+      item: canonicalItem,
+    });
+    return { accepted: true, state: next };
+  }
+
+  function buildDirectorRenderModel(state) {
+    const intake = normalizeCreativeIntake(state.creativeIntake);
+    const stageView = creativeDirectorStageView(intake.stage);
+    return {
+      stage: intake.stage,
+      messages:
+        Array.isArray(state.directorMessages) &&
+        state.directorMessages.length
+          ? clone(state.directorMessages)
+          : reconstructDirectorMessages(intake),
+      busy: Boolean(state.directorBusy),
+      error:
+        typeof state.directorError === "string"
+          ? state.directorError
+          : "",
+      imageEvidence: state.directorImageEvidence
+        ? clone(state.directorImageEvidence)
+        : null,
+      imageAnalysisStatus:
+        state.directorImageAnalysisStatus || "idle",
+      directions: intake.directions.map((direction) => ({
+        ...clone(direction),
+        selected: direction.id === intake.selectedDirectionId,
+      })),
+      brief: intake.brief ? clone(intake.brief) : null,
+      conflicts: clone(intake.conflicts),
+      canConfirmBrief: canConfirmCreativeBrief(intake),
+      showModelGate: stageView.showModelGate,
+      canContinue: stageView.canContinue,
+      showWorkbench:
+        stageView.showWorkbench && state.view !== "home",
+      selectedModelProfileId: intake.selectedModelProfileId,
+      modelProfiles: (Array.isArray(state.modelProfiles)
+        ? state.modelProfiles
+        : []
+      )
+        .filter(
+          (profile) =>
+            profile && typeof profile.profileId === "string"
+        )
+        .map((profile) => ({
+          id: profile.profileId,
+          label:
+            typeof profile.displayName === "string" &&
+            profile.displayName.trim()
+              ? profile.displayName
+              : profile.profileId,
+          readiness:
+            typeof profile.readiness === "string"
+              ? profile.readiness
+              : "",
+          selected:
+            profile.profileId === intake.selectedModelProfileId,
+        })),
+    };
+  }
+
+  async function performCreativeIntakeRequest({
+    getState,
+    sessionId,
+    request,
+    userMessage = "",
+    apiCall,
+    signal,
+  }) {
+    if (typeof getState !== "function" || typeof apiCall !== "function") {
+      throw new TypeError(
+        "creative intake request requires state and API functions"
+      );
+    }
+    const response = await apiCall(request.path, {
+      method: "POST",
+      body: JSON.stringify(request.body),
+      ...(signal ? { signal } : {}),
+    });
+    return acceptCreativeIntakeResponse(
+      getState(),
+      request.guard,
+      sessionId,
+      response,
+      userMessage
+    );
+  }
+
+  async function persistCreativeIntakeRevision({
+    getState,
+    save,
+    targetProjectRevision,
+    waitedForFrozenSave = false,
+  }) {
+    if (typeof getState !== "function" || typeof save !== "function") {
+      throw new TypeError(
+        "creative intake persistence requires state and save functions"
+      );
+    }
+    let result = await save();
+    const current = getState();
+    if (
+      result &&
+      waitedForFrozenSave &&
+      current.hasUnsavedProjectChanges &&
+      Number(current.projectRevision) >= Number(targetProjectRevision)
+    ) {
+      result = await save();
+    }
+    return result;
+  }
 
   function normalizeCreativeIntake(value) {
     function fail() {
@@ -771,6 +1083,12 @@
     next.creativeIntake = projectMetadataIsCurrent
       ? normalizeCreativeIntake(metadata.creativeIntake)
       : emptyCreativeIntake();
+    next.directorMessages = reconstructDirectorMessages(next.creativeIntake);
+    next.directorBusy = false;
+    next.directorError = "";
+    next.directorImageEvidence = null;
+    next.directorImageAnalysisStatus = "idle";
+    next.directorRequestRevision = 0;
     next.projectId = typeof project?.id === "string" ? project.id : null;
     next.projectName =
       typeof project?.name === "string" && project.name.trim()
@@ -1508,6 +1826,7 @@
         next.toast = next.openError;
         return next;
       case "WORKSPACE_REQUESTS_CANCELLED":
+        next.directorBusy = false;
         next.textGenerating = false;
         next.textDecomposing = false;
         next.translatingPending = false;
@@ -1613,8 +1932,70 @@
         next.draftInput = action.value;
         markProjectChanged(next);
         return next;
+      case "DIRECTOR_MESSAGE_ADDED": {
+        const role = action.message?.role;
+        const text =
+          typeof action.message?.text === "string"
+            ? action.message.text.trim()
+            : "";
+        if (!["user", "assistant", "system"].includes(role) || !text) {
+          return next;
+        }
+        next.directorMessages = [
+          ...(Array.isArray(next.directorMessages)
+            ? next.directorMessages
+            : []),
+          { role, text: text.slice(0, 20_000) },
+        ].slice(-100);
+        return next;
+      }
+      case "DIRECTOR_REQUEST_STARTED":
+        next.directorBusy = true;
+        next.directorError = "";
+        next.directorRequestRevision =
+          Number(next.directorRequestRevision || 0) + 1;
+        return next;
+      case "DIRECTOR_REQUEST_SUCCEEDED":
+        next.directorBusy = false;
+        next.directorError = "";
+        return next;
+      case "DIRECTOR_REQUEST_FAILED":
+        next.directorBusy = false;
+        next.directorError =
+          action.error || "创意导演请求失败，请稍后重试";
+        return next;
+      case "DIRECTOR_IMAGE_EVIDENCE_SET":
+        next.directorImageEvidence = action.item
+          ? clone(action.item)
+          : null;
+        return next;
+      case "DIRECTOR_IMAGE_ANALYSIS_STATUS_CHANGED":
+        next.directorImageAnalysisStatus =
+          typeof action.status === "string" ? action.status : "idle";
+        return next;
+      case "ENTER_CREATIVE_WORKBENCH":
+        if (
+          creativeDirectorStageView(next.creativeIntake?.stage).canContinue
+        ) {
+          next.view = "text";
+          if (
+            !String(next.draftInput || "").trim() &&
+            next.creativeIntake.brief?.summary
+          ) {
+            next.draftInput = next.creativeIntake.brief.summary;
+            markProjectChanged(next);
+          }
+          next.toast =
+            "已进入现有工作台；模型适配拆解尚未生成，可使用现有拆解与扩写工具继续。";
+        }
+        return next;
       case "CREATIVE_INTAKE_REPLACED":
         next.creativeIntake = normalizeCreativeIntake(action.item);
+        if (
+          !creativeDirectorStageView(next.creativeIntake.stage).canContinue
+        ) {
+          next.view = "home";
+        }
         markProjectChanged(next);
         return next;
       case "SET_GENERATION_PARAMETER": {
@@ -2519,6 +2900,15 @@
     hydrateProjectState,
     emptyCreativeIntake,
     normalizeCreativeIntake,
+    reconstructDirectorMessages,
+    buildCreativeDirectorRequest,
+    buildCreativeIntakeTransitionRequest,
+    acceptCreativeIntakeResponse,
+    canConfirmCreativeBrief,
+    creativeDirectorStageView,
+    buildDirectorRenderModel,
+    performCreativeIntakeRequest,
+    persistCreativeIntakeRevision,
     persistedVersionSnapshot,
     buildProjectPayload,
     buildVersionPayload,
@@ -2582,6 +2972,7 @@
   let generationProgressTimer = null;
   let activeTextAbort = null;
   let activeVisionAbort = null;
+  let activeDirectorAbort = null;
   const workspaceRequestAborts = new Set();
   let uploadedImageFile = null;
   let imagePreviewUrl = "";
@@ -2903,6 +3294,7 @@
     workspaceRequestAborts.clear();
     activeTextAbort = null;
     activeVisionAbort = null;
+    activeDirectorAbort = null;
     editPreviewRecipe = null;
     editPreviewPayload = null;
     editPreviewRevision = null;
@@ -3206,6 +3598,211 @@
         type: "MODEL_PROFILES_FAILED",
         error: error.message || "出图模型档案加载失败",
       });
+    }
+  }
+
+  function beginCreativeIntakeRequest(request) {
+    const controller = new AbortController();
+    activeDirectorAbort = controller;
+    workspaceRequestAborts.add(controller);
+    return { ...request, controller };
+  }
+
+  function finishCreativeIntakeRequest(request) {
+    workspaceRequestAborts.delete(request.controller);
+    if (activeDirectorAbort === request.controller) {
+      activeDirectorAbort = null;
+    }
+  }
+
+  async function persistAcceptedCreativeIntake(
+    targetProjectRevision
+  ) {
+    let waitedForFrozenSave = Boolean(saveInFlight);
+    if (!waitedForFrozenSave) {
+      try {
+        waitedForFrozenSave = Boolean(readPendingSaveJournal());
+      } catch {
+        // saveCurrentProject reports corrupt or unavailable recovery state.
+      }
+    }
+    return app.persistCreativeIntakeRevision({
+      getState: () => state,
+      save: () => saveCurrentProject(),
+      targetProjectRevision,
+      waitedForFrozenSave,
+    });
+  }
+
+  async function sendCreativeDirectorMessage() {
+    if (state.directorBusy) return;
+    const input = $("#directorMessageInput");
+    const message = input?.value?.trim() || "";
+    if (!message) {
+      state = app.reduceState(state, {
+        type: "DIRECTOR_REQUEST_FAILED",
+        error: "请先描述你想创作的画面。",
+      });
+      render();
+      return;
+    }
+
+    let request;
+    try {
+      request = beginCreativeIntakeRequest(
+        app.buildCreativeDirectorRequest(
+          state,
+          workspaceSessionId,
+          message
+        )
+      );
+    } catch (error) {
+      state = app.reduceState(state, {
+        type: "DIRECTOR_REQUEST_FAILED",
+        error: error.message || "创意导演请求无效",
+      });
+      render();
+      return;
+    }
+
+    state = app.reduceState(state, { type: "DIRECTOR_REQUEST_STARTED" });
+    render();
+    try {
+      const result = await app.performCreativeIntakeRequest({
+        getState: () => state,
+        sessionId: workspaceSessionId,
+        request,
+        userMessage: message,
+        apiCall: apiJson,
+        signal: request.controller.signal,
+      });
+      if (!result.accepted) {
+        if (request.guard.sessionId === workspaceSessionId) {
+          state = app.reduceState(state, {
+            type: "DIRECTOR_REQUEST_SUCCEEDED",
+          });
+          render();
+        }
+        return;
+      }
+      state = result.state;
+      const acceptedProjectRevision = state.projectRevision;
+      if (input) input.value = "";
+      render();
+      await persistAcceptedCreativeIntake(acceptedProjectRevision);
+      state = app.reduceState(state, {
+        type: "DIRECTOR_REQUEST_SUCCEEDED",
+      });
+      render();
+    } catch (error) {
+      if (request.guard.sessionId !== workspaceSessionId) return;
+      state = app.reduceState(state, {
+        type: "DIRECTOR_REQUEST_FAILED",
+        error: isAbortError(error)
+          ? "已停止本次创意导演请求；输入内容仍保留。"
+          : error.message || "创意导演请求失败，请稍后重试",
+      });
+      render();
+    } finally {
+      finishCreativeIntakeRequest(request);
+    }
+  }
+
+  function creativeIntakeTransitionMessage(action, item) {
+    if (action.type === "select_direction") {
+      const direction = item.directions?.find(
+        (candidate) => candidate.id === item.selectedDirectionId
+      );
+      return direction ? `已选择方向：${direction.label}` : "";
+    }
+    if (action.type === "confirm_brief") {
+      return "创作简报已确认并锁定。";
+    }
+    if (action.type === "reopen_brief") {
+      return "已返回创作简报；旧的模型选择和下游内容已失效。";
+    }
+    if (action.type === "select_model") {
+      const profile = state.modelProfiles.find(
+        (candidate) =>
+          candidate.profileId === item.selectedModelProfileId
+      );
+      return `已选择目标模型：${
+        profile?.displayName || item.selectedModelProfileId
+      }`;
+    }
+    return "";
+  }
+
+  async function transitionCreativeIntake(action) {
+    if (state.directorBusy) return false;
+    let request;
+    try {
+      request = beginCreativeIntakeRequest(
+        app.buildCreativeIntakeTransitionRequest(
+          state,
+          workspaceSessionId,
+          action
+        )
+      );
+    } catch (error) {
+      state = app.reduceState(state, {
+        type: "DIRECTOR_REQUEST_FAILED",
+        error: error.message || "当前操作不可用",
+      });
+      render();
+      return false;
+    }
+
+    state = app.reduceState(state, { type: "DIRECTOR_REQUEST_STARTED" });
+    render();
+    try {
+      const result = await app.performCreativeIntakeRequest({
+        getState: () => state,
+        sessionId: workspaceSessionId,
+        request,
+        apiCall: apiJson,
+        signal: request.controller.signal,
+      });
+      if (!result.accepted) {
+        if (request.guard.sessionId === workspaceSessionId) {
+          state = app.reduceState(state, {
+            type: "DIRECTOR_REQUEST_SUCCEEDED",
+          });
+          render();
+        }
+        return false;
+      }
+      state = result.state;
+      const acceptedProjectRevision = state.projectRevision;
+      const message = creativeIntakeTransitionMessage(
+        action,
+        state.creativeIntake
+      );
+      if (message) {
+        state = app.reduceState(state, {
+          type: "DIRECTOR_MESSAGE_ADDED",
+          message: { role: "system", text: message },
+        });
+      }
+      render();
+      await persistAcceptedCreativeIntake(acceptedProjectRevision);
+      state = app.reduceState(state, {
+        type: "DIRECTOR_REQUEST_SUCCEEDED",
+      });
+      render();
+      return true;
+    } catch (error) {
+      if (request.guard.sessionId !== workspaceSessionId) return false;
+      state = app.reduceState(state, {
+        type: "DIRECTOR_REQUEST_FAILED",
+        error: isAbortError(error)
+          ? "已停止当前阶段操作。"
+          : error.message || "创作阶段操作失败，请稍后重试",
+      });
+      render();
+      return false;
+    } finally {
+      finishCreativeIntakeRequest(request);
     }
   }
 
@@ -4436,10 +5033,282 @@
   }
 
   function renderViews() {
-    $("#homeView").classList.toggle("hidden", state.view !== "home");
-    $("#workbenchArea").classList.toggle("hidden", state.view === "home");
-    $("#textView").classList.toggle("hidden", state.view !== "text");
-    $("#imageView").classList.toggle("hidden", state.view !== "image");
+    const director = app.buildDirectorRenderModel(state);
+    const showWorkbench = director.showWorkbench;
+    $("#homeView").classList.toggle("hidden", showWorkbench);
+    $("#workbenchArea").classList.toggle("hidden", !showWorkbench);
+    $("#textView").classList.toggle(
+      "hidden",
+      !showWorkbench || state.view !== "text"
+    );
+    $("#imageView").classList.toggle(
+      "hidden",
+      !showWorkbench || state.view !== "image"
+    );
+  }
+
+  function renderDirector() {
+    const model = app.buildDirectorRenderModel(state);
+    const conversation = $("#directorConversation");
+    const fallbackMessages = [
+      {
+        role: "assistant",
+        text: "告诉我你想创作的画面、角色或情绪。我会先整理为可确认的创作简报。",
+      },
+      {
+        role: "system",
+        text: "目前还没有引用素材；可附上一张参考图。",
+      },
+    ];
+    const messages = model.messages.length
+      ? model.messages
+      : fallbackMessages;
+    if (conversation) {
+      conversation.innerHTML = messages
+        .map((message) => {
+          const role = ["user", "assistant", "system"].includes(
+            message.role
+          )
+            ? message.role
+            : "system";
+          const label =
+            role === "user"
+              ? "你"
+              : role === "assistant"
+                ? "创作总监"
+                : "阶段记录";
+          return `
+            <article class="director-message director-message--${role}">
+              <span class="${
+                role === "system"
+                  ? "director-source-badge"
+                  : "director-message-role"
+              }">${label}</span>
+              <p>${escapeHtml(message.text)}</p>
+            </article>`;
+        })
+        .join("");
+      conversation.setAttribute(
+        "aria-busy",
+        model.busy ? "true" : "false"
+      );
+      conversation.scrollTop = conversation.scrollHeight;
+    }
+
+    const errorBanner = $(".director-error-banner");
+    if (errorBanner) {
+      errorBanner.hidden = !model.error;
+      errorBanner.textContent = model.error;
+    }
+
+    const input = $("#directorMessageInput");
+    const sendButton = $("#directorSendBtn");
+    const stopButton = $(
+      '.director-composer button[aria-label="停止当前请求"]'
+    );
+    if (input) input.disabled = model.busy;
+    if (sendButton) {
+      sendButton.disabled = model.busy;
+      sendButton.textContent = model.busy
+        ? "总监正在整理…"
+        : "发送给总监";
+    }
+    if (stopButton) stopButton.disabled = !model.busy;
+
+    $$('input[name="directorProvider"]').forEach((control) => {
+      control.checked =
+        control.value === (state.settings.textProvider || "local");
+      control.disabled = model.busy;
+    });
+
+    const stageBadge = $(".director-stage-badge");
+    if (stageBadge) {
+      stageBadge.textContent =
+        {
+          intake: "第一步：描述与方向",
+          direction_selected: "第二步：细化方向",
+          brief_draft: "第三步：确认简报",
+          brief_confirmed: "第四步：选择模型",
+          model_selected: "可进入工作台",
+        }[model.stage] || "创作流程";
+    }
+
+    const directions = $("#directorDirections");
+    if (directions) {
+      const cards = model.directions.length
+        ? model.directions
+            .map(
+              (direction) => `
+                <button
+                  class="director-direction${
+                    direction.selected ? " selected" : ""
+                  }"
+                  type="button"
+                  data-director-direction="${escapeHtml(direction.id)}"
+                  ${
+                    model.busy || model.stage !== "intake"
+                      ? "disabled"
+                      : ""
+                  }
+                >
+                  <strong>${escapeHtml(direction.label)}</strong>
+                  <span>${escapeHtml(direction.summary)}</span>
+                </button>`
+            )
+            .join("")
+        : `
+            <button class="director-direction" type="button" disabled>
+              <strong>方向将在对话后生成</strong>
+              <span>选择一个方向后，创作总监会整理简报。</span>
+            </button>`;
+      directions.innerHTML = `
+        <div class="director-section-heading">
+          <div>
+            <p class="eyebrow">DIRECTIONS</p>
+            <h3 id="directorDirectionsTitle">创作方向</h3>
+          </div>
+          <span>${
+            model.directions.length
+              ? `${model.directions.length} 个方向`
+              : "等待你的描述"
+          }</span>
+        </div>
+        ${cards}`;
+    }
+
+    const briefCard = $("#directorBriefCard");
+    if (briefCard) {
+      const brief = model.brief;
+      const questions = brief?.openQuestions || [];
+      const openConflicts = model.conflicts.filter(
+        (conflict) => conflict.status === "open"
+      );
+      const status = brief
+        ? brief.status === "confirmed"
+          ? "已锁定"
+          : "待确认"
+        : "等待草案";
+      const controls = brief
+        ? brief.status === "draft"
+          ? `
+              <button
+                class="secondary-button"
+                type="button"
+                data-action="director-confirm-brief"
+                ${
+                  !model.canConfirmBrief || model.busy
+                    ? "disabled"
+                    : ""
+                }
+              >确认简报</button>`
+          : `
+              <button
+                class="secondary-button"
+                type="button"
+                data-action="director-reopen-brief"
+                ${model.busy ? "disabled" : ""}
+              >返回修改简报</button>`
+        : `<button class="secondary-button" type="button" disabled>确认简报</button>`;
+      briefCard.innerHTML = `
+        <div class="director-section-heading">
+          <div>
+            <p class="eyebrow">CONFIRMATION</p>
+            <h3 id="directorBriefTitle">创作简报</h3>
+          </div>
+          <span class="director-lock-badge">${status}</span>
+        </div>
+        <p>${
+          brief
+            ? escapeHtml(brief.summary)
+            : "确认方向后，这里会显示可确认的创作简报。"
+        }</p>
+        ${
+          questions.length
+            ? `<div class="director-error-banner">待确认：${escapeHtml(
+                questions.join("；")
+              )}</div>`
+            : ""
+        }
+        ${
+          openConflicts.length
+            ? `<div class="director-error-banner">冲突：${escapeHtml(
+                openConflicts
+                  .map((conflict) => conflict.message)
+                  .join("；")
+              )}</div>`
+            : ""
+        }
+        ${controls}`;
+    }
+
+    const modelGate = $("#directorModelGate");
+    const modelSelect = $("#directorModelSelect");
+    const continueButton = $("#directorContinueBtn");
+    if (modelGate) {
+      modelGate.classList.toggle("hidden", !model.showModelGate);
+      modelGate.classList.toggle("is-locked", !model.showModelGate);
+      modelGate.setAttribute(
+        "aria-hidden",
+        model.showModelGate ? "false" : "true"
+      );
+    }
+    if (modelSelect) {
+      const placeholder = model.modelProfiles.length
+        ? `<option value="">请选择已加载的模型档案</option>`
+        : `<option value="">模型档案暂不可用</option>`;
+      modelSelect.innerHTML =
+        placeholder +
+        model.modelProfiles
+          .map(
+            (profile) => `
+              <option
+                value="${escapeHtml(profile.id)}"
+                ${profile.selected ? "selected" : ""}
+              >${escapeHtml(profile.label)}${
+                profile.readiness
+                  ? ` · ${escapeHtml(profile.readiness)}`
+                  : ""
+              }</option>`
+          )
+          .join("");
+      modelSelect.disabled =
+        !model.showModelGate ||
+        model.busy ||
+        !model.modelProfiles.length;
+      if (model.selectedModelProfileId) {
+        modelSelect.value = model.selectedModelProfileId;
+      }
+    }
+    if (continueButton) {
+      continueButton.disabled = !model.canContinue || model.busy;
+    }
+
+    const imagePreview = $("#directorImagePreview");
+    if (
+      imagePreview &&
+      !state.creativeIntake.inputs.images.length &&
+      !model.imageEvidence
+    ) {
+      imagePreview.querySelector(
+        ".director-preview-placeholder"
+      ).textContent = "尚未添加参考图";
+    }
+
+    const workbench = $("#workbenchArea");
+    let reopenButton = $("#directorWorkbenchReopenBtn");
+    if (workbench && !reopenButton) {
+      reopenButton = document.createElement("button");
+      reopenButton.id = "directorWorkbenchReopenBtn";
+      reopenButton.type = "button";
+      reopenButton.className = "secondary-button";
+      reopenButton.dataset.action = "director-reopen-brief";
+      reopenButton.textContent = "返回修改创作简报";
+      workbench.querySelector(".source-pane")?.prepend(reopenButton);
+    }
+    if (reopenButton) {
+      reopenButton.hidden = !model.showWorkbench;
+      reopenButton.disabled = model.busy;
+    }
   }
 
   function formatProjectDate(value) {
@@ -5548,6 +6417,7 @@
   function render() {
     renderNavigation();
     renderViews();
+    renderDirector();
     renderProjects();
     renderProjectContext();
     renderTextModes();
@@ -5778,6 +6648,21 @@
       openProject(button.dataset.openProject);
       return;
     }
+    if (button.dataset.directorDirection) {
+      transitionCreativeIntake({
+        type: "select_direction",
+        directionId: button.dataset.directorDirection,
+      });
+      return;
+    }
+    if (button.id === "directorContinueBtn") {
+      state = app.reduceState(state, {
+        type: "ENTER_CREATIVE_WORKBENCH",
+      });
+      render();
+      if (state.hasUnsavedProjectChanges) saveCurrentProject();
+      return;
+    }
     if (button.dataset.nav) {
       if (button.dataset.nav === "home") startNewProject();
       else dispatch({ type: "NAVIGATE", view: button.dataset.nav });
@@ -5957,7 +6842,13 @@
     }
 
     const action = button.dataset.action;
-    if (action === "cancel-generation") {
+    if (action === "director-confirm-brief") {
+      transitionCreativeIntake({ type: "confirm_brief" });
+      return;
+    } else if (action === "director-reopen-brief") {
+      transitionCreativeIntake({ type: "reopen_brief" });
+      return;
+    } else if (action === "cancel-generation") {
       if (activeTextAbort) activeTextAbort.abort();
       return;
     }
@@ -6201,6 +7092,24 @@
   });
 
   document.addEventListener("change", (event) => {
+    if (event.target.id === "directorModelSelect") {
+      if (event.target.value) {
+        transitionCreativeIntake({
+          type: "select_model",
+          modelProfileId: event.target.value,
+        });
+      }
+      return;
+    }
+    if (event.target.name === "directorProvider") {
+      state = app.reduceState(state, {
+        type: "SET_TEXT_PROVIDER",
+        value: event.target.value,
+      });
+      render();
+      saveSettings();
+      return;
+    }
     if (event.target.id === "recipeModelProfile") {
       dispatch({
         type: "SELECT_MODEL_PROFILE",
@@ -6293,6 +7202,16 @@
   $("#randomBtn").addEventListener("click", randomizeTextPrompt);
   $("#dropZone").addEventListener("click", () => $("#imageInput").click());
   $("#analyzeBtn").addEventListener("click", startImageAnalysis);
+
+  $(".director-composer")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    sendCreativeDirectorMessage();
+  });
+  $(
+    '.director-composer button[aria-label="停止当前请求"]'
+  )?.addEventListener("click", () => {
+    activeDirectorAbort?.abort();
+  });
 
   const dropZone = $("#dropZone");
   dropZone.addEventListener("dragover", (event) => event.preventDefault());

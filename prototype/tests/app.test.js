@@ -30,6 +30,15 @@ const {
   emptyCreativeIntake,
   normalizeCreativeIntake,
   isCreativeIntakeResponseCurrent,
+  reconstructDirectorMessages,
+  buildCreativeDirectorRequest,
+  buildCreativeIntakeTransitionRequest,
+  acceptCreativeIntakeResponse,
+  canConfirmCreativeBrief,
+  creativeDirectorStageView,
+  buildDirectorRenderModel,
+  performCreativeIntakeRequest,
+  persistCreativeIntakeRevision,
 } = require("../app.js");
 const unicode15 = require("../unicode15-data.js");
 
@@ -187,6 +196,482 @@ test("starts with an empty creative intake session", () => {
   assert.equal(state.creativeIntake.schemaVersion, 1);
   assert.equal(state.creativeIntake.stage, "intake");
   assert.equal(state.creativeIntake.revision, 0);
+});
+
+test("starts with recoverable creative director display state", () => {
+  const state = createInitialState();
+
+  assert.deepEqual(state.directorMessages, []);
+  assert.equal(state.directorBusy, false);
+  assert.equal(state.directorError, "");
+  assert.equal(state.directorImageEvidence, null);
+  assert.equal(state.directorImageAnalysisStatus, "idle");
+  assert.equal(state.directorRequestRevision, 0);
+});
+
+test("creative director reducer preserves messages across request errors and retries", () => {
+  let state = createInitialState();
+  state = reduceState(state, {
+    type: "DIRECTOR_MESSAGE_ADDED",
+    message: { role: "user", text: "红裙，奔跑" },
+  });
+  state = reduceState(state, { type: "DIRECTOR_REQUEST_STARTED" });
+
+  assert.deepEqual(state.directorMessages, [
+    { role: "user", text: "红裙，奔跑" },
+  ]);
+  assert.equal(state.directorBusy, true);
+  assert.equal(state.directorError, "");
+  assert.equal(state.directorRequestRevision, 1);
+
+  state = reduceState(state, {
+    type: "DIRECTOR_REQUEST_FAILED",
+    error: "本地模型暂时不可用",
+  });
+  assert.equal(state.directorBusy, false);
+  assert.equal(state.directorError, "本地模型暂时不可用");
+  assert.deepEqual(state.directorMessages, [
+    { role: "user", text: "红裙，奔跑" },
+  ]);
+
+  state = reduceState(state, { type: "DIRECTOR_REQUEST_STARTED" });
+  assert.equal(state.directorBusy, true);
+  assert.equal(state.directorError, "");
+  assert.equal(state.directorRequestRevision, 2);
+});
+
+test("creative director reducer stores bounded evidence placeholders without marking project metadata dirty", () => {
+  const original = createInitialState();
+  const evidence = {
+    imageId: "image-one",
+    requestedUses: ["action"],
+    summary: "人物正向前奔跑。",
+    sourceModels: ["wd14"],
+    uncertain: false,
+  };
+  let state = reduceState(original, {
+    type: "DIRECTOR_IMAGE_EVIDENCE_SET",
+    item: evidence,
+  });
+  state = reduceState(state, {
+    type: "DIRECTOR_IMAGE_ANALYSIS_STATUS_CHANGED",
+    status: "ready",
+  });
+
+  assert.deepEqual(state.directorImageEvidence, evidence);
+  assert.equal(state.directorImageAnalysisStatus, "ready");
+  assert.equal(state.projectRevision, 0);
+  assert.equal(state.hasUnsavedProjectChanges, false);
+});
+
+test("creative director reducer exposes every canonical workflow stage without writing Recipe state", () => {
+  let state = createInitialState();
+  for (const stage of [
+    "intake",
+    "direction_selected",
+    "brief_draft",
+    "brief_confirmed",
+    "model_selected",
+  ]) {
+    state = reduceState(state, {
+      type: "CREATIVE_INTAKE_REPLACED",
+      item: creativeIntakeStageFixture(stage),
+    });
+    assert.equal(state.creativeIntake.stage, stage);
+    assert.deepEqual(state.blocks, []);
+    assert.deepEqual(state.appliedBlocks, []);
+    assert.equal(state.version, 0);
+  }
+
+  assert.equal(creativeDirectorStageView("intake").showDirections, true);
+  assert.equal(creativeDirectorStageView("brief_draft").showBrief, true);
+  assert.equal(creativeDirectorStageView("brief_confirmed").showModelGate, true);
+  assert.equal(creativeDirectorStageView("model_selected").canContinue, true);
+
+  state = reduceState(state, {
+    type: "CREATIVE_INTAKE_REPLACED",
+    item: creativeIntakeStageFixture("brief_draft"),
+  });
+  assert.equal(state.view, "home");
+  assert.equal(state.creativeIntake.selectedModelProfileId, null);
+  assert.equal(state.creativeIntake.decomposition, null);
+});
+
+test("brief confirmation gate rejects open questions and unresolved conflicts", () => {
+  const ready = creativeIntakeStageFixture("brief_draft");
+  assert.equal(canConfirmCreativeBrief(ready), true);
+
+  const withQuestion = structuredClone(ready);
+  withQuestion.brief.openQuestions = ["环境是室内还是室外？"];
+  assert.equal(canConfirmCreativeBrief(withQuestion), false);
+
+  const withConflict = structuredClone(ready);
+  withConflict.conflicts = [
+    {
+      id: "conflict-one",
+      code: "action_conflict",
+      message: "动作互相冲突",
+      status: "open",
+      itemIds: [],
+    },
+  ];
+  assert.equal(canConfirmCreativeBrief(withConflict), false);
+});
+
+test("project hydration reconstructs only compact canonical director messages", () => {
+  const item = creativeIntakeStageFixture("brief_confirmed");
+  item.inputs.text = "红裙，奔跑";
+  item.brief.summary = "红裙人物在雨夜向前奔跑。";
+  const messages = reconstructDirectorMessages(item);
+
+  assert.deepEqual(messages, [
+    { role: "user", text: "红裙，奔跑" },
+    { role: "assistant", text: "创作方向：Runway — A runway study." },
+    { role: "system", text: "已选择方向：Runway" },
+    { role: "assistant", text: "创作简报：红裙人物在雨夜向前奔跑。" },
+    { role: "system", text: "创作简报已确认并锁定。" },
+  ]);
+
+  const previous = createInitialState();
+  previous.directorMessages = [
+    { role: "assistant", text: "未持久化的任意助手闲聊" },
+  ];
+  const restored = hydrateProjectState(previous, {
+    id: "project-one",
+    metadata: {
+      workspaceBaseVersion: 0,
+      creativeIntake: item,
+      directorMessages: [
+        { role: "assistant", text: "不应作为事实恢复" },
+      ],
+    },
+    versions: [],
+  });
+
+  assert.deepEqual(restored.directorMessages, messages);
+  assert.equal(
+    JSON.stringify(buildProjectPayload(restored)).includes("directorMessages"),
+    false
+  );
+});
+
+test("director requests capture canonical state provider evidence skill and all stale dimensions", () => {
+  const state = createInitialState();
+  state.projectRevision = 7;
+  state.creativeIntake = {
+    ...emptyCreativeIntake(),
+    revision: 5,
+    inputs: { text: "红裙", images: [] },
+  };
+  state.directorImageEvidence = {
+    imageId: "image-one",
+    requestedUses: ["action"],
+    summary: "奔跑动作",
+    sourceModels: ["wd14"],
+    uncertain: false,
+  };
+  state.settings.textProvider = "api";
+  state.settings.creativeDirectorSkillOverride = "每轮只问一个关键问题";
+
+  const request = buildCreativeDirectorRequest(state, 3, "  继续细化  ");
+
+  assert.deepEqual(request.guard, {
+    sessionId: 3,
+    projectRevision: 7,
+    creativeIntakeRevision: 5,
+  });
+  assert.deepEqual(request.body, {
+    current: state.creativeIntake,
+    message: "继续细化",
+    imageEvidence: [state.directorImageEvidence],
+    provider: "api",
+    skillOverride: "每轮只问一个关键问题",
+  });
+});
+
+test("accepted director response appends display prose and canonical state while stale response is inert", () => {
+  const state = createInitialState();
+  const request = buildCreativeDirectorRequest(state, 4, "红裙，奔跑");
+  const response = {
+    message: "我先给你三个方向。",
+    item: {
+      ...emptyCreativeIntake(),
+      revision: 1,
+      directions: [
+        { id: "main", label: "雨夜追逐", summary: "红裙人物穿过雨夜街道。" },
+      ],
+    },
+  };
+
+  const accepted = acceptCreativeIntakeResponse(
+    state,
+    request.guard,
+    4,
+    response,
+    "红裙，奔跑"
+  );
+  assert.equal(accepted.accepted, true);
+  assert.equal(accepted.state.creativeIntake.revision, 1);
+  assert.deepEqual(accepted.state.directorMessages, [
+    { role: "user", text: "红裙，奔跑" },
+    { role: "assistant", text: "我先给你三个方向。" },
+  ]);
+  assert.equal(accepted.state.hasUnsavedProjectChanges, true);
+  assert.equal(accepted.state.hasUnsavedChanges, false);
+  assert.equal(
+    buildWorkspaceCommitPayload(accepted.state, {
+      operationId: "director-save",
+      projectId: "project-one",
+    }).version,
+    null
+  );
+
+  const changed = {
+    ...state,
+    projectRevision: state.projectRevision + 1,
+  };
+  const stale = acceptCreativeIntakeResponse(
+    changed,
+    request.guard,
+    4,
+    response,
+    "红裙，奔跑"
+  );
+  assert.equal(stale.accepted, false);
+  assert.equal(stale.state, changed);
+});
+
+test("malformed successful director response cannot reset canonical state or append prose", () => {
+  const state = createInitialState();
+  state.creativeIntake = {
+    ...emptyCreativeIntake(),
+    revision: 3,
+    inputs: { text: "keep this canonical state", images: [] },
+  };
+  const request = buildCreativeDirectorRequest(state, 4, "继续");
+
+  assert.throws(
+    () =>
+      acceptCreativeIntakeResponse(
+        state,
+        request.guard,
+        4,
+        {
+          message: "不应显示或保存",
+          item: {
+            ...state.creativeIntake,
+            inputs: { text: "malformed", images: "not-an-array" },
+          },
+        },
+        "继续"
+      ),
+    /canonical creative intake/
+  );
+  assert.equal(state.creativeIntake.revision, 3);
+  assert.deepEqual(state.directorMessages, []);
+});
+
+test("canonical model selection does not mutate the current Recipe model", () => {
+  const state = createInitialState();
+  state.modelProfileId = "recipe-model";
+  state.modelProfiles = [
+    { profileId: "recipe-model" },
+    { profileId: "director-target" },
+  ];
+  const selected = creativeIntakeStageFixture("model_selected");
+  selected.selectedModelProfileId = "director-target";
+
+  const next = reduceState(state, {
+    type: "CREATIVE_INTAKE_REPLACED",
+    item: selected,
+  });
+
+  assert.equal(next.creativeIntake.selectedModelProfileId, "director-target");
+  assert.equal(next.modelProfileId, "recipe-model");
+  assert.deepEqual(next.blocks, []);
+  assert.equal(next.hasUnsavedChanges, false);
+});
+
+test("deterministic creative intake requests share the stale guard and only use loaded model IDs", () => {
+  const state = createInitialState();
+  state.projectRevision = 2;
+  state.creativeIntake = creativeIntakeStageFixture("brief_confirmed");
+  state.modelProfiles = [
+    { profileId: "anima-1.1-v1", displayName: "Anima 1.1" },
+  ];
+
+  const direction = buildCreativeIntakeTransitionRequest(
+    state,
+    8,
+    { type: "select_direction", directionId: "direction-one" }
+  );
+  assert.equal(direction.path, "/api/creative-intake/transition");
+  assert.deepEqual(direction.guard, {
+    sessionId: 8,
+    projectRevision: 2,
+    creativeIntakeRevision: state.creativeIntake.revision,
+  });
+
+  assert.throws(
+    () =>
+      buildCreativeIntakeTransitionRequest(
+        state,
+        8,
+        { type: "select_model", modelProfileId: "unknown-model" }
+      ),
+    /loaded model profile/
+  );
+  assert.deepEqual(
+    buildCreativeIntakeTransitionRequest(
+      state,
+      8,
+      { type: "select_model", modelProfileId: "anima-1.1-v1" }
+    ).body,
+    {
+      current: state.creativeIntake,
+      action: {
+        type: "select_model",
+        modelProfileId: "anima-1.1-v1",
+      },
+    }
+  );
+});
+
+test("director render model derives directions brief gate and workbench handoff only from canonical stage", () => {
+  const draftState = createInitialState();
+  draftState.creativeIntake = creativeIntakeStageFixture("brief_draft");
+  draftState.modelProfiles = [
+    {
+      profileId: "anima-1.1-v1",
+      displayName: "Anima 1.1",
+      readiness: "verified",
+    },
+  ];
+  const draft = buildDirectorRenderModel(draftState);
+
+  assert.equal(draft.stage, "brief_draft");
+  assert.equal(draft.directions[0].selected, true);
+  assert.equal(draft.brief.summary, "A red dress on a runway.");
+  assert.equal(draft.canConfirmBrief, true);
+  assert.equal(draft.showModelGate, false);
+  assert.equal(draft.canContinue, false);
+  assert.equal(draft.showWorkbench, false);
+
+  const confirmedState = structuredClone(draftState);
+  confirmedState.creativeIntake =
+    creativeIntakeStageFixture("brief_confirmed");
+  const confirmed = buildDirectorRenderModel(confirmedState);
+  assert.equal(confirmed.showModelGate, true);
+  assert.equal(confirmed.canContinue, false);
+  assert.deepEqual(confirmed.modelProfiles, [
+    {
+      id: "anima-1.1-v1",
+      label: "Anima 1.1",
+      readiness: "verified",
+      selected: false,
+    },
+  ]);
+
+  const selectedState = structuredClone(confirmedState);
+  selectedState.creativeIntake = creativeIntakeStageFixture("model_selected");
+  const selected = buildDirectorRenderModel(selectedState);
+  assert.equal(selected.showModelGate, true);
+  assert.equal(selected.canContinue, true);
+  assert.equal(selected.modelProfiles[0].selected, true);
+
+  selectedState.view = "text";
+  assert.equal(buildDirectorRenderModel(selectedState).showWorkbench, true);
+  selectedState.creativeIntake = creativeIntakeStageFixture("brief_draft");
+  assert.equal(buildDirectorRenderModel(selectedState).showWorkbench, false);
+});
+
+test("request runner posts the frozen body and drops a response made stale while awaiting", async () => {
+  let state = createInitialState();
+  const request = buildCreativeDirectorRequest(state, 11, "红裙，奔跑");
+  let release;
+  const response = new Promise((resolve) => {
+    release = resolve;
+  });
+  const calls = [];
+  const pending = performCreativeIntakeRequest({
+    getState: () => state,
+    sessionId: 11,
+    request,
+    userMessage: "红裙，奔跑",
+    apiCall: async (requestPath, options) => {
+      calls.push({ requestPath, options });
+      return response;
+    },
+  });
+
+  state = { ...state, projectRevision: 1 };
+  release({
+    message: "迟到的方向",
+    item: {
+      ...emptyCreativeIntake(),
+      revision: 1,
+      directions: [
+        { id: "late", label: "迟到", summary: "不应应用" },
+      ],
+    },
+  });
+  const result = await pending;
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].requestPath, "/api/creative-intake/director");
+  assert.equal(calls[0].options.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].options.body), request.body);
+  assert.equal(result.accepted, false);
+  assert.equal(result.state, state);
+});
+
+test("creative intake persistence follows a successful older frozen save with one fresh commit", async () => {
+  let state = {
+    ...createInitialState(),
+    projectRevision: 9,
+    hasUnsavedProjectChanges: true,
+  };
+  const savedBodies = [];
+  const result = await persistCreativeIntakeRevision({
+    getState: () => state,
+    targetProjectRevision: 9,
+    waitedForFrozenSave: true,
+    save: async () => {
+      savedBodies.push({
+        projectRevision: state.projectRevision,
+        hasUnsavedProjectChanges: state.hasUnsavedProjectChanges,
+      });
+      if (savedBodies.length === 2) {
+        state = { ...state, hasUnsavedProjectChanges: false };
+      }
+      return "project-one";
+    },
+  });
+
+  assert.equal(result, "project-one");
+  assert.equal(savedBodies.length, 2);
+  assert.equal(state.hasUnsavedProjectChanges, false);
+});
+
+test("creative intake persistence does not retry a failed frozen save", async () => {
+  const state = {
+    ...createInitialState(),
+    projectRevision: 9,
+    hasUnsavedProjectChanges: true,
+  };
+  let calls = 0;
+  const result = await persistCreativeIntakeRevision({
+    getState: () => state,
+    targetProjectRevision: 9,
+    waitedForFrozenSave: true,
+    save: async () => {
+      calls += 1;
+      return null;
+    },
+  });
+
+  assert.equal(result, null);
+  assert.equal(calls, 1);
 });
 
 test("replaces creative intake only with a normalized server item", () => {
