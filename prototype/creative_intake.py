@@ -273,6 +273,7 @@ def _validate_stage_invariants(
     selected_model_profile_id: str | None,
     decomposition: dict | None,
     recipe_status: str,
+    conflicts: list[dict],
 ) -> None:
     stage_index = STAGES.index(stage)
     direction_required = stage_index >= STAGES.index("direction_selected")
@@ -304,6 +305,14 @@ def _validate_stage_invariants(
             "brief_lock_mismatch",
             f"stage {stage} requires every confirmed brief item to be locked",
         )
+    elif expected_brief_status == "confirmed" and (
+        brief["openQuestions"]
+        or any(conflict["status"] == "open" for conflict in conflicts)
+    ):
+        _error(
+            "brief_confirmation_mismatch",
+            f"stage {stage} requires a brief with no open questions or conflicts",
+        )
 
     model_required = stage_index >= STAGES.index("model_selected")
     if (selected_model_profile_id is not None) != model_required:
@@ -332,6 +341,13 @@ def _validate_stage_invariants(
         _error(
             "decomposition_stage_mismatch",
             f"stage {stage} requires a {expected_decomposition_status} decomposition",
+        )
+    elif expected_decomposition_status == "confirmed" and any(
+        not block["approved"] for block in decomposition["blocks"]
+    ):
+        _error(
+            "decomposition_approval_mismatch",
+            f"stage {stage} requires every decomposition block to be approved",
         )
 
     if stage_index <= STAGES.index("direction_selected"):
@@ -410,6 +426,7 @@ def normalize_creative_intake(value: object) -> dict:
         selected_model_profile_id,
         decomposition,
         recipe_status,
+        conflicts,
     )
 
     return {

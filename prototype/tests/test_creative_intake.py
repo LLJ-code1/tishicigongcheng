@@ -167,6 +167,21 @@ class PromptStudioCreativeIntakeTests(unittest.TestCase):
         confirmed_with_unlocked_item = state_for_stage("brief_confirmed")
         confirmed_with_unlocked_item["brief"]["items"][0]["locked"] = False
 
+        confirmed_with_open_question = state_for_stage("brief_confirmed")
+        confirmed_with_open_question["brief"]["openQuestions"] = [
+            "Which time of day?"
+        ]
+
+        confirmed_with_open_conflict = state_for_stage("brief_confirmed")
+        confirmed_with_open_conflict["conflicts"] = [conflict("conflict-1")]
+
+        confirmed_with_unapproved_block = state_for_stage(
+            "decomposition_confirmed"
+        )
+        confirmed_with_unapproved_block["decomposition"]["blocks"][0][
+            "approved"
+        ] = False
+
         cases = (
             ("intake selected direction", intake_with_selection),
             ("direction selected with brief", direction_with_brief),
@@ -181,6 +196,12 @@ class PromptStudioCreativeIntakeTests(unittest.TestCase):
             ),
             ("decomposition confirmed with stale recipe", confirmed_with_stale_recipe),
             ("confirmed brief with unlocked item", confirmed_with_unlocked_item),
+            ("confirmed brief with open question", confirmed_with_open_question),
+            ("confirmed brief with open conflict", confirmed_with_open_conflict),
+            (
+                "confirmed decomposition with unapproved block",
+                confirmed_with_unapproved_block,
+            ),
         )
         for label, value in cases:
             with self.subTest(label=label), self.assertRaises(

@@ -619,6 +619,10 @@
       const stageIndex = CREATIVE_INTAKE_STAGE_ORDER.indexOf(stage);
       const recipeStatus = text(intake.recipeStatus, 32, false);
       if (!CREATIVE_INTAKE_RECIPE_STATUSES.has(recipeStatus)) fail();
+      const conflicts = unique(
+        array(intake.conflicts, 100).map(conflict),
+        (item) => item.id
+      );
       const directionRequired =
         stageIndex >= CREATIVE_INTAKE_STAGE_ORDER.indexOf("direction_selected");
       if ((selectedDirectionId !== null) !== directionRequired) fail();
@@ -644,6 +648,13 @@
         ) {
           fail();
         }
+        if (
+          expectedBriefStatus === "confirmed" &&
+          (normalizedBrief.openQuestions.length > 0 ||
+            conflicts.some((item) => item.status === "open"))
+        ) {
+          fail();
+        }
       }
 
       const modelRequired =
@@ -665,6 +676,12 @@
       ) {
         fail();
       }
+      if (
+        expectedDecompositionStatus === "confirmed" &&
+        normalizedDecomposition.blocks.some((block) => !block.approved)
+      ) {
+        fail();
+      }
 
       const recipeStatusAllowed =
         stageIndex <=
@@ -678,10 +695,6 @@
               ? recipeStatus === "stale"
               : recipeStatus === "ready";
       if (!recipeStatusAllowed) fail();
-      const conflicts = unique(
-        array(intake.conflicts, 100).map(conflict),
-        (item) => item.id
-      );
       return {
         schemaVersion: 1,
         revision: intake.revision,

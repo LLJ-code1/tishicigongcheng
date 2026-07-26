@@ -335,6 +335,27 @@ test("creative intake normalization enforces exact cross-field stage invariants"
     creativeIntakeStageFixture("brief_confirmed");
   confirmedWithUnlockedItem.brief.items[0].locked = false;
 
+  const confirmedWithOpenQuestion =
+    creativeIntakeStageFixture("brief_confirmed");
+  confirmedWithOpenQuestion.brief.openQuestions = ["Which time of day?"];
+
+  const confirmedWithOpenConflict =
+    creativeIntakeStageFixture("brief_confirmed");
+  confirmedWithOpenConflict.conflicts = [
+    {
+      id: "conflict-one",
+      code: "contradiction",
+      message: "Choose one action.",
+      status: "open",
+      itemIds: [],
+    },
+  ];
+
+  const confirmedWithUnapprovedBlock = creativeIntakeStageFixture(
+    "decomposition_confirmed"
+  );
+  confirmedWithUnapprovedBlock.decomposition.blocks[0].approved = false;
+
   for (const malformed of [
     intakeWithSelection,
     directionWithBrief,
@@ -346,6 +367,9 @@ test("creative intake normalization enforces exact cross-field stage invariants"
     confirmedWithDraftDecomposition,
     confirmedWithStaleRecipe,
     confirmedWithUnlockedItem,
+    confirmedWithOpenQuestion,
+    confirmedWithOpenConflict,
+    confirmedWithUnapprovedBlock,
   ]) {
     assert.deepEqual(normalizeCreativeIntake(malformed), emptyCreativeIntake());
   }
