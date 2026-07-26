@@ -675,6 +675,11 @@ def validate_researched_model_profile(value: object) -> dict[str, Any]:
         )
         for index, item in enumerate(candidates_raw)
     ]
+    resolution_ids = [item["id"] for item in validated + candidates]
+    if len(resolution_ids) != len(set(resolution_ids)):
+        raise ModelProfileError(
+            "resolution preset IDs must be unique across validated and candidate collections"
+        )
     if validated and status != "locally_validated":
         raise ModelProfileError("validated presets require local validation evidence")
 

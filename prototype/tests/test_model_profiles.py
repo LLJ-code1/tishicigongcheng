@@ -215,6 +215,40 @@ class ModelProfileAdversarialTests(unittest.TestCase):
         with self.assertRaisesRegex(model_profiles.ModelProfileError, "evidenceRef"):
             model_profiles.validate_researched_model_profile(profile)
 
+    def test_researched_resolution_ids_are_unique_across_both_collections(self):
+        import model_research
+
+        base = model_research.build_pending_profile(
+            "https://civitai.com/models/1", [], [], manual_fields={"displayName": "Pending"}
+        )
+        candidate = {
+            "id": "square",
+            "width": 1024,
+            "height": 1024,
+            "label": "Square",
+            "verificationStatus": "project_candidate_pending_local_validation",
+            "evidenceRef": "snapshot-1",
+            "autoRecommend": False,
+        }
+        duplicate_candidates = copy.deepcopy(base)
+        duplicate_candidates["resolutions"]["candidatePresets"] = [
+            copy.deepcopy(candidate),
+            copy.deepcopy(candidate),
+        ]
+        cross_collection = copy.deepcopy(base)
+        cross_collection["resolutions"]["candidatePresets"] = [copy.deepcopy(candidate)]
+        cross_collection["resolutions"]["validatedPresets"] = [{
+            **copy.deepcopy(candidate),
+            "verificationStatus": "locally_validated",
+            "autoRecommend": True,
+        }]
+
+        for profile in (duplicate_candidates, cross_collection):
+            with self.subTest(profile=profile), self.assertRaisesRegex(
+                model_profiles.ModelProfileError, "IDs must be unique"
+            ):
+                model_profiles.validate_researched_model_profile(profile)
+
     def test_validator_rejects_safe_in_the_fixed_prefix(self):
         profile = model_profiles.load_model_profile()
         profile["prompting"]["positivePrefix"].append("safe")
