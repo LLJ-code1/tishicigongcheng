@@ -140,21 +140,30 @@ blob URL、密钥或任意附加元数据。每张图的 `requestedUses` 独立�
     {
       "imageId": "image-action",
       "requestedUses": ["action"],
-      "summary": "人物向前奔跑"
+      "summary": "人物向前奔跑",
+      "sourceModels": ["florence-promptgen"],
+      "uncertain": false
     },
     {
       "imageId": "image-outfit",
       "requestedUses": ["outfit"],
-      "summary": "红色长外套"
+      "summary": "红色长外套",
+      "sourceModels": ["florence-promptgen"],
+      "uncertain": false
     },
     {
       "imageId": "image-environment",
       "requestedUses": ["environment"],
-      "summary": "雨夜街道"
+      "summary": "雨夜街道",
+      "sourceModels": ["florence-promptgen"],
+      "uncertain": false
     }
   ]
 }
 ```
+
+每条 evidence 都必须同时包含 `imageId`、`requestedUses`、`summary`、
+`sourceModels` 和 `uncertain`；缺少字段或增加任意额外字段都会被拒绝。
 
 客户端应逐图调用本地 `/api/vision/analyze`，保留成功项并只重试失败图片。服务端兼容
 旧客户端的单个 evidence 对象，但传给 provider 的 `imageEvidence` 始终是数组。brief
