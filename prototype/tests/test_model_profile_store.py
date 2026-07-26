@@ -210,6 +210,135 @@ class ModelProfileStoreTests(unittest.TestCase):
             len(store.list_active_profile_versions(db_path=self.database)), 1
         )
 
+    def _activated_snapshot_fixture(self):
+        snapshots = [
+            SourceSnapshot(
+                "snapshot-official", "original_source", self.url, self.url,
+                "2026-07-26T10:00:00Z", "text/html", "b" * 64,
+                "official prompt guidance", "succeeded", None,
+            ),
+            SourceSnapshot(
+                "snapshot-community", "supplemental_source", self.url, self.url,
+                "2026-07-26T10:01:00Z", "text/html", "c" * 64,
+                "community guidance", "succeeded", None,
+            ),
+        ]
+        claims = [
+            EvidenceClaim(
+                "claim-rejected", "prompting.negativeDefault", "bad hands",
+                "supplemental_source", ("snapshot-community",), "not reliable",
+                "source_recorded", "proposed",
+            ),
+            EvidenceClaim(
+                "claim-approved", "prompting.positivePrefix",
+                "masterpiece", "original_source", ("snapshot-official",),
+                "The original model page requires this prefix.",
+                "source_recorded", "proposed",
+            ),
+            EvidenceClaim(
+                "claim-proposed", "parameters.defaults.cfg", 7,
+                "supplemental_source",
+                ("snapshot-community",), "community suggestion",
+                "source_recorded", "proposed",
+            ),
+        ]
+        run = store.create_research_run(self.url, db_path=self.database)
+        complete = store.complete_research_run(
+            run["runId"], snapshots, claims, db_path=self.database
+        )
+        draft = store.create_profile_draft(
+            run["runId"], self.profile, complete["claims"], db_path=self.database
+        )
+        revised = store.revise_profile_draft(
+            draft["versionId"], self.profile,
+            {
+                "claim-approved": "approved",
+                "claim-proposed": "proposed",
+                "claim-rejected": "rejected",
+            },
+            "decisions recorded", db_path=self.database,
+        )
+        reviewed = store.review_profile_version(
+            revised["versionId"], "evidence checked", db_path=self.database
+        )
+        return store.activate_profile_version(
+            reviewed["versionId"], None, db_path=self.database
+        )
+
+    def test_get_activated_profile_snapshot_projects_only_approved_rules(self):
+        active = self._activated_snapshot_fixture()
+        snapshot = store.get_activated_profile_snapshot(
+            active["profileId"], active["versionId"], active["contentSha256"],
+            db_path=self.database,
+        )
+        self.assertEqual(snapshot["profileVersionId"], active["versionId"])
+        self.assertEqual(
+            snapshot["profileContentSha256"], active["contentSha256"]
+        )
+        self.assertEqual(
+            [item["claimId"] for item in snapshot["approvedRules"]],
+            ["claim-approved"],
+        )
+        self.assertEqual(
+            [item["claimId"] for item in snapshot["warnings"]],
+            ["claim-proposed", "claim-rejected"],
+        )
+        self.assertEqual(
+            {item["decision"] for item in snapshot["warnings"]},
+            {"proposed", "rejected"},
+        )
+        self.assertEqual(
+            snapshot["approvedRules"][0]["evidenceRefs"],
+            ["snapshot-official"],
+        )
+
+    def test_get_activated_profile_snapshot_rejects_wrong_lineage(self):
+        active = self._activated_snapshot_fixture()
+        cases = [
+            (
+                "unknown_version",
+                ("example-model", "missing-version", active["contentSha256"]),
+            ),
+            (
+                "profile_version_mismatch",
+                ("other-model", active["versionId"], active["contentSha256"]),
+            ),
+            (
+                "profile_hash_mismatch",
+                (active["profileId"], active["versionId"], "0" * 64),
+            ),
+        ]
+        for code, arguments in cases:
+            with self.subTest(code=code):
+                with self.assertRaises(store.ProfileStoreError) as raised:
+                    store.get_activated_profile_snapshot(
+                        *arguments, db_path=self.database
+                    )
+                self.assertEqual(raised.exception.code, code)
+
+    def test_superseded_profile_snapshot_is_not_available_for_new_preview(self):
+        old_active = self._activated_snapshot_fixture()
+        replacement = store.review_profile_version(
+            self._draft()["versionId"], "replacement checked",
+            db_path=self.database,
+        )
+        store.activate_profile_version(
+            replacement["versionId"], old_active["versionId"],
+            db_path=self.database,
+        )
+        self.assertEqual(
+            store.get_profile_version(
+                old_active["versionId"], db_path=self.database
+            )["lifecycleStatus"],
+            "superseded",
+        )
+        with self.assertRaises(store.ProfileStoreError) as raised:
+            store.get_activated_profile_snapshot(
+                old_active["profileId"], old_active["versionId"],
+                old_active["contentSha256"], db_path=self.database,
+            )
+        self.assertEqual(raised.exception.code, "profile_not_activated")
+
 
 if __name__ == "__main__":
     unittest.main()

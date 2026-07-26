@@ -438,6 +438,96 @@ def get_profile_version(
         return _version_result(row) if row is not None else None
 
 
+def get_activated_profile_snapshot(
+    profile_id: str,
+    version_id: str,
+    content_sha256: str,
+    *,
+    db_path: Path | str | None = None,
+) -> dict:
+    """Resolve the exact active immutable version into approved adaptation rules."""
+    profile_id = _required_text(profile_id, "invalid_profile", 128)
+    version_id = _required_text(version_id, "invalid_version", 128)
+    content_sha256 = _required_text(
+        content_sha256, "profile_hash_mismatch", 64
+    )
+    db.init_db(db_path)
+    with db.database(db_path) as connection:
+        connection.execute("BEGIN")
+        row = db.profile_version_row(connection, version_id)
+        if row is None:
+            raise ProfileStoreError(
+                "unknown_version", "profile version does not exist"
+            )
+        if row["profile_id"] != profile_id:
+            raise ProfileStoreError(
+                "profile_version_mismatch",
+                "profile version does not belong to the requested profile",
+            )
+        if row["lifecycle_status"] != "active":
+            raise ProfileStoreError(
+                "profile_not_activated", "profile version is not active"
+            )
+
+        profile = db.json_loads_typed(row["profile_json"], dict, {})
+        canonical_hash = db.canonical_json_hash(profile)
+        if (
+            canonical_hash != row["content_sha256"]
+            or canonical_hash != content_sha256
+        ):
+            raise ProfileStoreError(
+                "profile_hash_mismatch", "profile content hash does not match"
+            )
+
+        run_id = row["research_run_id"]
+        claims = (
+            _claims_by_id(connection, run_id) if run_id is not None else {}
+        )
+        snapshot_ids = {
+            item["id"] for item in db.evidence_snapshot_rows(connection, run_id)
+        } if run_id is not None else set()
+        decisions = db.json_loads_typed(
+            row["claim_decisions_json"], dict, {}
+        )
+        approved_rules = []
+        warnings = []
+        for claim_id in sorted(claims):
+            claim = claims[claim_id]
+            decision = decisions.get(claim_id, "proposed")
+            if decision == "approved":
+                if any(
+                    reference not in snapshot_ids
+                    for reference in claim["evidenceRefs"]
+                ):
+                    raise ProfileStoreError(
+                        "unknown_evidence",
+                        "approved claim references an unknown snapshot",
+                    )
+                approved_rules.append({
+                    "claimId": claim_id,
+                    "fieldPath": claim["fieldPath"],
+                    "value": copy.deepcopy(claim["value"]),
+                    "evidenceClass": claim["evidenceClass"],
+                    "evidenceRefs": list(claim["evidenceRefs"]),
+                    "rationale": claim["rationale"],
+                })
+            elif decision in {"proposed", "rejected"}:
+                warnings.append({
+                    "claimId": claim_id,
+                    "decision": decision,
+                    "message": "Unapproved model claim was not applied.",
+                })
+
+        return {
+            "profileId": profile_id,
+            "profileVersionId": version_id,
+            "profileContentSha256": canonical_hash,
+            "profile": copy.deepcopy(profile),
+            "approvedRules": approved_rules,
+            "warnings": warnings,
+        }
+
+
 def list_active_profile_versions(
     *, db_path: Path | str | None = None
 ) -> list[dict]:
@@ -455,6 +545,7 @@ __all__ = [
     "complete_research_run",
     "create_profile_draft",
     "create_research_run",
+    "get_activated_profile_snapshot",
     "get_profile_version",
     "list_active_profile_versions",
     "review_profile_version",
