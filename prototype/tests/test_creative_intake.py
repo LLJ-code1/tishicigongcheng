@@ -574,6 +574,20 @@ class PromptStudioCreativeIntakeTests(unittest.TestCase):
             {"type": "image", "refId": "image-action"},
         )
 
+    def test_empty_block_rejects_generic_fallback_marker(self):
+        value = state_with_decomposition()
+        block = value["decomposition"]["blocks"][1]
+        block["zh"] = ""
+        block["en"] = ""
+        block["ruleRefs"] = []
+        block["risks"] = ["generic_fallback_no_approved_model_rule"]
+
+        with self.assertRaisesRegex(
+            creative_intake.CreativeIntakeValidationError,
+            "generic fallback",
+        ):
+            creative_intake.normalize_creative_intake(value)
+
     def test_versioned_decomposition_rejects_bad_lineage_order_and_rule_refs(self):
         cases = []
         bad = state_with_decomposition()

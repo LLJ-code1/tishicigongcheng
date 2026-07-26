@@ -263,6 +263,62 @@ class ModelAdaptedDecompositionTests(unittest.TestCase):
             ["无风险", "generic_fallback_no_approved_model_rule"],
         )
 
+    def test_empty_blocks_do_not_receive_generic_fallback_marker(self):
+        subject = self.import_subject()
+
+        result = subject.normalize_decomposition_output(
+            provider_output(),
+            intake=confirmed_intake(),
+            profile_snapshot=profile_snapshot(),
+        )
+
+        self.assertEqual(result["blocks"][0]["semanticItems"], [])
+        self.assertEqual(result["blocks"][0]["zh"], "")
+        self.assertEqual(result["blocks"][0]["en"], "")
+        self.assertNotIn(
+            "generic_fallback_no_approved_model_rule",
+            result["blocks"][0]["risks"],
+        )
+
+    def test_generic_fallback_reserves_one_of_one_hundred_risk_slots(self):
+        subject = self.import_subject()
+        output = provider_output(use_rule=False)
+        output["blocks"][4]["risks"] = [f"risk-{index}" for index in range(99)]
+
+        result = subject.normalize_decomposition_output(
+            output,
+            intake=confirmed_intake(),
+            profile_snapshot=profile_snapshot(),
+        )
+
+        self.assertEqual(len(result["blocks"][4]["risks"]), 100)
+        self.assertEqual(
+            result["blocks"][4]["risks"][-1],
+            "generic_fallback_no_approved_model_rule",
+        )
+
+    def test_full_risk_array_needing_fallback_gets_one_repair_attempt(self):
+        subject = self.import_subject()
+        calls = []
+
+        def provider(messages):
+            calls.append(messages)
+            output = provider_output(use_rule=False)
+            if len(calls) == 1:
+                output["blocks"][4]["risks"] = [
+                    f"risk-{index}" for index in range(100)
+                ]
+            return output
+
+        result = subject.generate_model_adapted_decomposition(
+            intake=confirmed_intake(),
+            profile_snapshot=profile_snapshot(),
+            provider=provider,
+        )
+
+        self.assertEqual(result["status"], "draft")
+        self.assertEqual(len(calls), 2)
+
     def test_rejects_unapproved_or_mismatched_rule_lineage(self):
         subject = self.import_subject()
         mutations = (

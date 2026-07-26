@@ -347,6 +347,12 @@ def _decomposition(
         source = _source(
             block.get("source"), image_ids, f"decomposition.blocks[{index}].source"
         )
+        zh = _text(
+            block.get("zh"), f"decomposition.blocks[{index}].zh", maximum=200_000
+        )
+        en = _text(
+            block.get("en"), f"decomposition.blocks[{index}].en", maximum=200_000
+        )
         expected_source = (
             semantic_items[0]["source"]
             if semantic_items
@@ -368,21 +374,21 @@ def _decomposition(
             f"decomposition.blocks[{index}].risks",
             maximum=100,
         )
-        if (
-            brief is not None
-            and not rule_refs
-            and "generic_fallback_no_approved_model_rule" not in risks
-        ):
+        has_fallback_marker = (
+            "generic_fallback_no_approved_model_rule" in risks
+        )
+        needs_fallback_marker = bool(en) and not rule_refs
+        if brief is not None and has_fallback_marker != needs_fallback_marker:
             _error(
                 "generic_fallback",
-                f"decomposition.blocks[{index}] generic fallback risk is required",
+                f"decomposition.blocks[{index}] generic fallback risk does not match adaptation",
             )
         blocks.append(
             {
                 "id": _identifier(block.get("id"), f"decomposition.blocks[{index}].id"),
                 "category": _text(block.get("category"), f"decomposition.blocks[{index}].category", maximum=128, allow_empty=False),
-                "zh": _text(block.get("zh"), f"decomposition.blocks[{index}].zh", maximum=200_000),
-                "en": _text(block.get("en"), f"decomposition.blocks[{index}].en", maximum=200_000),
+                "zh": zh,
+                "en": en,
                 "source": source,
                 "locked": locked,
                 "approved": approved,

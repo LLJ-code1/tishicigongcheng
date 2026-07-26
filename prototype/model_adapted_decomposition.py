@@ -374,10 +374,16 @@ def normalize_decomposition_output(
             normalized_refs.append(deepcopy(trusted))
 
         risks = raw_block.get("risks")
-        if not isinstance(risks, list) or any(
-            not isinstance(risk, str) or not risk for risk in risks
+        if (
+            not isinstance(risks, list)
+            or len(risks) > 100
+            or any(
+                not isinstance(risk, str) or not risk for risk in risks
+            )
         ):
             _fail("invalid_provider_output", "risks must contain non-empty text")
+        if len(risks) != len(set(risks)):
+            _fail("invalid_provider_output", "risks must not contain duplicates")
         zh = _text(raw_block.get("zh"), f"blocks[{index}].zh")
         normalized_zh = _normalized_text(zh).casefold()
         if any(term in normalized_zh for term in forbidden_model_terms):
@@ -387,8 +393,15 @@ def normalize_decomposition_output(
             )
         en = _text(raw_block.get("en"), f"blocks[{index}].en")
         reason = _text(raw_block.get("reason"), f"blocks[{index}].reason")
-        normalized_risks = list(risks)
-        if not normalized_refs and _GENERIC_FALLBACK_RISK not in normalized_risks:
+        normalized_risks = [
+            risk for risk in risks if risk != _GENERIC_FALLBACK_RISK
+        ]
+        if en and not normalized_refs:
+            if len(normalized_risks) >= 100:
+                _fail(
+                    "invalid_provider_output",
+                    "generic fallback risk exceeds the 100-item limit",
+                )
             normalized_risks.append(_GENERIC_FALLBACK_RISK)
         locked = raw_block.get("locked")
         approved = raw_block.get("approved")
