@@ -190,10 +190,9 @@
                   <span class="director-lock-badge">待确认</span>
                 </div>
                 <p>确认方向后，这里会明确保留来自你的描述、参考图和模型建议的内容来源。</p>
-                <ul class="director-brief-list">
-                  <li><span class="director-source-badge">用户输入</span> 主体与情绪</li>
-                  <li><span class="director-source-badge director-source-badge--image">参考图</span> 视觉线索</li>
-                </ul>
+                <div class="director-brief-groups" id="directorBriefGroups">
+                  <p class="director-empty-state">简报草案生成后，将按来源、锁定、待确认和冲突分组显示。</p>
+                </div>
                 <button class="secondary-button" type="button" disabled>确认简报</button>
               </section>
 
@@ -215,8 +214,11 @@
                 <select id="directorModelSelect" disabled>
                   <option>先确认创作简报</option>
                 </select>
+                <div class="director-model-profile-status" id="directorModelProfileStatus">
+                  选择模型后显示档案就绪度与现有证据；本阶段不会访问模型网页。
+                </div>
                 <button id="directorContinueBtn" class="primary-button" type="button" disabled>
-                  继续进入工作台
+                  进入拆解
                 </button>
               </section>
             </aside>
@@ -272,6 +274,17 @@
         </section>
 
         <section class="workbench hidden" id="workbenchArea" data-canonical-stage-required="model_selected">
+          <section class="creative-workbench-handoff" id="creativeWorkbenchHandoff" aria-live="polite">
+            <div>
+              <p class="eyebrow">CONFIRMED HANDOFF</p>
+              <strong id="creativeWorkbenchBrief">等待已确认的创作简报</strong>
+              <span id="creativeWorkbenchModel">等待已选择的目标模型</span>
+            </div>
+            <p>模型适配拆解尚未生成；你可以继续使用现有手动拆解与扩写工具，模型针对性预览将在后续阶段提供。</p>
+            <button class="secondary-button" type="button" data-action="director-reopen-brief">
+              返回修改简报
+            </button>
+          </section>
           <aside class="source-pane">
             <section id="textView">
               <div class="pane-title">

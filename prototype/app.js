@@ -809,6 +809,98 @@
     );
   }
 
+  const CREATIVE_BRIEF_GROUPS = [
+    { id: "user", label: "用户明确" },
+    { id: "image", label: "图片借用" },
+    { id: "ai", label: "AI 补全" },
+    { id: "locked", label: "已锁定" },
+    { id: "questions", label: "待确认" },
+    { id: "conflicts", label: "冲突" },
+  ];
+
+  function creativeBriefItemRow(item) {
+    return {
+      id: item.id,
+      category: item.category,
+      text: item.text,
+      source: clone(item.source),
+      locked: item.locked,
+      revisable: true,
+    };
+  }
+
+  function buildCreativeBriefGroups(value) {
+    const intake = normalizeCreativeIntake(value);
+    const brief = intake.brief;
+    const groups = Object.fromEntries(
+      CREATIVE_BRIEF_GROUPS.map((group) => [group.id, []])
+    );
+    if (brief) {
+      for (const item of brief.items) {
+        const row = creativeBriefItemRow(item);
+        if (item.source.type === "user") groups.user.push(row);
+        else if (item.source.type === "image") groups.image.push(row);
+        else groups.ai.push(row);
+        if (item.locked) groups.locked.push(row);
+      }
+      for (const [index, text] of brief.aiAdditions.entries()) {
+        groups.ai.push({
+          id: `ai-addition-${index}`,
+          category: "ai_addition",
+          text,
+          source: { type: "ai", refId: null },
+          locked: false,
+          revisable: false,
+        });
+      }
+      for (const [index, text] of brief.openQuestions.entries()) {
+        groups.questions.push({
+          id: `question-${index}`,
+          category: "open_question",
+          text,
+          source: null,
+          locked: false,
+          revisable: false,
+        });
+      }
+    }
+    for (const conflict of intake.conflicts) {
+      if (conflict.status !== "open") continue;
+      groups.conflicts.push({
+        id: conflict.id,
+        category: conflict.code,
+        text: conflict.message,
+        source: null,
+        locked: false,
+        revisable: false,
+      });
+    }
+    return CREATIVE_BRIEF_GROUPS.map((group) => ({
+      ...group,
+      rows: groups[group.id],
+    }));
+  }
+
+  function buildBriefRevisionMessage(item) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new TypeError("brief item is invalid");
+    }
+    const id = typeof item.id === "string" ? item.id.trim() : "";
+    const category =
+      typeof item.category === "string" ? item.category.trim() : "";
+    const text = typeof item.text === "string" ? item.text.trim() : "";
+    if (
+      !id ||
+      !category ||
+      !text ||
+      Array.from(text).length > 20_000 ||
+      Array.from(category).length > 128
+    ) {
+      throw new TypeError("brief item is invalid");
+    }
+    return `我想修改简报中的「${text}」（${category}），请先问我需要怎么改。`;
+  }
+
   function reconstructDirectorMessages(value) {
     const intake = normalizeCreativeIntake(value);
     const messages = [];
@@ -1049,6 +1141,7 @@
         selected: direction.id === intake.selectedDirectionId,
       })),
       brief: intake.brief ? clone(intake.brief) : null,
+      briefGroups: buildCreativeBriefGroups(intake),
       conflicts: clone(intake.conflicts),
       canConfirmBrief: canConfirmCreativeBrief(intake),
       showModelGate: stageView.showModelGate,
@@ -1072,9 +1165,34 @@
               ? profile.displayName
               : profile.profileId,
           readiness:
-            typeof profile.readiness === "string"
+            typeof profile.readiness === "string" &&
+            profile.readiness.trim()
               ? profile.readiness
-              : "",
+              : typeof profile.validationStatus === "string"
+                ? profile.validationStatus
+                : "",
+          generationReady: Boolean(profile.generationReady),
+          evidence: (Array.isArray(profile.evidence)
+            ? profile.evidence
+            : []
+          )
+            .slice(0, 16)
+            .map((item) => ({
+              id:
+                typeof item?.id === "string"
+                  ? Array.from(item.id).slice(0, 256).join("")
+                  : "",
+              title:
+                typeof item?.title === "string"
+                  ? Array.from(item.title).slice(0, 1_000).join("")
+                  : "",
+              verificationStatus:
+                typeof item?.verificationStatus === "string"
+                  ? Array.from(item.verificationStatus)
+                      .slice(0, 256)
+                      .join("")
+                  : "",
+            })),
           selected:
             profile.profileId === intake.selectedModelProfileId,
         })),
@@ -3437,6 +3555,8 @@
     emptyCreativeIntake,
     normalizeCreativeIntake,
     reconstructDirectorMessages,
+    buildCreativeBriefGroups,
+    buildBriefRevisionMessage,
     buildCreativeDirectorRequest,
     buildCreativeIntakeTransitionRequest,
     acceptCreativeIntakeResponse,
@@ -4443,10 +4563,14 @@
     return true;
   }
 
-  async function sendCreativeDirectorMessage() {
+  async function sendCreativeDirectorMessage(messageOverride = "") {
     if (state.directorBusy) return;
     const input = $("#directorMessageInput");
-    const message = input?.value?.trim() || "";
+    const usesOverride = Boolean(String(messageOverride || "").trim());
+    const message =
+      String(messageOverride || "").trim() ||
+      input?.value?.trim() ||
+      "";
     if (!message) {
       state = app.reduceState(state, {
         type: "DIRECTOR_REQUEST_FAILED",
@@ -4511,7 +4635,7 @@
       state = result.state;
       syncDirectorImageAttachmentWithCanonical();
       const acceptedProjectRevision = state.projectRevision;
-      if (input) input.value = "";
+      if (input && !usesOverride) input.value = "";
       render();
       await persistAcceptedCreativeIntake(acceptedProjectRevision);
       state = app.reduceState(state, {
@@ -6041,10 +6165,6 @@
     const briefCard = $("#directorBriefCard");
     if (briefCard) {
       const brief = model.brief;
-      const questions = brief?.openQuestions || [];
-      const openConflicts = model.conflicts.filter(
-        (conflict) => conflict.status === "open"
-      );
       const status = brief
         ? brief.status === "confirmed"
           ? "已锁定"
@@ -6071,6 +6191,60 @@
                 ${model.busy ? "disabled" : ""}
               >返回修改简报</button>`
         : `<button class="secondary-button" type="button" disabled>确认简报</button>`;
+      const sourceLabels = {
+        user: "用户",
+        image: "图片",
+        ai: "AI",
+        model_rule: "模型规则",
+      };
+      const groups = model.briefGroups
+        .map((group) => {
+          const rows = group.rows.length
+            ? group.rows
+                .map(
+                  (row) => `
+                    <li>
+                      <div>
+                        ${
+                          row.source
+                            ? `<span class="director-source-badge director-source-badge--${escapeHtml(
+                                row.source.type
+                              )}">${escapeHtml(
+                                sourceLabels[row.source.type] ||
+                                  row.source.type
+                              )}</span>`
+                            : ""
+                        }
+                        ${
+                          row.locked
+                            ? '<span class="director-lock-badge">已锁定</span>'
+                            : ""
+                        }
+                        <span>${escapeHtml(row.text)}</span>
+                      </div>
+                      ${
+                        row.revisable
+                          ? `<button
+                              class="director-brief-revise"
+                              type="button"
+                              data-director-revise-item="${escapeHtml(row.id)}"
+                              ${model.busy ? "disabled" : ""}
+                            >要求修改</button>`
+                          : ""
+                      }
+                    </li>`
+                )
+                .join("")
+            : '<li class="director-empty-state">暂无</li>';
+          return `
+            <section class="director-brief-group" data-brief-group="${escapeHtml(
+              group.id
+            )}">
+              <h4>${escapeHtml(group.label)}</h4>
+              <ul>${rows}</ul>
+            </section>`;
+        })
+        .join("");
       briefCard.innerHTML = `
         <div class="director-section-heading">
           <div>
@@ -6084,22 +6258,7 @@
             ? escapeHtml(brief.summary)
             : "确认方向后，这里会显示可确认的创作简报。"
         }</p>
-        ${
-          questions.length
-            ? `<div class="director-error-banner">待确认：${escapeHtml(
-                questions.join("；")
-              )}</div>`
-            : ""
-        }
-        ${
-          openConflicts.length
-            ? `<div class="director-error-banner">冲突：${escapeHtml(
-                openConflicts
-                  .map((conflict) => conflict.message)
-                  .join("；")
-              )}</div>`
-            : ""
-        }
+        <div class="director-brief-groups" id="directorBriefGroups">${groups}</div>
         ${controls}`;
     }
 
@@ -6143,6 +6302,51 @@
     }
     if (continueButton) {
       continueButton.disabled = !model.canContinue || model.busy;
+    }
+    const modelProfileStatus = $("#directorModelProfileStatus");
+    if (modelProfileStatus) {
+      const selectedProfile = model.modelProfiles.find(
+        (profile) => profile.selected
+      );
+      if (!selectedProfile) {
+        modelProfileStatus.textContent = model.modelProfiles.length
+          ? "请选择目标模型以查看档案就绪度与证据。"
+          : "当前没有可用的模型档案。";
+      } else {
+        const evidence = selectedProfile.evidence.length
+          ? selectedProfile.evidence
+              .map(
+                (item) =>
+                  `${item.title || item.id || "未命名证据"}（${
+                    item.verificationStatus || "状态未标记"
+                  }）`
+              )
+              .join("；")
+          : "暂无已记录证据";
+        modelProfileStatus.textContent = `档案状态：${
+          selectedProfile.readiness || "未标记"
+        }；生成就绪：${
+          selectedProfile.generationReady ? "是" : "否"
+        }；证据：${evidence}`;
+      }
+    }
+
+    const workbenchBrief = $("#creativeWorkbenchBrief");
+    if (workbenchBrief) {
+      workbenchBrief.textContent = model.brief?.summary
+        ? `已确认简报：${model.brief.summary}`
+        : "等待已确认的创作简报";
+    }
+    const workbenchModel = $("#creativeWorkbenchModel");
+    if (workbenchModel) {
+      const selectedProfile = model.modelProfiles.find(
+        (profile) => profile.selected
+      );
+      workbenchModel.textContent = model.selectedModelProfileId
+        ? `目标模型：${
+            selectedProfile?.label || model.selectedModelProfileId
+          }`
+        : "等待已选择的目标模型";
     }
 
     const imagePreview = $("#directorImagePreview");
@@ -7593,6 +7797,14 @@
         type: "select_direction",
         directionId: button.dataset.directorDirection,
       });
+      return;
+    }
+    if (button.dataset.directorReviseItem) {
+      const item = state.creativeIntake.brief?.items.find(
+        (candidate) => candidate.id === button.dataset.directorReviseItem
+      );
+      if (!item) return;
+      sendCreativeDirectorMessage(app.buildBriefRevisionMessage(item));
       return;
     }
     if (button.dataset.directorImageUse) {

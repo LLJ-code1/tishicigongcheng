@@ -40,6 +40,8 @@ const {
   canConfirmCreativeBrief,
   creativeDirectorStageView,
   buildDirectorRenderModel,
+  buildCreativeBriefGroups,
+  buildBriefRevisionMessage,
   performCreativeIntakeRequest,
   persistCreativeIntakeRevision,
   DIRECTOR_IMAGE_REQUESTED_USES,
@@ -1073,6 +1075,8 @@ test("director render model derives directions brief gate and workbench handoff 
       id: "anima-1.1-v1",
       label: "Anima 1.1",
       readiness: "verified",
+      generationReady: false,
+      evidence: [],
       selected: false,
     },
   ]);
@@ -1088,6 +1092,242 @@ test("director render model derives directions brief gate and workbench handoff 
   assert.equal(buildDirectorRenderModel(selectedState).showWorkbench, true);
   selectedState.creativeIntake = creativeIntakeStageFixture("brief_draft");
   assert.equal(buildDirectorRenderModel(selectedState).showWorkbench, false);
+});
+
+test("creative brief groups use only canonical source lock question and conflict fields", () => {
+  const intake = creativeIntakeStageFixture("brief_draft");
+  intake.inputs.images = [
+    {
+      id: "image-one",
+      name: "reference.png",
+      mimeType: "image/png",
+      status: "local_reference_not_embedded",
+      requestedUses: ["outfit"],
+    },
+  ];
+  intake.brief.items = [
+    {
+      id: "user-action",
+      category: "action",
+      text: "向前奔跑",
+      source: { type: "user", refId: null },
+      locked: false,
+    },
+    {
+      id: "image-outfit",
+      category: "outfit",
+      text: "参考图中的红裙",
+      source: { type: "image", refId: "image-one" },
+      locked: true,
+    },
+    {
+      id: "ai-lighting",
+      category: "lighting",
+      text: "雨夜霓虹",
+      source: { type: "ai", refId: null },
+      locked: false,
+    },
+    {
+      id: "rule-quality",
+      category: "quality",
+      text: "模型质量规则",
+      source: { type: "model_rule", refId: "profile-one" },
+      locked: true,
+    },
+  ];
+  intake.brief.aiAdditions = ["加入湿地反光"];
+  intake.brief.openQuestions = ["镜头更近还是更远？"];
+  intake.conflicts = [
+    {
+      id: "conflict-one",
+      code: "lighting_conflict",
+      message: "暖光与冷光冲突",
+      status: "open",
+      itemIds: ["ai-lighting"],
+    },
+    {
+      id: "conflict-resolved",
+      code: "resolved",
+      message: "已解决的内容不应显示",
+      status: "resolved",
+      itemIds: [],
+    },
+  ];
+
+  const groups = buildCreativeBriefGroups(intake);
+
+  assert.deepEqual(groups.map((group) => group.label), [
+    "用户明确",
+    "图片借用",
+    "AI 补全",
+    "已锁定",
+    "待确认",
+    "冲突",
+  ]);
+  assert.deepEqual(groups[0].rows.map((row) => row.text), ["向前奔跑"]);
+  assert.deepEqual(groups[1].rows.map((row) => row.text), [
+    "参考图中的红裙",
+  ]);
+  assert.deepEqual(groups[2].rows.map((row) => row.text), [
+    "雨夜霓虹",
+    "模型质量规则",
+    "加入湿地反光",
+  ]);
+  assert.deepEqual(groups[3].rows.map((row) => row.text), [
+    "参考图中的红裙",
+    "模型质量规则",
+  ]);
+  assert.deepEqual(groups[4].rows.map((row) => row.text), [
+    "镜头更近还是更远？",
+  ]);
+  assert.deepEqual(groups[5].rows.map((row) => row.text), [
+    "暖光与冷光冲突",
+  ]);
+  assert.equal(groups[1].rows[0].source.type, "image");
+  assert.equal(groups[3].rows[0].locked, true);
+  assert.equal(groups[5].rows[0].source, null);
+});
+
+test("brief revision request is a bounded director message and never a canonical edit action", () => {
+  const item = {
+    id: "outfit-one",
+    category: "outfit",
+    text: "红色长裙",
+    source: { type: "user", refId: null },
+    locked: false,
+  };
+  assert.equal(
+    buildBriefRevisionMessage(item),
+    "我想修改简报中的「红色长裙」（outfit），请先问我需要怎么改。"
+  );
+  assert.throws(
+    () =>
+      buildBriefRevisionMessage({
+        ...item,
+        text: "x".repeat(20_001),
+      }),
+    /brief item/
+  );
+});
+
+test("model gate exposes canonical profile readiness and bounded evidence without researching links", () => {
+  const state = createInitialState();
+  state.creativeIntake = creativeIntakeStageFixture("brief_confirmed");
+  state.modelProfiles = [
+    {
+      profileId: "profile-one",
+      displayName: "Profile One",
+      validationStatus: "pending_local_validation",
+      generationReady: false,
+      evidence: [
+        {
+          id: "author-page",
+          title: "作者页面快照",
+          verificationStatus: "recorded_source_snapshot_not_rechecked",
+          url: "https://example.invalid/model",
+        },
+      ],
+    },
+  ];
+
+  const model = buildDirectorRenderModel(state);
+
+  assert.deepEqual(model.modelProfiles, [
+    {
+      id: "profile-one",
+      label: "Profile One",
+      readiness: "pending_local_validation",
+      generationReady: false,
+      evidence: [
+        {
+          id: "author-page",
+          title: "作者页面快照",
+          verificationStatus: "recorded_source_snapshot_not_rechecked",
+        },
+      ],
+      selected: false,
+    },
+  ]);
+  assert.equal(
+    JSON.stringify(model.modelProfiles).includes("example.invalid"),
+    false
+  );
+});
+
+test("workbench handoff preserves canonical brief and model without inventing decomposition", () => {
+  const state = createInitialState();
+  state.creativeIntake = creativeIntakeStageFixture("model_selected");
+  state.draftInput = "";
+
+  const entered = reduceState(state, { type: "ENTER_CREATIVE_WORKBENCH" });
+
+  assert.equal(entered.view, "text");
+  assert.equal(entered.draftInput, "A red dress on a runway.");
+  assert.equal(entered.creativeIntake.selectedModelProfileId, "anima-1.1-v1");
+  assert.equal(entered.creativeIntake.decomposition, null);
+  assert.deepEqual(entered.blocks, []);
+  assert.match(entered.toast, /模型适配拆解尚未生成/);
+
+  const reopened = reduceState(entered, {
+    type: "CREATIVE_INTAKE_REPLACED",
+    item: creativeIntakeStageFixture("brief_draft"),
+  });
+  assert.equal(reopened.view, "home");
+  assert.equal(reopened.creativeIntake.selectedModelProfileId, null);
+  assert.equal(reopened.creativeIntake.decomposition, null);
+});
+
+test("refresh recovery stays stage-driven at intake brief and model boundaries", () => {
+  for (const stage of [
+    "intake",
+    "brief_draft",
+    "brief_confirmed",
+    "model_selected",
+  ]) {
+    const previous = createInitialState();
+    previous.view = "text";
+    const restored = hydrateProjectState(previous, {
+      id: `project-${stage}`,
+      metadata: {
+        workspaceBaseVersion: 0,
+        creativeIntake: creativeIntakeStageFixture(stage),
+      },
+      versions: [],
+    });
+    const view = buildDirectorRenderModel(restored);
+
+    assert.equal(restored.creativeIntake.stage, stage);
+    assert.equal(
+      view.showModelGate,
+      ["brief_confirmed", "model_selected"].includes(stage)
+    );
+    assert.equal(view.canContinue, stage === "model_selected");
+    assert.equal(view.showWorkbench, stage === "model_selected");
+  }
+});
+
+test("homepage exposes rich brief model evidence and honest workbench handoff surfaces", () => {
+  const html = fs.readFileSync(
+    path.join(__dirname, "..", "index.html"),
+    "utf8"
+  );
+  const script = fs.readFileSync(
+    path.join(__dirname, "..", "app.js"),
+    "utf8"
+  );
+
+  for (const id of [
+    "directorBriefGroups",
+    "directorModelProfileStatus",
+    "creativeWorkbenchHandoff",
+    "creativeWorkbenchBrief",
+    "creativeWorkbenchModel",
+  ]) {
+    assert.match(html, new RegExp(`id=[\"']${id}[\"']`));
+  }
+  assert.match(html, /模型适配拆解尚未生成/);
+  assert.match(script, /data-director-revise-item/);
+  assert.match(script, /buildBriefRevisionMessage/);
 });
 
 test("request runner posts the frozen body and drops a response made stale while awaiting", async () => {

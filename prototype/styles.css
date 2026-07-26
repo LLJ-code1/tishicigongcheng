@@ -3156,6 +3156,76 @@ select:focus {
   gap: 7px;
 }
 
+.director-brief-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.director-brief-group {
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-soft);
+}
+
+.director-brief-group h4 {
+  margin: 0 0 7px;
+  color: var(--faint);
+  font-size: 10px;
+}
+
+.director-brief-group ul {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.director-brief-group li {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.director-brief-group li > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.director-brief-revise {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--teal);
+  background: var(--surface);
+  font-size: 9px;
+}
+
+.director-empty-state,
+.director-model-profile-status {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.director-model-profile-status {
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-soft);
+}
+
 .director-model-gate.is-locked {
   border-style: dashed;
   background: linear-gradient(145deg, #fafcfb, #f1f5f3);
@@ -3185,6 +3255,35 @@ select:focus {
 .director-shell [aria-busy="true"] {
   cursor: progress;
   opacity: 0.7;
+}
+
+.creative-workbench-handoff {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(240px, 0.8fr) minmax(360px, 1.5fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 22px;
+  border-bottom: 1px solid var(--line);
+  background: #f4f8f6;
+}
+
+.creative-workbench-handoff div {
+  display: grid;
+  gap: 3px;
+}
+
+.creative-workbench-handoff strong,
+.creative-workbench-handoff span,
+.creative-workbench-handoff p {
+  margin: 0;
+}
+
+.creative-workbench-handoff span,
+.creative-workbench-handoff > p {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
 }
 /* Complete Recipe v1 controls */
 .model-profile-badge,
