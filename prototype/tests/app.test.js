@@ -1490,6 +1490,10 @@ test("unified creative director homepage replaces the split creation entry point
 
   assert.doesNotMatch(home, /creation-choice|data-nav=["'](?:text|image)["']/);
   assert.doesNotMatch(nav, /data-nav=["'](?:text|image)["']/);
+  assert.match(
+    home,
+    /class=["'][^"']*director-model-gate[^"']*hidden[^"']*["'][^>]*id=["']directorModelGate["'][^>]*aria-hidden=["']true["']/
+  );
   assert.match(html, /id=["']workbenchArea["'][^>]*data-canonical-stage-required=["']model_selected["']/);
   assert.match(css, /\.director-conversation[\s\S]*overflow-y:\s*auto/);
   assert.match(css, /\.director-model-gate\.is-locked/);
