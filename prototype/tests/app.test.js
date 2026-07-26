@@ -73,6 +73,9 @@ const {
   saveModelResearchDraft,
   reviewModelProfileVersion,
   activateModelProfileVersion,
+  createModelResearchRequestGuard,
+  isModelResearchRequestCurrent,
+  recoverModelResearchState,
 } = require("../app.js");
 const unicode15 = require("../unicode15-data.js");
 
@@ -5562,6 +5565,14 @@ test("research reducer tracks immutable version history and gates review on iden
       },
     },
   });
+  state = reduceState(state, {
+    type: "MODEL_REVIEW_NOTE_CHANGED",
+    value: "记录采用与人工补充依据",
+  });
+  state = reduceState(state, {
+    type: "MODEL_REVIEWER_NOTE_CHANGED",
+    value: "已核对原始页面和版本身份",
+  });
   assert.deepEqual(
     state.modelResearch.versionHistory.map((item) => item.versionId),
     ["v-1", "v-2"]
@@ -5656,6 +5667,167 @@ test("model gate contains official-link research, evidence review, manual supple
   assert.match(html, /使用现有模型继续/);
   assert.match(source, /textContent/);
   assert.doesNotMatch(source, /modelResearchResult\.innerHTML/);
+});
+
+test("research save and review require explicit non-empty notes and save only applies to drafts", () => {
+  let state = createInitialState();
+  state.modelResearch = {
+    ...emptyModelResearch(),
+    status: "ready",
+    claims: [],
+    draftVersion: {
+      versionId: "v-1",
+      lifecycleStatus: "draft",
+      profile: {
+        displayName: "Example",
+        model: { versionName: "v1", versionId: 22 },
+      },
+    },
+  };
+  let model = buildModelResearchRenderModel(state);
+  assert.equal(model.canSave, false);
+  assert.equal(model.canReview, false);
+  state = reduceState(state, {
+    type: "MODEL_REVIEW_NOTE_CHANGED",
+    value: "核对原始页面",
+  });
+  state = reduceState(state, {
+    type: "MODEL_REVIEWER_NOTE_CHANGED",
+    value: "证据和版本身份已核对",
+  });
+  model = buildModelResearchRenderModel(state);
+  assert.equal(model.canSave, true);
+  assert.equal(model.canReview, true);
+  state.modelResearch.draftVersion.lifecycleStatus = "reviewed";
+  assert.equal(buildModelResearchRenderModel(state).canSave, false);
+
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  assert.match(html, /modelResearchReviewNote/);
+  assert.match(html, /modelResearchReviewerNote/);
+});
+
+test("reopen recovery rebuilds research snapshots claims decisions and exact immutable version from server records", () => {
+  const state = createInitialState();
+  state.modelResearch = {
+    ...emptyModelResearch(),
+    status: "recoverable",
+    run: { runId: "run-1" },
+    draftVersion: { versionId: "v-2" },
+    activeVersionId: "v-active",
+  };
+  const recovered = recoverModelResearchState(
+    state,
+    {
+      runId: "run-1",
+      snapshots: [{ snapshotId: "snap-1", extractedText: "server-only body" }],
+      claims: [{
+        claimId: "claim-1",
+        fieldPath: "displayName",
+        applicationStatus: "approved",
+      }],
+    },
+    {
+      versionId: "v-2",
+      lifecycleStatus: "draft",
+      claimDecisions: { "claim-1": "approved" },
+      reviewNote: "saved note",
+      profile: {
+        displayName: "Example",
+        model: { versionName: "v1", versionId: 22 },
+      },
+    }
+  );
+  assert.equal(recovered.modelResearch.status, "ready");
+  assert.equal(recovered.modelResearch.snapshots[0].snapshotId, "snap-1");
+  assert.equal(recovered.modelResearch.claimDecisions["claim-1"], "approved");
+  assert.equal(recovered.modelResearch.reviewNote, "saved note");
+  assert.equal(recovered.modelResearch.activeVersionId, "v-active");
+});
+
+test("research operation guard freezes workspace run and version and rejects every stale dimension", () => {
+  const state = createInitialState();
+  state.projectId = "project-1";
+  state.workingRevision = 3;
+  state.projectRevision = 4;
+  state.modelResearch = {
+    ...emptyModelResearch(),
+    run: { runId: "run-1" },
+    draftVersion: { versionId: "v-1" },
+  };
+  const guard = createModelResearchRequestGuard(state, 9);
+  assert.equal(isModelResearchRequestCurrent(guard, 9, state), true);
+  for (const mutate of [
+    (value) => { value.projectId = "project-2"; },
+    (value) => { value.workingRevision += 1; },
+    (value) => { value.projectRevision += 1; },
+    (value) => { value.modelResearch.run.runId = "run-2"; },
+    (value) => { value.modelResearch.draftVersion.versionId = "v-2"; },
+    (value) => { value.modelResearch.revision += 1; },
+  ]) {
+    const changed = structuredClone(state);
+    mutate(changed);
+    assert.equal(isModelResearchRequestCurrent(guard, 9, changed), false);
+  }
+  assert.equal(isModelResearchRequestCurrent(guard, 10, state), false);
+});
+
+test("all research lifecycle requests receive AbortSignal and stale activation stops before catalog refresh", async () => {
+  const controller = new AbortController();
+  const calls = [];
+  const request = async (path, options) => {
+    calls.push({ path, signal: options.signal });
+    return { item: { versionId: "v-2", profileId: "profile-1" } };
+  };
+  await researchModelSource({
+    sourceUrl: "https://civitai.com/models/1",
+    request,
+    signal: controller.signal,
+  });
+  await saveModelResearchDraft({
+    versionId: "v-1",
+    claimDecisions: {},
+    manualFields: {},
+    reviewNote: "note",
+    request,
+    signal: controller.signal,
+  });
+  await reviewModelProfileVersion({
+    versionId: "v-2",
+    reviewerNote: "review",
+    request,
+    signal: controller.signal,
+  });
+  let current = false;
+  let loads = 0;
+  const activated = await activateModelProfileVersion({
+    versionId: "v-2",
+    expectedActiveVersionId: null,
+    confirmActivation: () => true,
+    request,
+    loadProfiles: async () => {
+      loads += 1;
+      return { items: [] };
+    },
+    signal: controller.signal,
+    isCurrent: () => current,
+  });
+  assert.equal(activated.stale, true);
+  assert.equal(loads, 0);
+  assert.equal(calls.every((call) => call.signal === controller.signal), true);
+});
+
+test("workspace cancellation releases every model research busy state without discarding evidence", () => {
+  const state = createInitialState();
+  state.modelResearch = {
+    ...emptyModelResearch(),
+    status: "activating",
+    run: { runId: "run-1" },
+    snapshots: [{ snapshotId: "snap-1" }],
+    draftVersion: { versionId: "v-1", lifecycleStatus: "reviewed" },
+  };
+  const cancelled = reduceState(state, { type: "WORKSPACE_REQUESTS_CANCELLED" });
+  assert.equal(cancelled.modelResearch.status, "ready");
+  assert.equal(cancelled.modelResearch.snapshots[0].snapshotId, "snap-1");
 });
 
 test("deterministic random plans map clothing into the dedicated outfit block", () => {

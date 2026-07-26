@@ -1715,6 +1715,20 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
                 {"error": "research route not found", "code": "not_found"},
                 status=404,
             )
+        version_parts = parsed.path.split("/")
+        if (
+            len(version_parts) == 4
+            and version_parts[1:3] == ["api", "model-profile-versions"]
+            and version_parts[3]
+        ):
+            return self.handle_model_profile_version_get(
+                unquote(version_parts[3])
+            )
+        if parsed.path.startswith("/api/model-profile-versions/"):
+            return self.send_json(
+                {"error": "profile version route not found", "code": "not_found"},
+                status=404,
+            )
         if parsed.path == "/api/text/random-catalog":
             return self.handle_random_catalog_get()
         if parsed.path == "/api/backups/export":
@@ -2184,6 +2198,21 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
                     status=404,
                 )
             item = model_profile_store._run_result(connection, row)
+        self.send_json({"item": item})
+
+    def handle_model_profile_version_get(self, version_id: str) -> None:
+        if not version_id or "/" in version_id or "\\" in version_id:
+            raise model_profile_store.ProfileStoreError(
+                "unknown_version", "profile version does not exist"
+            )
+        item = model_profile_store.get_profile_version(
+            version_id, db_path=prompt_db.DEFAULT_DB_PATH
+        )
+        if item is None:
+            raise model_profile_store.ProfileStoreError(
+                "unknown_version", "profile version does not exist"
+            )
+        self._require_profile_hash(item)
         self.send_json({"item": item})
 
     def handle_model_profile_version_put(self, version_id: str) -> None:

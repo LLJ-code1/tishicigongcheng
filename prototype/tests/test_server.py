@@ -829,6 +829,16 @@ class PromptStudioServerTests(unittest.TestCase):
         ) as response:
             run = json.loads(response.read().decode("utf-8"))["item"]
         self.assertEqual(run["snapshots"], created["snapshots"])
+        with urlopen(
+            f"{self.base_url}/api/model-profile-versions/"
+            f"{created['draftVersion']['versionId']}"
+        ) as response:
+            restored_version = json.loads(response.read().decode("utf-8"))["item"]
+        self.assertEqual(
+            restored_version["versionId"],
+            created["draftVersion"]["versionId"],
+        )
+        self.assertEqual(restored_version["profile"], created["draftVersion"]["profile"])
 
         decisions = {
             claim["claimId"]: "approved" for claim in created["claims"]

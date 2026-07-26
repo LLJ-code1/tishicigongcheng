@@ -1046,6 +1046,7 @@
   function emptyModelResearch() {
     return {
       status: "idle",
+      revision: 0,
       sourceUrl: "",
       run: null,
       snapshots: [],
@@ -1084,6 +1085,67 @@
       metadata.activeVersionId = research.activeVersionId;
     }
     return metadata;
+  }
+
+  function recoverModelResearchState(state, run, version) {
+    const next = clone(state);
+    const prior = next.modelResearch || emptyModelResearch();
+    const claims = Array.isArray(run?.claims) ? clone(run.claims) : [];
+    next.modelResearch = {
+      ...emptyModelResearch(),
+      revision: Number(prior.revision || 0) + 1,
+      status: "ready",
+      run: clone(run),
+      snapshots: Array.isArray(run?.snapshots) ? clone(run.snapshots) : [],
+      claims,
+      draftVersion: clone(version),
+      versionHistory: [clone(version)],
+      claimDecisions: {
+        ...Object.fromEntries(
+          claims.map((claim) => [
+            claim.claimId,
+            claim.applicationStatus || "proposed",
+          ])
+        ),
+        ...clone(safeObject(version?.claimDecisions)),
+      },
+      reviewNote:
+        typeof version?.reviewNote === "string" ? version.reviewNote : "",
+      activeVersionId: prior.activeVersionId || null,
+      warnings: Array.isArray(
+        version?.profile?.metadata?.research?.warnings
+      )
+        ? clone(version.profile.metadata.research.warnings)
+        : [],
+    };
+    return next;
+  }
+
+  function createModelResearchRequestGuard(state, sessionId) {
+    return Object.freeze({
+      sessionId,
+      projectId: state.projectId || null,
+      workingRevision: state.workingRevision,
+      projectRevision: state.projectRevision,
+      runId: state.modelResearch?.run?.runId || null,
+      versionId: state.modelResearch?.draftVersion?.versionId || null,
+      researchRevision: Number(state.modelResearch?.revision || 0),
+    });
+  }
+
+  function isModelResearchRequestCurrent(request, sessionId, state) {
+    return Boolean(
+      request &&
+        request.sessionId === sessionId &&
+        request.projectId === (state.projectId || null) &&
+        request.workingRevision === state.workingRevision &&
+        request.projectRevision === state.projectRevision &&
+        request.runId === (state.modelResearch?.run?.runId || null) &&
+        request.versionId ===
+          (state.modelResearch?.draftVersion?.versionId || null) &&
+        request.researchRevision ===
+          Number(state.modelResearch?.revision || 0)
+    );
   }
 
   function buildModelResearchRenderModel(state) {
@@ -1168,7 +1230,11 @@
         research.status === "partial" ||
         (research.status === "ready" &&
           (research.warnings || []).length > 0),
-      canSave: Boolean(research.draftVersion?.versionId) && !busy,
+      canSave:
+        Boolean(research.draftVersion?.versionId) &&
+        research.draftVersion?.lifecycleStatus === "draft" &&
+        Boolean(String(research.reviewNote || "").trim()) &&
+        !busy,
       canReview:
         Boolean(research.draftVersion?.versionId) &&
         Boolean(displayName && versionName) &&
@@ -1176,6 +1242,7 @@
         versionId > 0 &&
         unresolved.length === 0 &&
         research.draftVersion?.lifecycleStatus === "draft" &&
+        Boolean(String(research.reviewerNote || "").trim()) &&
         !busy,
       canActivate:
         research.draftVersion?.lifecycleStatus === "reviewed" &&
@@ -1185,9 +1252,10 @@
     };
   }
 
-  async function researchModelSource({ sourceUrl, request }) {
+  async function researchModelSource({ sourceUrl, request, signal }) {
     return request("/api/model-research", {
       method: "POST",
+      signal,
       body: JSON.stringify({ sourceUrl: String(sourceUrl || "").trim() }),
     });
   }
@@ -1198,9 +1266,11 @@
     manualFields,
     reviewNote,
     request,
+    signal,
   }) {
     return request(`/api/model-profile-versions/${encodeURIComponent(versionId)}`, {
       method: "PUT",
+      signal,
       body: JSON.stringify({
         claimDecisions: clone(safeObject(claimDecisions)),
         manualFields: clone(safeObject(manualFields)),
@@ -1209,11 +1279,17 @@
     });
   }
 
-  async function reviewModelProfileVersion({ versionId, reviewerNote, request }) {
+  async function reviewModelProfileVersion({
+    versionId,
+    reviewerNote,
+    request,
+    signal,
+  }) {
     return request(
       `/api/model-profile-versions/${encodeURIComponent(versionId)}/review`,
       {
         method: "POST",
+        signal,
         body: JSON.stringify({ reviewerNote: String(reviewerNote || "") }),
       }
     );
@@ -1226,6 +1302,8 @@
     confirmActivation,
     request,
     loadProfiles,
+    signal,
+    isCurrent = () => true,
   }) {
     if (!confirmActivation()) return { cancelled: true };
     try {
@@ -1233,10 +1311,13 @@
         `/api/model-profile-versions/${encodeURIComponent(versionId)}/activate`,
         {
           method: "POST",
+          signal,
           body: JSON.stringify({ expectedActiveVersionId }),
         }
       );
-      const catalog = await loadProfiles();
+      if (!isCurrent()) return { stale: true };
+      const catalog = await loadProfiles({ signal });
+      if (!isCurrent()) return { stale: true };
       return {
         item: clone(activated.item),
         profiles: clone(catalog.items || []),
@@ -1245,7 +1326,9 @@
       };
     } catch (error) {
       if (error?.status === 409) {
-        error.currentCatalog = await loadProfiles();
+        if (!isCurrent()) return { stale: true };
+        error.currentCatalog = await loadProfiles({ signal });
+        if (!isCurrent()) return { stale: true };
         error.requiresReconfirmation = true;
       }
       throw error;
@@ -3295,6 +3378,15 @@
         next.batchRegenerating = false;
         next.analysisQueue = [];
         next.generationProgress = idleGenerationProgress();
+        if (
+          ["loading", "saving", "reviewing", "activating"].includes(
+            next.modelResearch?.status
+          )
+        ) {
+          next.modelResearch.status = next.modelResearch?.draftVersion?.versionId
+            ? "ready"
+            : "idle";
+        }
         Object.values(next.analyzers).forEach((model) => {
           model.status = model.available === false
             ? "unavailable"
@@ -3512,6 +3604,7 @@
       case "MODEL_RESEARCH_STARTED":
         next.modelResearch = {
           ...emptyModelResearch(),
+          revision: Number(next.modelResearch?.revision || 0) + 1,
           sourceUrl: String(action.sourceUrl || "").trim(),
           status: "loading",
         };
@@ -3523,6 +3616,7 @@
           : null;
         next.modelResearch = {
           ...emptyModelResearch(),
+          revision: Number(next.modelResearch?.revision || 0) + 1,
           sourceUrl:
             next.modelResearch?.sourceUrl ||
             String(item.run?.sourceUrl || ""),
@@ -3565,6 +3659,7 @@
           return next;
         }
         next.modelResearch.claimDecisions[action.claimId] = action.decision;
+        next.modelResearch.revision = Number(next.modelResearch.revision || 0) + 1;
         return next;
       case "MODEL_MANUAL_FIELD_CHANGED":
         if (
@@ -3584,7 +3679,22 @@
         )
           .slice(0, action.field === "notes" ? 4096 : 256)
           .join("");
+        next.modelResearch.revision = Number(next.modelResearch.revision || 0) + 1;
         return next;
+      case "MODEL_REVIEW_NOTE_CHANGED":
+        next.modelResearch.reviewNote = Array.from(String(action.value || ""))
+          .slice(0, 4096)
+          .join("");
+        next.modelResearch.revision = Number(next.modelResearch.revision || 0) + 1;
+        return next;
+      case "MODEL_REVIEWER_NOTE_CHANGED":
+        next.modelResearch.reviewerNote = Array.from(String(action.value || ""))
+          .slice(0, 4096)
+          .join("");
+        next.modelResearch.revision = Number(next.modelResearch.revision || 0) + 1;
+        return next;
+      case "MODEL_RESEARCH_RECOVERED":
+        return recoverModelResearchState(next, action.run, action.version);
       case "MODEL_RESEARCH_STATUS_CHANGED":
         next.modelResearch.status = String(action.status || "idle");
         next.modelResearch.error = String(action.error || "");
@@ -3592,6 +3702,7 @@
       case "MODEL_DRAFT_SAVED": {
         const version = clone(action.item);
         next.modelResearch.draftVersion = version;
+        next.modelResearch.revision = Number(next.modelResearch.revision || 0) + 1;
         next.modelResearch.versionHistory = [
           ...(next.modelResearch.versionHistory || []),
           version,
@@ -3602,6 +3713,7 @@
       }
       case "MODEL_VERSION_REVIEWED":
         next.modelResearch.draftVersion = clone(action.item);
+        next.modelResearch.revision = Number(next.modelResearch.revision || 0) + 1;
         next.modelResearch.versionHistory = [
           ...(next.modelResearch.versionHistory || []),
           clone(action.item),
@@ -3611,6 +3723,7 @@
         return next;
       case "MODEL_VERSION_ACTIVATED":
         next.modelResearch.draftVersion = clone(action.item);
+        next.modelResearch.revision = Number(next.modelResearch.revision || 0) + 1;
         next.modelResearch.activeVersionId = action.item?.versionId || null;
         next.modelResearch.status = "ready";
         next.modelResearch.error = "";
@@ -4496,6 +4609,9 @@
     emptyModelResearch,
     buildModelResearchRenderModel,
     modelResearchPersistenceMetadata,
+    recoverModelResearchState,
+    createModelResearchRequestGuard,
+    isModelResearchRequestCurrent,
     researchModelSource,
     saveModelResearchDraft,
     reviewModelProfileVersion,
@@ -4982,6 +5098,7 @@
       releaseImagePreview();
       directorImageCollectionController.clear();
       dispatch({ type: "PROJECT_OPENED", item: result.item || {} });
+      restorePersistedModelResearch();
     } catch (error) {
       if (requestId !== projectOpenRequestId) return;
       dispatch({
@@ -5259,25 +5376,80 @@
     }
   }
 
-  async function loadModelProfileCatalog() {
-    return apiJson("/api/model-profiles");
+  async function loadModelProfileCatalog(options = {}) {
+    return apiJson("/api/model-profiles", options);
+  }
+
+  function beginModelResearchRequest() {
+    const workspace = beginWorkspaceRequest();
+    return {
+      ...workspace,
+      ...app.createModelResearchRequestGuard(state, workspaceSessionId),
+    };
+  }
+
+  function isCurrentModelResearchRequest(request) {
+    return app.isModelResearchRequestCurrent(
+      request,
+      workspaceSessionId,
+      state
+    );
+  }
+
+  async function restorePersistedModelResearch() {
+    const runId = state.modelResearch?.run?.runId;
+    const versionId = state.modelResearch?.draftVersion?.versionId;
+    if (!runId || !versionId || state.modelResearch.status !== "recoverable") {
+      return;
+    }
+    const request = beginModelResearchRequest();
+    try {
+      const [run, version] = await Promise.all([
+        apiJson(`/api/model-research/${encodeURIComponent(runId)}`, {
+          signal: request.controller.signal,
+        }),
+        apiJson(`/api/model-profile-versions/${encodeURIComponent(versionId)}`, {
+          signal: request.controller.signal,
+        }),
+      ]);
+      if (!isCurrentModelResearchRequest(request)) return;
+      dispatch({
+        type: "MODEL_RESEARCH_RECOVERED",
+        run: run.item,
+        version: version.item,
+      });
+    } catch (error) {
+      if (isAbortError(error) || !isCurrentModelResearchRequest(request)) return;
+      dispatch({
+        type: "MODEL_RESEARCH_FAILED",
+        error: error.message || "模型研究记录恢复失败，可重新研究",
+      });
+    } finally {
+      finishWorkspaceRequest(request);
+    }
   }
 
   async function runModelResearch() {
     const sourceUrl = String($("#modelSourceUrl")?.value || "").trim();
     if (!sourceUrl || state.modelResearch?.status === "loading") return;
     dispatch({ type: "MODEL_RESEARCH_STARTED", sourceUrl });
+    const request = beginModelResearchRequest();
     try {
       const result = await app.researchModelSource({
         sourceUrl,
         request: apiJson,
+        signal: request.controller.signal,
       });
+      if (!isCurrentModelResearchRequest(request)) return;
       dispatch({ type: "MODEL_RESEARCH_SUCCEEDED", item: result.item });
     } catch (error) {
+      if (isAbortError(error) || !isCurrentModelResearchRequest(request)) return;
       dispatch({
         type: "MODEL_RESEARCH_FAILED",
         error: error.message || "模型研究失败，请重试或人工补充",
       });
+    } finally {
+      finishWorkspaceRequest(request);
     }
   }
 
@@ -5285,6 +5457,7 @@
     const research = state.modelResearch;
     if (!research?.draftVersion?.versionId) return;
     dispatch({ type: "MODEL_RESEARCH_STATUS_CHANGED", status: "saving" });
+    const request = beginModelResearchRequest();
     try {
       const result = await app.saveModelResearchDraft({
         versionId: research.draftVersion.versionId,
@@ -5292,15 +5465,20 @@
         manualFields: research.manualFields,
         reviewNote: research.reviewNote,
         request: apiJson,
+        signal: request.controller.signal,
       });
+      if (!isCurrentModelResearchRequest(request)) return;
       dispatch({ type: "MODEL_DRAFT_SAVED", item: result.item });
       if (state.projectId) saveCurrentProject();
     } catch (error) {
+      if (isAbortError(error) || !isCurrentModelResearchRequest(request)) return;
       dispatch({
         type: "MODEL_RESEARCH_STATUS_CHANGED",
         status: "ready",
         error: error.message || "模型研究草稿保存失败",
       });
+    } finally {
+      finishWorkspaceRequest(request);
     }
   }
 
@@ -5308,19 +5486,25 @@
     const model = app.buildModelResearchRenderModel(state);
     if (!model.canReview) return;
     dispatch({ type: "MODEL_RESEARCH_STATUS_CHANGED", status: "reviewing" });
+    const request = beginModelResearchRequest();
     try {
       const result = await app.reviewModelProfileVersion({
         versionId: state.modelResearch.draftVersion.versionId,
         reviewerNote: state.modelResearch.reviewerNote,
         request: apiJson,
+        signal: request.controller.signal,
       });
+      if (!isCurrentModelResearchRequest(request)) return;
       dispatch({ type: "MODEL_VERSION_REVIEWED", item: result.item });
     } catch (error) {
+      if (isAbortError(error) || !isCurrentModelResearchRequest(request)) return;
       dispatch({
         type: "MODEL_RESEARCH_STATUS_CHANGED",
         status: "ready",
         error: error.message || "模型版本审阅失败",
       });
+    } finally {
+      finishWorkspaceRequest(request);
     }
   }
 
@@ -5334,6 +5518,7 @@
     const expected =
       current?.profileVersionId || research.activeVersionId || null;
     dispatch({ type: "MODEL_RESEARCH_STATUS_CHANGED", status: "activating" });
+    const request = beginModelResearchRequest();
     try {
       const result = await app.activateModelProfileVersion({
         versionId: version.versionId,
@@ -5347,7 +5532,10 @@
           ),
         request: apiJson,
         loadProfiles: loadModelProfileCatalog,
+        signal: request.controller.signal,
+        isCurrent: () => isCurrentModelResearchRequest(request),
       });
+      if (result.stale || !isCurrentModelResearchRequest(request)) return;
       if (result.cancelled) {
         dispatch({ type: "MODEL_RESEARCH_STATUS_CHANGED", status: "ready" });
         return;
@@ -5360,6 +5548,7 @@
       });
       if (state.projectId) saveCurrentProject();
     } catch (error) {
+      if (isAbortError(error) || !isCurrentModelResearchRequest(request)) return;
       if (error?.status === 409) {
         dispatch({
           type: "MODEL_PROFILES_LOADED",
@@ -5373,6 +5562,8 @@
           error: error.message || "模型版本激活失败",
         });
       }
+    } finally {
+      finishWorkspaceRequest(request);
     }
   }
 
@@ -7348,6 +7539,14 @@
     if (review) review.disabled = !model.canReview;
     const activate = $("#modelResearchActivate");
     if (activate) activate.disabled = !model.canActivate;
+    const reviewNote = $("#modelResearchReviewNote");
+    if (reviewNote && document.activeElement !== reviewNote) {
+      reviewNote.value = state.modelResearch?.reviewNote || "";
+    }
+    const reviewerNote = $("#modelResearchReviewerNote");
+    if (reviewerNote && document.activeElement !== reviewerNote) {
+      reviewerNote.value = state.modelResearch?.reviewerNote || "";
+    }
   }
 
   function renderDirector() {
@@ -9621,6 +9820,18 @@
       state = app.reduceState(state, {
         type: "MODEL_MANUAL_FIELD_CHANGED",
         field: event.target.dataset.modelManualField,
+        value: event.target.value,
+      });
+      renderModelResearch();
+    } else if (event.target.id === "modelResearchReviewNote") {
+      state = app.reduceState(state, {
+        type: "MODEL_REVIEW_NOTE_CHANGED",
+        value: event.target.value,
+      });
+      renderModelResearch();
+    } else if (event.target.id === "modelResearchReviewerNote") {
+      state = app.reduceState(state, {
+        type: "MODEL_REVIEWER_NOTE_CHANGED",
         value: event.target.value,
       });
       renderModelResearch();

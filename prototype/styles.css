@@ -3388,6 +3388,18 @@ select:focus {
   grid-column: 1 / -1;
 }
 
+.model-research-review-notes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.model-research-review-notes label {
+  display: grid;
+  gap: 5px;
+}
+
 .model-research-snapshot,
 .model-research-claim {
   margin-top: 10px;

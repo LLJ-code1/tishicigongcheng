@@ -228,6 +228,16 @@
                     <label>基础模型<input data-model-manual-field="model.baseModel" maxlength="256" /></label>
                     <label class="model-research-notes">备注<textarea data-model-manual-field="notes" maxlength="4096"></textarea></label>
                   </fieldset>
+                  <div class="model-research-review-notes">
+                    <label for="modelResearchReviewNote">
+                      保存说明
+                      <textarea id="modelResearchReviewNote" maxlength="4096" placeholder="说明本次采用、拒绝与人工补充的依据"></textarea>
+                    </label>
+                    <label for="modelResearchReviewerNote">
+                      审阅确认
+                      <textarea id="modelResearchReviewerNote" maxlength="4096" placeholder="确认已核对原始页面和精确版本身份"></textarea>
+                    </label>
+                  </div>
                   <div class="model-research-actions">
                     <button id="modelResearchRetry" class="secondary-button" type="button">重试研究</button>
                     <button id="modelResearchSave" class="secondary-button" type="button" disabled>保存新版本</button>
