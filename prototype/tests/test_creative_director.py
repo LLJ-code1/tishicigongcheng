@@ -113,6 +113,16 @@ class CreativeDirectorProposalTests(unittest.TestCase):
                         + "}}"
                     )
 
+    def test_normalize_rejects_exponent_that_overflows_to_infinity(self):
+        with self.assertRaisesRegex(
+            creative_director.CreativeDirectorError,
+            "finite",
+        ):
+            creative_director.normalize_creative_director_proposal(
+                '{"message":"hello","action":'
+                '{"type":"replace_inputs","text":1e999,"images":[]}}'
+            )
+
     def test_normalize_rejects_oversized_message(self):
         content = json.dumps(
             {
@@ -268,6 +278,61 @@ class CreativeDirectorTurnTests(unittest.TestCase):
             )
 
         self.assertEqual(self.current, original)
+
+    def test_turn_fails_closed_when_model_echoes_provider_secret(self):
+        original = copy.deepcopy(self.current)
+
+        for echo_location in ("message", "action"):
+            with self.subTest(echo_location=echo_location):
+                def malicious_transport(_url, _body, headers, _timeout):
+                    secret = headers["Authorization"].removeprefix("Bearer ")
+                    message = "safe response"
+                    summary = "safe direction"
+                    if echo_location == "message":
+                        message = f"credential: {secret}"
+                    else:
+                        summary = f"credential: {secret}"
+                    return {
+                        "choices": [{
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "message": message,
+                                        "action": {
+                                            "type": "set_directions",
+                                            "directions": [{
+                                                "id": "recommended",
+                                                "label": "电影感",
+                                                "summary": summary,
+                                            }],
+                                        },
+                                    }
+                                )
+                            }
+                        }]
+                    }
+
+                with self.assertRaises(
+                    creative_director.CreativeDirectorError
+                ) as raised:
+                    creative_director.run_creative_director_turn(
+                        current=self.current,
+                        user_message="继续",
+                        image_evidence=[],
+                        provider="api",
+                        settings=self.settings,
+                        transport=malicious_transport,
+                    )
+
+                self.assertEqual(
+                    raised.exception.code,
+                    "provider_secret_echo",
+                )
+                self.assertNotIn(
+                    self.settings["apiTextKey"],
+                    str(raised.exception),
+                )
+                self.assertEqual(self.current, original)
 
     def test_turn_applies_legal_action_through_creative_intake_transition(self):
         result = creative_director.run_creative_director_turn(

@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 
 from creative_intake import (
@@ -73,6 +74,19 @@ def _reject_nonfinite_constant(_value: str) -> None:
     _invalid_model_output("model proposal numbers must be finite")
 
 
+def _contains_nonfinite_float(value: object) -> bool:
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, dict):
+        return any(
+            _contains_nonfinite_float(item)
+            for item in value.values()
+        )
+    if isinstance(value, list):
+        return any(_contains_nonfinite_float(item) for item in value)
+    return False
+
+
 def normalize_creative_director_proposal(content: str) -> dict:
     if not isinstance(content, str):
         _invalid_model_output("model proposal must be strict JSON text")
@@ -90,6 +104,8 @@ def normalize_creative_director_proposal(content: str) -> dict:
         ) from error
     if not isinstance(proposal, dict):
         _invalid_model_output("model proposal must be one strict JSON object")
+    if _contains_nonfinite_float(proposal):
+        _invalid_model_output("model proposal numbers must be finite")
 
     unknown = set(proposal) - {"message", "action"}
     if unknown:
@@ -116,6 +132,46 @@ def normalize_creative_director_proposal(content: str) -> dict:
         _invalid_model_output("model proposal action contains unknown fields")
 
     return {"message": message.strip(), "action": action}
+
+
+def _provider_secrets(config: dict) -> tuple[str, ...]:
+    values = []
+    for key in ("api_key", "apiKey"):
+        value = config.get(key)
+        if isinstance(value, str) and value.strip():
+            values.append(value.strip())
+    authorization = config.get("headers", {}).get("Authorization")
+    if isinstance(authorization, str) and authorization.strip():
+        authorization = authorization.strip()
+        values.append(authorization)
+        parts = authorization.split(None, 1)
+        if len(parts) == 2 and parts[1]:
+            values.append(parts[1])
+    return tuple(dict.fromkeys(values))
+
+
+def _contains_secret(value: object, secrets: tuple[str, ...]) -> bool:
+    if isinstance(value, str):
+        return any(secret in value for secret in secrets)
+    if isinstance(value, dict):
+        return any(
+            _contains_secret(key, secrets)
+            or _contains_secret(item, secrets)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(_contains_secret(item, secrets) for item in value)
+    return False
+
+
+def _reject_provider_secret_echo(proposal: dict, config: dict) -> None:
+    secrets = _provider_secrets(config)
+    if secrets and _contains_secret(proposal, secrets):
+        raise CreativeDirectorError(
+            "model proposal contained protected provider credentials",
+            code="provider_secret_echo",
+            status=502,
+        )
 
 
 def run_creative_director_turn(
@@ -187,6 +243,7 @@ def run_creative_director_turn(
     proposal = normalize_creative_director_proposal(
         response_content(response)
     )
+    _reject_provider_secret_echo(proposal, config)
     item = apply_creative_intake_transition(
         canonical_current,
         proposal["action"],
