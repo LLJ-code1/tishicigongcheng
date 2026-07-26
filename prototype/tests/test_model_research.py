@@ -106,6 +106,26 @@ class ModelResearchContractTests(unittest.TestCase):
             all(claim.field_path in model_research.ALLOWED_CLAIM_PATHS for claim in claims)
         )
 
+    def test_adapter_never_upgrades_supplemental_snapshot_to_original_claims(self):
+        snapshot = dataclasses.replace(
+            self.snapshot,
+            source_class="supplemental_source",
+        )
+        with self.assertRaisesRegex(model_research.ResearchError, "source_mismatch"):
+            model_research.default_adapter_registry().resolve(
+                snapshot.requested_url
+            ).parse(snapshot)
+
+    def test_adapter_rejects_snapshot_whose_redirect_final_url_is_unsupported(self):
+        snapshot = dataclasses.replace(
+            self.snapshot,
+            final_url="https://example.com/models/934764/miaomiao-harem",
+        )
+        with self.assertRaisesRegex(model_research.ResearchError, "source_mismatch"):
+            model_research.default_adapter_registry().resolve(
+                snapshot.requested_url
+            ).parse(snapshot)
+
     def test_claim_rejects_unbacked_official_label(self):
         with self.assertRaisesRegex(model_research.ResearchError, "missing_evidence"):
             model_research.normalize_claim(
@@ -142,6 +162,59 @@ class ModelResearchContractTests(unittest.TestCase):
                 model_research.ResearchError
             ):
                 model_research.normalize_claim(value)
+
+    def test_direct_claim_construction_cannot_bypass_evidence_validation(self):
+        with self.assertRaisesRegex(model_research.ResearchError, "missing_evidence"):
+            model_research.EvidenceClaim(
+                claim_id="claim-direct",
+                field_path="parameters.defaults.steps",
+                value=28,
+                evidence_class="original_source",
+                evidence_refs=(),
+                rationale="structured source field",
+                verification_status="source_recorded",
+                application_status="proposed",
+            )
+
+    def test_claim_rejects_non_json_or_oversized_values(self):
+        invalid_values = (
+            object(),
+            {"items": {1, 2}},
+            float("nan"),
+            "x" * (64 * 1024 + 1),
+        )
+        for claim_value in invalid_values:
+            with self.subTest(claim_value=type(claim_value).__name__), self.assertRaisesRegex(
+                model_research.ResearchError, "invalid_claim_value"
+            ):
+                model_research.EvidenceClaim(
+                    claim_id="claim-direct",
+                    field_path="parameters.defaults.steps",
+                    value=claim_value,
+                    evidence_class="ai_inference",
+                    evidence_refs=(),
+                    rationale="inferred pending review",
+                    verification_status="unverified",
+                    application_status="proposed",
+                )
+
+    def test_claim_to_dict_revalidates_even_a_low_level_bypassed_instance(self):
+        claim = object.__new__(model_research.EvidenceClaim)
+        values = {
+            "claim_id": "claim-bypassed",
+            "field_path": "checkpoint.downloadUrl",
+            "value": "https://example.invalid/model",
+            "evidence_class": "official",
+            "evidence_refs": (),
+            "rationale": "",
+            "verification_status": "source_recorded",
+            "application_status": "approved",
+        }
+        for field, value in values.items():
+            object.__setattr__(claim, field, value)
+
+        with self.assertRaises(model_research.ResearchError):
+            model_research.claim_to_dict(claim)
 
 
 if __name__ == "__main__":

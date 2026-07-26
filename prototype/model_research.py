@@ -54,6 +54,7 @@ VERIFICATION_STATUSES = frozenset(
 )
 SOURCE_CLASSES = EVIDENCE_CLASSES
 FETCH_STATUSES = frozenset({"succeeded", "failed"})
+MAX_CLAIM_VALUE_BYTES = 64 * 1024
 _CIVITAI_PATH = re.compile(
     r"/models/[1-9][0-9]*(?:/[A-Za-z0-9._~-]+)?/?"
 )
@@ -176,10 +177,115 @@ class EvidenceClaim:
     verification_status: str
     application_status: str
 
+    def __post_init__(self) -> None:
+        normalized = _validate_claim_parts(
+            claim_id=self.claim_id,
+            field_path=self.field_path,
+            value=self.value,
+            evidence_class=self.evidence_class,
+            evidence_refs=self.evidence_refs,
+            rationale=self.rationale,
+            verification_status=self.verification_status,
+            application_status=self.application_status,
+        )
+        for field, field_value in normalized.items():
+            object.__setattr__(self, field, field_value)
+
+
+def _validate_json_value(value: Any, *, depth: int = 0) -> None:
+    if depth > 32:
+        raise ResearchError("invalid_claim_value", "claim value nesting is too deep")
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            raise ResearchError("invalid_claim_value", "claim value must be finite")
+        return
+    if isinstance(value, list):
+        for item in value:
+            _validate_json_value(item, depth=depth + 1)
+        return
+    if isinstance(value, dict):
+        if any(not isinstance(key, str) for key in value):
+            raise ResearchError(
+                "invalid_claim_value", "claim object keys must be strings"
+            )
+        for item in value.values():
+            _validate_json_value(item, depth=depth + 1)
+        return
+    raise ResearchError("invalid_claim_value", "claim value must be JSON-safe")
+
+
+def _validate_claim_value(value: Any) -> None:
+    _validate_json_value(value)
+    try:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ResearchError("invalid_claim_value", "claim value must be JSON-safe") from exc
+    if len(encoded) > MAX_CLAIM_VALUE_BYTES:
+        raise ResearchError("invalid_claim_value", "claim value is too large")
+
+
+def _validate_claim_parts(
+    *,
+    claim_id: Any,
+    field_path: Any,
+    value: Any,
+    evidence_class: Any,
+    evidence_refs: Any,
+    rationale: Any,
+    verification_status: Any,
+    application_status: Any,
+) -> dict[str, Any]:
+    normalized_claim_id = _required_text(claim_id, "claimId")
+    if field_path not in ALLOWED_CLAIM_PATHS:
+        raise ResearchError("unsupported_field", "claim field is not allowlisted")
+    if evidence_class not in EVIDENCE_CLASSES:
+        raise ResearchError("invalid_evidence_class", "unknown evidence class")
+    if not isinstance(evidence_refs, (list, tuple)) or any(
+        not isinstance(item, str) or not item.strip() for item in evidence_refs
+    ):
+        raise ResearchError("invalid_evidence", "evidenceRefs must contain snapshot IDs")
+    normalized_refs = tuple(dict.fromkeys(item.strip() for item in evidence_refs))
+    if evidence_class in {"original_source", "supplemental_source", "local_validation"}:
+        if not normalized_refs:
+            raise ResearchError("missing_evidence", "recorded evidence requires a reference")
+    if verification_status not in VERIFICATION_STATUSES:
+        raise ResearchError("invalid_verification_status", "unknown verification status")
+    if application_status not in APPLICATION_STATUSES:
+        raise ResearchError("invalid_application_status", "unknown application status")
+    normalized_rationale = _required_text(rationale, "rationale")
+    _validate_claim_value(value)
+    return {
+        "claim_id": normalized_claim_id,
+        "field_path": field_path,
+        "value": value,
+        "evidence_class": evidence_class,
+        "evidence_refs": normalized_refs,
+        "rationale": normalized_rationale,
+        "verification_status": verification_status,
+        "application_status": application_status,
+    }
+
 
 def normalize_claim(value: Mapping[str, Any] | EvidenceClaim) -> EvidenceClaim:
     if isinstance(value, EvidenceClaim):
-        value = claim_to_dict(value)
+        value = {
+            "claimId": value.claim_id,
+            "fieldPath": value.field_path,
+            "value": value.value,
+            "evidenceClass": value.evidence_class,
+            "evidenceRefs": value.evidence_refs,
+            "rationale": value.rationale,
+            "verificationStatus": value.verification_status,
+            "applicationStatus": value.application_status,
+        }
     if not isinstance(value, Mapping):
         raise ResearchError("invalid_claim", "claim must be an object")
     expected = {
@@ -195,51 +301,41 @@ def normalize_claim(value: Mapping[str, Any] | EvidenceClaim) -> EvidenceClaim:
     if set(value) != expected:
         raise ResearchError("invalid_claim", "claim fields do not match the contract")
 
-    claim_id = _required_text(value["claimId"], "claimId")
-    field_path = value["fieldPath"]
-    if field_path not in ALLOWED_CLAIM_PATHS:
-        raise ResearchError("unsupported_field", "claim field is not allowlisted")
-    evidence_class = value["evidenceClass"]
-    if evidence_class not in EVIDENCE_CLASSES:
-        raise ResearchError("invalid_evidence_class", "unknown evidence class")
-    refs = value["evidenceRefs"]
-    if not isinstance(refs, (list, tuple)) or any(
-        not isinstance(item, str) or not item.strip() for item in refs
-    ):
-        raise ResearchError("invalid_evidence", "evidenceRefs must contain snapshot IDs")
-    evidence_refs = tuple(dict.fromkeys(item.strip() for item in refs))
-    if evidence_class in {"original_source", "supplemental_source", "local_validation"}:
-        if not evidence_refs:
-            raise ResearchError("missing_evidence", "recorded evidence requires a reference")
-    verification_status = value["verificationStatus"]
-    if verification_status not in VERIFICATION_STATUSES:
-        raise ResearchError("invalid_verification_status", "unknown verification status")
-    application_status = value["applicationStatus"]
-    if application_status not in APPLICATION_STATUSES:
-        raise ResearchError("invalid_application_status", "unknown application status")
-    rationale = _required_text(value["rationale"], "rationale")
-    return EvidenceClaim(
-        claim_id=claim_id,
-        field_path=field_path,
+    normalized = _validate_claim_parts(
+        claim_id=value["claimId"],
+        field_path=value["fieldPath"],
         value=value["value"],
-        evidence_class=evidence_class,
-        evidence_refs=evidence_refs,
-        rationale=rationale,
-        verification_status=verification_status,
-        application_status=application_status,
+        evidence_class=value["evidenceClass"],
+        evidence_refs=value["evidenceRefs"],
+        rationale=value["rationale"],
+        verification_status=value["verificationStatus"],
+        application_status=value["applicationStatus"],
     )
+    return EvidenceClaim(**normalized)
 
 
 def claim_to_dict(claim: EvidenceClaim) -> dict[str, Any]:
+    if not isinstance(claim, EvidenceClaim):
+        raise ResearchError("invalid_claim", "claim must be an EvidenceClaim")
+    normalized = _validate_claim_parts(
+        claim_id=claim.claim_id,
+        field_path=claim.field_path,
+        value=claim.value,
+        evidence_class=claim.evidence_class,
+        evidence_refs=claim.evidence_refs,
+        rationale=claim.rationale,
+        verification_status=claim.verification_status,
+        application_status=claim.application_status,
+    )
     return {
-        "claimId": claim.claim_id,
-        "fieldPath": claim.field_path,
-        "value": claim.value,
-        "evidenceClass": claim.evidence_class,
-        "evidenceRefs": list(claim.evidence_refs),
-        "rationale": claim.rationale,
-        "verificationStatus": claim.verification_status,
-        "applicationStatus": claim.application_status,
+        "claimId": normalized["claim_id"],
+        "fieldPath": normalized["field_path"],
+        "value": normalized["value"],
+        "evidenceClass": normalized["evidence_class"],
+        "evidenceRefs": list(normalized["evidence_refs"]),
+        "rationale": normalized["rationale"],
+        "verificationStatus": normalized["verification_status"],
+        "applicationStatus": normalized["application_status"],
     }
 
 
@@ -351,6 +447,15 @@ class CivitaiModelPageAdapter:
         )
 
     def parse(self, snapshot: SourceSnapshot) -> list[EvidenceClaim]:
+        if (
+            snapshot.source_class != "original_source"
+            or not self.supports(snapshot.requested_url)
+            or not self.supports(snapshot.final_url)
+        ):
+            raise ResearchError(
+                "source_mismatch",
+                "snapshot source and URLs must belong to this original-page adapter",
+            )
         if snapshot.fetch_status != "succeeded" or not snapshot.extracted_text:
             return []
         payload = _extract_json_payload(snapshot.extracted_text)
