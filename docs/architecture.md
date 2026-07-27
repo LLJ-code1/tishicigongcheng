@@ -35,6 +35,11 @@ Prompt Studio 本地后端 :57913
 状态层已实现会话 normalizer、项目保存/恢复和多维过期响应 guard。模型返回的展示文案
 不是真实状态；只有经过 `creative_intake.py` 校验的动作才能改变 canonical session。
 
+前端另维护临时的 `directorProgress`，把一次导演调用展示为记录操作、准备参考信息、
+等待模型推理、解析并更新简报和保存创作阶段，并计算已用时间。它不进入 canonical
+session、项目 metadata 或 Recipe，也不是服务端返回的任务进度；刷新后无需恢复，当前
+仍不能据此中断已经提交的后端推理。
+
 会话仍跟随现有项目元数据，通过 `workspace/commit` 的同一原子事务保存，因此不会
 单独增加 SQLite 表。项目重新打开、逻辑备份和隔离恢复
 会保留该元数据；历史项目缺少或带有无效 `creativeIntake` 时，前端安全地回退为空会话。

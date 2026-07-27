@@ -42,6 +42,8 @@ const {
   canConfirmCreativeBrief,
   creativeDirectorStageView,
   buildDirectorRenderModel,
+  emptyDirectorProgress,
+  buildDirectorProgressView,
   buildCreativeBriefGroups,
   buildBriefRevisionMessage,
   performCreativeIntakeRequest,
@@ -2023,6 +2025,112 @@ test("director render model derives directions brief gate and workbench handoff 
   assert.equal(buildDirectorRenderModel(selectedState).showWorkbench, true);
   selectedState.creativeIntake = creativeIntakeStageFixture("brief_draft");
   assert.equal(buildDirectorRenderModel(selectedState).showWorkbench, false);
+});
+
+test("director render model always exposes the next step and offers a one-click brief action", () => {
+  const state = createInitialState();
+  let model = buildDirectorRenderModel(state);
+  assert.equal(model.nextStep.currentStepIndex, 0);
+  assert.match(model.nextStep.title, /已经确定的部分/);
+  assert.match(model.nextStep.composerPlaceholder, /人物、服装和动作/);
+  assert.equal(model.nextStep.actionId, "");
+
+  state.creativeIntake.directions = [
+    { id: "direction-one", label: "Runway", summary: "A runway study." },
+  ];
+  model = buildDirectorRenderModel(state);
+  assert.equal(model.nextStep.currentStepIndex, 1);
+  assert.match(model.nextStep.title, /选择一个创作方向/);
+
+  state.creativeIntake = creativeIntakeStageFixture("direction_selected");
+  model = buildDirectorRenderModel(state);
+  assert.equal(model.nextStep.currentStepIndex, 2);
+  assert.match(model.nextStep.title, /已选“Runway”/);
+  assert.equal(model.nextStep.actionId, "director-build-brief");
+  assert.equal(model.nextStep.actionLabel, "让总监补全并生成简报");
+
+  state.creativeIntake = creativeIntakeStageFixture("brief_draft");
+  model = buildDirectorRenderModel(state);
+  assert.equal(model.nextStep.currentStepIndex, 2);
+  assert.match(model.nextStep.title, /检查右侧创作简报/);
+
+  state.creativeIntake.brief.openQuestions = ["镜头多近？", "是否需要路人？"];
+  model = buildDirectorRenderModel(state);
+  assert.match(model.nextStep.title, /还有 2 个问题需要回答/);
+  assert.equal(model.nextStep.actionId, "director-resolve-brief-questions");
+  assert.equal(model.nextStep.actionLabel, "这些问题都交给总监决定");
+
+  state.creativeIntake.conflicts = [
+    {
+      id: "conflict-one",
+      code: "outfit_conflict",
+      message: "服装要求冲突",
+      status: "open",
+      itemIds: ["item-outfit"],
+    },
+  ];
+  model = buildDirectorRenderModel(state);
+  assert.match(model.nextStep.title, /还有 1 个冲突需要处理/);
+  assert.equal(model.nextStep.actionId, "");
+
+  state.creativeIntake = creativeIntakeStageFixture("brief_confirmed");
+  model = buildDirectorRenderModel(state);
+  assert.equal(model.nextStep.currentStepIndex, 3);
+  assert.match(model.nextStep.title, /图像模型/);
+
+  state.creativeIntake = creativeIntakeStageFixture("model_selected");
+  model = buildDirectorRenderModel(state);
+  assert.equal(model.nextStep.currentStepIndex, 4);
+  assert.match(model.nextStep.title, /提示词拆解/);
+});
+
+test("director progress identifies the active phase and elapsed time", () => {
+  const progress = {
+    ...emptyDirectorProgress(),
+    status: "running",
+    phase: "inference",
+    label: "正在让总监决定待确认问题",
+    detail: "请求已提交到本地服务，正在等待模型返回结果…",
+    startedAt: 1_000,
+    updatedAt: 1_000,
+  };
+  const view = buildDirectorProgressView(progress, 6_400);
+
+  assert.equal(view.visible, true);
+  assert.equal(view.elapsedSeconds, 5);
+  assert.equal(view.steps[0].status, "completed");
+  assert.equal(view.steps[1].status, "completed");
+  assert.equal(view.steps[2].status, "current");
+  assert.equal(view.steps[3].status, "pending");
+  assert.match(view.detail, /等待模型返回/);
+});
+
+test("director progress keeps the failed phase so the UI can name the blocker", () => {
+  let state = createInitialState();
+  state = reduceState(state, {
+    type: "DIRECTOR_PROGRESS_STARTED",
+    phase: "recording",
+    label: "正在更新创作简报",
+    startedAt: 1_000,
+  });
+  state = reduceState(state, {
+    type: "DIRECTOR_PROGRESS_UPDATED",
+    phase: "applying",
+    detail: "正在解析结果…",
+    updatedAt: 3_000,
+  });
+  state = reduceState(state, {
+    type: "DIRECTOR_REQUEST_FAILED",
+    error: "模型返回格式不正确",
+    finishedAt: 4_000,
+  });
+
+  const view = buildDirectorProgressView(state.directorProgress, 99_000);
+  assert.equal(view.status, "error");
+  assert.equal(view.elapsedSeconds, 3);
+  assert.equal(view.steps[3].status, "error");
+  assert.match(view.detail, /卡在“解析并更新简报”/);
+  assert.match(view.detail, /模型返回格式不正确/);
 });
 
 test("creative brief groups use only canonical source lock question and conflict fields", () => {

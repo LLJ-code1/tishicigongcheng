@@ -7,6 +7,9 @@
 本地路径、API Key 和模型返回的临时展示消息不进入该字段。需求卡和模型选择通过
 metadata-only workspace commit 保存，不会伪造 Recipe 版本。
 
+界面中的创作总监请求进度是临时前端状态，只记录当前请求的阶段、说明、起止时间和
+错误。它不写入 `creativeIntake`、SQLite 或逻辑备份，也不能作为服务端任务状态使用。
+
 `settings.creativeDirectorSkillOverride` 是全局设置，不属于项目或 Recipe。值为空时使用
 `prototype/prompts/creative_director.md`；非空值在下一次导演请求中覆盖默认 Skill。
 服务器限制其为不超过 100,000 字符的字符串，并继续执行固定的结构化输出、动作白名单、

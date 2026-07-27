@@ -1424,6 +1424,7 @@
       directorMessages: [],
       directorBusy: false,
       directorError: "",
+      directorProgress: emptyDirectorProgress(),
       directorImageEvidence: null,
       directorImageAnalysisStatus: "idle",
       directorImageAnalysisFailures: [],
@@ -1642,6 +1643,84 @@
         !intake.brief.openQuestions.length &&
         !intake.conflicts.some((conflict) => conflict.status === "open")
     );
+  }
+
+  const DIRECTOR_PROGRESS_STEPS = [
+    { id: "recording", label: "记录你的操作" },
+    { id: "references", label: "准备参考信息" },
+    { id: "inference", label: "等待模型推理" },
+    { id: "applying", label: "解析并更新简报" },
+    { id: "saving", label: "保存创作阶段" },
+  ];
+
+  const DIRECTOR_PROGRESS_PHASE_INDEX = {
+    recording: 0,
+    references: 1,
+    inference: 2,
+    applying: 3,
+    saving: 4,
+    complete: DIRECTOR_PROGRESS_STEPS.length,
+  };
+
+  function emptyDirectorProgress() {
+    return {
+      status: "idle",
+      phase: "",
+      label: "",
+      detail: "",
+      error: "",
+      startedAt: 0,
+      updatedAt: 0,
+    };
+  }
+
+  function buildDirectorProgressView(value, now = Date.now()) {
+    const progress = {
+      ...emptyDirectorProgress(),
+      ...(value && typeof value === "object" ? value : {}),
+    };
+    const status = ["running", "success", "error"].includes(progress.status)
+      ? progress.status
+      : "idle";
+    const activeIndex = Number.isInteger(
+      DIRECTOR_PROGRESS_PHASE_INDEX[progress.phase]
+    )
+      ? DIRECTOR_PROGRESS_PHASE_INDEX[progress.phase]
+      : 0;
+    const elapsedAt =
+      status === "running" ? Number(now) : Number(progress.updatedAt || now);
+    const elapsedSeconds = progress.startedAt
+      ? Math.max(0, Math.floor((elapsedAt - progress.startedAt) / 1000))
+      : 0;
+    const steps = DIRECTOR_PROGRESS_STEPS.map((step, index) => ({
+      ...step,
+      status:
+        status === "success" || index < activeIndex
+          ? "completed"
+          : index === activeIndex && status !== "idle"
+            ? status === "error"
+              ? "error"
+              : "current"
+            : "pending",
+    }));
+    const activeStep = DIRECTOR_PROGRESS_STEPS[
+      Math.min(activeIndex, DIRECTOR_PROGRESS_STEPS.length - 1)
+    ];
+    return {
+      visible: status !== "idle",
+      status,
+      label:
+        progress.label ||
+        (status === "success" ? "创意总监处理完成" : "创意总监正在处理"),
+      detail:
+        status === "error"
+          ? `卡在“${activeStep.label}”：${
+              progress.error || "请求失败，请重试"
+            }`
+          : progress.detail,
+      elapsedSeconds,
+      steps,
+    };
   }
 
   const CREATIVE_BRIEF_GROUPS = [
@@ -1988,6 +2067,107 @@
   function buildDirectorRenderModel(state) {
     const intake = normalizeCreativeIntake(state.creativeIntake);
     const stageView = creativeDirectorStageView(intake.stage);
+    const flowSteps = ["说想法", "选方向", "确认简报", "选模型", "拆提示词"];
+    const selectedDirection = intake.directions.find(
+      (direction) => direction.id === intake.selectedDirectionId
+    );
+    let nextStep;
+    if (intake.stage === "intake" && !intake.directions.length) {
+      nextStep = {
+        currentStepIndex: 0,
+        title: "先告诉我你已经确定的部分",
+        description:
+          "动作、环境、服装只说一个也可以，剩下的交给创作总监补全。",
+        composerPlaceholder:
+          "例如：只确定雨夜便利店的环境，人物、服装和动作请帮我补全……",
+        actionId: "",
+        actionLabel: "",
+      };
+    } else if (intake.stage === "intake") {
+      nextStep = {
+        currentStepIndex: 1,
+        title: "从右侧选择一个创作方向",
+        description:
+          "点击最接近你想法的方向卡片；不满意也可以继续输入，让总监重新调整方向。",
+        composerPlaceholder: "例如：三个方向都太安静了，我想要更强烈的动作感……",
+        actionId: "",
+        actionLabel: "",
+      };
+    } else if (intake.stage === "direction_selected") {
+      nextStep = {
+        currentStepIndex: 2,
+        title: selectedDirection
+          ? `已选“${selectedDirection.label}”，现在生成创作简报`
+          : "现在生成创作简报",
+        description:
+          "有修改就直接告诉总监；没有补充时，点击按钮让总监补全人物、服装、动作、构图和光线。",
+        composerPlaceholder:
+          "例如：保留服装，让动作更有攻击性；没有补充可直接点击上方按钮……",
+        actionId: "director-build-brief",
+        actionLabel: "让总监补全并生成简报",
+      };
+    } else if (intake.stage === "brief_draft") {
+      const openQuestionCount = intake.brief?.openQuestions?.length || 0;
+      const openConflictCount = intake.conflicts.filter(
+        (conflict) => conflict.status === "open"
+      ).length;
+      if (openConflictCount) {
+        nextStep = {
+          currentStepIndex: 2,
+          title: `还有 ${openConflictCount} 个冲突需要处理`,
+          description:
+            "查看右侧“冲突”，在输入框告诉总监保留哪一种要求；解决后才能确认简报。",
+          composerPlaceholder: "例如：服装以参考图为准，动作采用总监推荐的方案……",
+          actionId: "",
+          actionLabel: "",
+        };
+      } else if (openQuestionCount) {
+        nextStep = {
+          currentStepIndex: 2,
+          title: `还有 ${openQuestionCount} 个问题需要回答`,
+          description:
+            "查看右侧“待确认”并输入答案；如果都没有偏好，可以直接交给总监决定。",
+          composerPlaceholder: "例如：不要次要人物，手机显示地图，使用半身构图……",
+          actionId: "director-resolve-brief-questions",
+          actionLabel: "这些问题都交给总监决定",
+        };
+      } else {
+        nextStep = {
+          currentStepIndex: 2,
+          title: "检查右侧创作简报",
+          description:
+            "有问题就点对应条目的“要求修改”；没有问题就点“确认简报”。",
+          composerPlaceholder: "例如：把人物动作改成向前冲刺，其他内容保持不变……",
+          actionId: "",
+          actionLabel: "",
+        };
+      }
+    } else if (intake.stage === "brief_confirmed") {
+      nextStep = {
+        currentStepIndex: 3,
+        title: "选择最终要使用的图像模型",
+        description:
+          "在下方选择模型档案，系统会根据模型特性优化并拆解提示词。",
+        composerPlaceholder: "如需改简报，请先点击右侧“返回修改简报”。",
+        actionId: "",
+        actionLabel: "",
+      };
+    } else {
+      nextStep = {
+        currentStepIndex: 4,
+        title:
+          intake.stage === "decomposition_confirmed"
+            ? "提示词拆解已确认"
+            : "检查模型适配后的提示词拆解",
+        description:
+          intake.stage === "decomposition_confirmed"
+            ? "可以进入工作台继续编辑、组合和保存提示词。"
+            : "进入工作台检查各提示词模块，再确认或要求重新生成。",
+        composerPlaceholder: "如需改创作方向，请返回修改简报。",
+        actionId: "",
+        actionLabel: "",
+      };
+    }
     const canonicalModelReady =
       state.modelProfilesStatus === "ready" &&
       Boolean(
@@ -1998,6 +2178,7 @@
       );
     return {
       stage: intake.stage,
+      nextStep: { ...nextStep, steps: flowSteps },
       messages:
         Array.isArray(state.directorMessages) &&
         state.directorMessages.length
@@ -2008,6 +2189,7 @@
         typeof state.directorError === "string"
           ? state.directorError
           : "",
+      progress: buildDirectorProgressView(state.directorProgress),
       imageEvidence: state.directorImageEvidence
         ? clone(state.directorImageEvidence)
         : null,
@@ -2650,6 +2832,7 @@
     next.directorMessages = reconstructDirectorMessages(next.creativeIntake);
     next.directorBusy = false;
     next.directorError = "";
+    next.directorProgress = emptyDirectorProgress();
     next.directorImageEvidence = null;
     next.directorImageAnalysisStatus = "idle";
     next.directorImageAnalysisFailures = [];
@@ -3544,6 +3727,7 @@
         return next;
       case "WORKSPACE_REQUESTS_CANCELLED":
         next.directorBusy = false;
+        next.directorProgress = emptyDirectorProgress();
         next.textGenerating = false;
         next.textDecomposing = false;
         next.translatingPending = false;
@@ -3689,6 +3873,40 @@
         next.directorBusy = false;
         next.directorError =
           action.error || "创意导演请求失败，请稍后重试";
+        if (next.directorProgress?.status === "running") {
+          next.directorProgress.status = "error";
+          next.directorProgress.error = next.directorError;
+          next.directorProgress.updatedAt = Number(action.finishedAt || 0);
+        }
+        return next;
+      case "DIRECTOR_PROGRESS_STARTED":
+        next.directorProgress = {
+          ...emptyDirectorProgress(),
+          status: "running",
+          phase: action.phase || "recording",
+          label: action.label || "创意总监正在处理",
+          detail: action.detail || "正在记录本次操作…",
+          startedAt: Number(action.startedAt || 0),
+          updatedAt: Number(action.startedAt || 0),
+        };
+        return next;
+      case "DIRECTOR_PROGRESS_UPDATED":
+        if (next.directorProgress?.status !== "running") return next;
+        next.directorProgress.phase =
+          action.phase || next.directorProgress.phase;
+        next.directorProgress.detail =
+          action.detail || next.directorProgress.detail;
+        next.directorProgress.updatedAt = Number(action.updatedAt || 0);
+        return next;
+      case "DIRECTOR_PROGRESS_SUCCEEDED":
+        next.directorProgress = {
+          ...(next.directorProgress || emptyDirectorProgress()),
+          status: "success",
+          phase: "complete",
+          detail: action.detail || "创作简报已更新并保存。",
+          error: "",
+          updatedAt: Number(action.finishedAt || 0),
+        };
         return next;
       case "DIRECTOR_IMAGE_EVIDENCE_SET":
         next.directorImageEvidence = action.item
@@ -5590,6 +5808,8 @@
     canConfirmCreativeBrief,
     creativeDirectorStageView,
     buildDirectorRenderModel,
+    emptyDirectorProgress,
+    buildDirectorProgressView,
     performCreativeIntakeRequest,
     persistCreativeIntakeRevision,
     rollbackCreativeIntakeAfterPersistenceFailure,
@@ -5689,6 +5909,7 @@
   let outputLanguage = "both";
   let collapsedBlocks = false;
   let generationProgressTimer = null;
+  let directorProgressTimer = null;
   let activeTextAbort = null;
   let activeVisionAbort = null;
   let activeDirectorImageAbort = null;
@@ -6884,7 +7105,20 @@
     return true;
   }
 
-  async function sendCreativeDirectorMessage(messageOverride = "") {
+  function updateDirectorProgress(phase, detail) {
+    state = app.reduceState(state, {
+      type: "DIRECTOR_PROGRESS_UPDATED",
+      phase,
+      detail,
+      updatedAt: Date.now(),
+    });
+    render();
+  }
+
+  async function sendCreativeDirectorMessage(
+    messageOverride = "",
+    progressLabel = ""
+  ) {
     if (state.directorBusy) return;
     const input = $("#directorMessageInput");
     const usesOverride = Boolean(String(messageOverride || "").trim());
@@ -6900,6 +7134,20 @@
       render();
       return;
     }
+    const defaultProgressLabel =
+      state.creativeIntake.stage === "brief_draft"
+        ? "正在更新创作简报"
+        : state.creativeIntake.selectedDirectionId
+          ? "正在生成创作简报"
+          : "正在整理创作方向";
+    state = app.reduceState(state, {
+      type: "DIRECTOR_PROGRESS_STARTED",
+      phase: "recording",
+      label: progressLabel || defaultProgressLabel,
+      detail: "正在把本次操作记录到当前作品…",
+      startedAt: Date.now(),
+    });
+    render();
     try {
       const inputAction = app.buildDirectorMessageInputAction(
         state.creativeIntake,
@@ -6909,6 +7157,14 @@
         inputAction &&
         !(await transitionCreativeIntake(inputAction))
       ) {
+        if (state.directorProgress?.status === "running") {
+          state = app.reduceState(state, {
+            type: "DIRECTOR_REQUEST_FAILED",
+            error: "本次操作没有成功写入当前创作阶段，请重试。",
+            finishedAt: Date.now(),
+          });
+          render();
+        }
         return;
       }
     } catch (error) {
@@ -6920,9 +7176,23 @@
       return;
     }
     if (state.creativeIntake.inputs.images.length) {
+      updateDirectorProgress(
+        "references",
+        `正在整理 ${state.creativeIntake.inputs.images.length} 张参考图的分析结果…`
+      );
       if (!(await ensureDirectorImageEvidence())) {
+        if (state.directorProgress?.status === "running") {
+          state = app.reduceState(state, {
+            type: "DIRECTOR_REQUEST_FAILED",
+            error: "参考图分析没有完成，请检查图片分析状态后重试。",
+            finishedAt: Date.now(),
+          });
+          render();
+        }
         return;
       }
+    } else {
+      updateDirectorProgress("references", "本次没有参考图，已使用文字简报。");
     }
 
     let request;
@@ -6945,6 +7215,12 @@
 
     const durableState = state;
     state = app.reduceState(state, { type: "DIRECTOR_REQUEST_STARTED" });
+    state = app.reduceState(state, {
+      type: "DIRECTOR_PROGRESS_UPDATED",
+      phase: "inference",
+      detail: "请求已提交到本地服务，正在等待模型返回结果…",
+      updatedAt: Date.now(),
+    });
     render();
     try {
       const result = await app.performCreativeIntakeRequest({
@@ -6958,17 +7234,26 @@
       if (!result.accepted) {
         if (request.guard.sessionId === workspaceSessionId) {
           state = app.reduceState(state, {
-            type: "DIRECTOR_REQUEST_SUCCEEDED",
+            type: "DIRECTOR_REQUEST_FAILED",
+            error: "模型结果返回时当前作品已经变化，请重试本次操作。",
+            finishedAt: Date.now(),
           });
           render();
         }
         return;
       }
       state = result.state;
+      state = app.reduceState(state, {
+        type: "DIRECTOR_PROGRESS_UPDATED",
+        phase: "applying",
+        detail: "模型结果已返回，正在检查并更新创作简报…",
+        updatedAt: Date.now(),
+      });
       syncDirectorImageAttachmentWithCanonical();
       const acceptedProjectRevision = state.projectRevision;
       if (input && !usesOverride) input.value = "";
       render();
+      updateDirectorProgress("saving", "简报已更新，正在保存当前创作阶段…");
       const persisted = await persistAcceptedCreativeIntake(
         acceptedProjectRevision
       );
@@ -6985,6 +7270,11 @@
       state = app.reduceState(state, {
         type: "DIRECTOR_REQUEST_SUCCEEDED",
       });
+      state = app.reduceState(state, {
+        type: "DIRECTOR_PROGRESS_SUCCEEDED",
+        detail: "创意总监处理完成，最新创作阶段已经保存。",
+        finishedAt: Date.now(),
+      });
       render();
     } catch (error) {
       if (request.guard.sessionId !== workspaceSessionId) return;
@@ -6993,6 +7283,7 @@
         error: isAbortError(error)
           ? "已停止本次创意导演请求；输入内容仍保留。"
           : error.message || "创意导演请求失败，请稍后重试",
+        finishedAt: Date.now(),
       });
       render();
     } finally {
@@ -8688,6 +8979,30 @@
     }
   }
 
+  function renderDirectorProgressClock() {
+    const elapsed = $("#directorProgressElapsed");
+    if (!elapsed) return;
+    const progress = app.buildDirectorProgressView(state.directorProgress);
+    elapsed.textContent = `已用时 ${progress.elapsedSeconds} 秒`;
+  }
+
+  function syncDirectorProgressTimer(progress) {
+    if (progress.status === "running") {
+      if (!directorProgressTimer) {
+        directorProgressTimer = window.setInterval(
+          renderDirectorProgressClock,
+          1000
+        );
+      }
+      renderDirectorProgressClock();
+      return;
+    }
+    if (directorProgressTimer) {
+      window.clearInterval(directorProgressTimer);
+      directorProgressTimer = null;
+    }
+  }
+
   function renderDirector() {
     const model = app.buildDirectorRenderModel(state);
     const conversation = $("#directorConversation");
@@ -8747,7 +9062,10 @@
     const stopButton = $(
       '.director-composer button[aria-label="停止当前请求"]'
     );
-    if (input) input.disabled = model.busy;
+    if (input) {
+      input.disabled = model.busy;
+      input.placeholder = model.nextStep.composerPlaceholder;
+    }
     if (sendButton) {
       sendButton.disabled = model.busy;
       sendButton.textContent = model.busy
@@ -8764,15 +9082,69 @@
 
     const stageBadge = $(".director-stage-badge");
     if (stageBadge) {
-      stageBadge.textContent =
-        {
-          intake: "第一步：描述与方向",
-          direction_selected: "第二步：细化方向",
-          brief_draft: "第三步：确认简报",
-          brief_confirmed: "第四步：选择模型",
-          model_selected: "可进入工作台",
-        }[model.stage] || "创作流程";
+      stageBadge.textContent = `第 ${model.nextStep.currentStepIndex + 1} 步：${
+        model.nextStep.steps[model.nextStep.currentStepIndex]
+      }`;
     }
+
+    const flowGuide = $("#directorFlowGuide");
+    if (flowGuide) {
+      const steps = model.nextStep.steps
+        .map((label, index) => {
+          const status =
+            index < model.nextStep.currentStepIndex
+              ? "completed"
+              : index === model.nextStep.currentStepIndex
+                ? "current"
+                : "";
+          return `<li class="${status}"><span>${index + 1}</span>${escapeHtml(
+            label
+          )}</li>`;
+        })
+        .join("");
+      const action = model.nextStep.actionId
+        ? `<button
+            class="primary-button director-next-step-action"
+            type="button"
+            data-action="${escapeHtml(model.nextStep.actionId)}"
+            ${model.busy ? "disabled" : ""}
+          >${escapeHtml(model.nextStep.actionLabel)}</button>`
+        : "";
+      const progress = model.progress.visible
+        ? `<section class="director-request-progress is-${escapeHtml(
+            model.progress.status
+          )}" aria-label="创意总监任务进度">
+            <div class="director-request-progress-heading">
+              <strong>${escapeHtml(model.progress.label)}</strong>
+              <span id="directorProgressElapsed">已用时 ${
+                model.progress.elapsedSeconds
+              } 秒</span>
+            </div>
+            <p>${escapeHtml(model.progress.detail)}</p>
+            <ol>
+              ${model.progress.steps
+                .map(
+                  (step, index) => `<li class="${escapeHtml(step.status)}">
+                    <span>${index + 1}</span>${escapeHtml(step.label)}
+                  </li>`
+                )
+                .join("")}
+            </ol>
+          </section>`
+        : "";
+      flowGuide.innerHTML = `
+        <ol class="director-flow-steps" aria-label="创作流程">${steps}</ol>
+        <div class="director-next-step">
+          <div>
+            <p class="eyebrow">下一步</p>
+            <h3 id="directorNextStepTitle">${escapeHtml(model.nextStep.title)}</h3>
+            <p>${escapeHtml(model.nextStep.description)}</p>
+          </div>
+          ${action}
+        </div>
+        ${progress}`;
+    }
+    syncDirectorProgressTimer(model.progress);
 
     const directions = $("#directorDirections");
     if (directions) {
@@ -11119,7 +11491,18 @@
     }
 
     const action = button.dataset.action;
-    if (action === "director-confirm-brief") {
+    if (action === "director-build-brief") {
+      sendCreativeDirectorMessage(
+        "其他细节交给你决定，请根据已选方向补全并整理成创作简报。"
+      );
+      return;
+    } else if (action === "director-resolve-brief-questions") {
+      sendCreativeDirectorMessage(
+        "待确认的问题都按你的推荐方案决定，请更新创作简报，不要保留待确认问题。",
+        "正在让总监决定待确认问题"
+      );
+      return;
+    } else if (action === "director-confirm-brief") {
       transitionCreativeIntake({ type: "confirm_brief" });
       return;
     } else if (action === "director-reopen-brief") {
