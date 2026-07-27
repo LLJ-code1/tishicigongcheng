@@ -89,6 +89,7 @@ const {
   buildDecompositionPreviewRenderModel,
   buildConfirmedDecompositionWorkbench,
   buildLoraProfileRenderModel,
+  multiPersonResolutionSuggestions,
 } = require("../app.js");
 
 const DECOMPOSITION_BLOCK_IDS = [
@@ -2497,7 +2498,7 @@ test("workbench handoff preserves canonical brief and model without inventing de
   const entered = reduceState(state, { type: "ENTER_CREATIVE_WORKBENCH" });
 
   assert.equal(entered.view, "text");
-  assert.equal(entered.draftInput, "A red dress on a runway.");
+  assert.equal(entered.draftInput, "red dress");
   assert.equal(entered.creativeIntake.selectedModelProfileId, "anima-1.1-v1");
   assert.equal(entered.creativeIntake.decomposition, null);
   assert.deepEqual(entered.blocks, []);
@@ -2510,6 +2511,37 @@ test("workbench handoff preserves canonical brief and model without inventing de
   assert.equal(reopened.view, "home");
   assert.equal(reopened.creativeIntake.selectedModelProfileId, null);
   assert.equal(reopened.creativeIntake.decomposition, null);
+});
+
+test("workbench entry upgrades an auto-filled brief summary to every confirmed fact", () => {
+  const state = createInitialState();
+  state.creativeIntake = creativeIntakeStageFixture("model_selected");
+  state.creativeIntake.brief.summary = "魔法女孩施展魔法";
+  state.creativeIntake.brief.items = [
+    {
+      id: "item-subject",
+      category: "subject",
+      text: "魔法女孩施展魔法",
+      source: { type: "user", refId: null },
+      locked: true,
+    },
+    {
+      id: "item-outfit",
+      category: "outfit",
+      text: "白色蕾丝连衣裙和黑色长靴",
+      source: { type: "user", refId: null },
+      locked: true,
+    },
+  ];
+  state.modelProfiles = [{ profileId: "anima-1.1-v1", defaultParameters: {} }];
+  state.draftInput = state.creativeIntake.brief.summary;
+
+  const entered = reduceState(state, { type: "ENTER_CREATIVE_WORKBENCH" });
+
+  assert.equal(
+    entered.draftInput,
+    "魔法女孩施展魔法\n白色蕾丝连衣裙和黑色长靴"
+  );
 });
 
 test("refresh recovery stays stage-driven at intake brief and model boundaries", () => {
@@ -2638,6 +2670,78 @@ test("creative intake metadata commit stays versionless with dirty Recipe work",
   assert.equal(payload.project.metadata.creativeIntake.revision, 3);
   assert.equal(state.hasUnsavedChanges, true);
   assert.deepEqual(state.dirtyBlockIds, ["pose"]);
+});
+
+test("confirmed PNG evidence is a version-keyed metadata-only workspace commit", () => {
+  const state = createInitialState();
+  state.projectId = "project-evidence";
+  state.projectUpdatedAt = "2026-07-27T00:00:00Z";
+  state.version = 3;
+  const next = reduceState(state, {
+    type: "CONFIRM_GENERATION_EVIDENCE",
+    version: 3,
+    evidence: {
+      source: "a1111",
+      observedAt: "2026-07-27T00:00:00Z",
+      assetId: "asset-evidence-1",
+      actual: {
+        positivePrompt: "1girl",
+        negativePrompt: "bad hands",
+        resolution: { width: 1024, height: 1024 },
+      },
+    },
+  });
+
+  const payload = buildCreativeIntakeWorkspaceCommitPayload(next, {
+    operationId: "save-evidence",
+  });
+
+  assert.equal(payload.version, null);
+  assert.deepEqual(payload.project.metadata.generationEvidenceByVersion, {
+    3: {
+      source: "a1111",
+      observedAt: "2026-07-27T00:00:00Z",
+      assetId: "asset-evidence-1",
+      actual: {
+        positivePrompt: "1girl",
+        negativePrompt: "bad hands",
+        sampler: "",
+        scheduler: "",
+        steps: null,
+        cfg: null,
+        generationSeed: null,
+        resolution: { width: 1024, height: 1024 },
+        denoiseStrength: null,
+      },
+    },
+  });
+});
+
+test("wordlist additions stay as project metadata proposals before local review", () => {
+  const state = createInitialState();
+  const next = reduceState(state, {
+    type: "ADD_WORDLIST_PROPOSAL",
+    item: {
+      id: "wordlist-one",
+      categoryId: "scene_environment",
+      targetBlock: "scene",
+      text: "rainy library",
+      status: "submitted",
+    },
+  });
+
+  const payload = buildProjectPayload(next);
+
+  assert.equal(next.hasUnsavedProjectChanges, true);
+  assert.deepEqual(payload.metadata.wordlistProposals, [
+    {
+      id: "wordlist-one",
+      categoryId: "scene_environment",
+      targetBlock: "scene",
+      text: "rainy library",
+      status: "submitted",
+    },
+  ]);
 });
 
 test("creative intake save journal freezes stable metadata-only operation and CAS body", () => {
@@ -3712,11 +3816,25 @@ test("project browser exposes four states and guards duplicate or stale requests
   assert.match(html, /id=["']recentProjectStatus["']/);
   assert.match(html, /id=["']projectNameInput["']/);
   assert.match(html, /id=["']projectSaveStatus["']/);
+  assert.match(html, /id=["']projectFilterForm["']/);
+  assert.match(html, /id=["']projectSearchInput["']/);
+  assert.match(html, /id=["']projectStatusFilter["']/);
+  assert.match(html, /id=["']projectModelFilter["']/);
+  assert.match(html, /id=["']projectLoraFilter["']/);
+  assert.match(html, /id=["']projectInsights["']/);
   assert.match(source, /if \(saveInFlight\) return saveInFlight/);
   assert.match(source, /作品正在保存，请等待完成后再切换/);
   assert.match(source, /window\.confirm\("当前作品有未保存内容/);
   assert.match(source, /requestId !== projectOpenRequestId/);
   assert.match(source, /requestId !== projectListRequestId/);
+  assert.match(source, /\["q", \$\("#projectSearchInput"\)\?\.value\]/);
+  assert.match(source, /\["status", \$\("#projectStatusFilter"\)\?\.value\]/);
+  assert.match(source, /\["modelId", \$\("#projectModelFilter"\)\?\.value\]/);
+  assert.match(source, /\["loraId", \$\("#projectLoraFilter"\)\?\.value\]/);
+  assert.match(source, /new URLSearchParams\(\)/);
+  assert.match(source, /apiJson\("\/api\/project-insights"\)/);
+  assert.match(source, /历史使用候选/);
+  assert.match(source, /projectFilterForm"\)\?\.addEventListener\("submit"/);
   assert.match(source, /state\.workingRevision !== openingWorkingRevision/);
   assert.match(source, /state\.projectRevision !== openingProjectRevision/);
   assert.match(source, /advanceWorkspaceSession\(\)/);
@@ -3725,6 +3843,47 @@ test("project browser exposes four states and guards duplicate or stale requests
   assert.match(source, /仍有未应用的结构块修改/);
   assert.match(css, /\.recent-project-list/);
   assert.match(css, /\.project-save-panel/);
+  assert.match(css, /\.project-filter-form/);
+  assert.match(css, /\.project-insights/);
+});
+
+test("role cards require an explicit Recipe v2 opt-in and are carried into the resolve payload", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const source = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+
+  assert.match(html, /data-action=["']enable-role-cards["']/);
+  assert.match(html, /id=["']roleCardList["']/);
+  assert.match(source, /current is Recipe v1|当前是 Recipe v1/);
+  assert.match(source, /case "SET_ROLE_CARDS"/);
+  assert.match(source, /roleCards: clone\(state\.roleCards\)/);
+  assert.match(source, /\/api\/recipe\/roles\/edit/);
+  assert.match(source, /\/api\/recipe\/relationships\/edit/);
+  assert.match(source, /save-relationship-card/);
+  assert.match(source, /requiresConfirmation/);
+});
+
+test("an explicit role card draft is saved as a new Recipe version input", () => {
+  const state = createInitialState();
+  state.roleCards = {
+    schemaVersion: 1,
+    roles: [
+      { id: "role-a", name: "A", tags: [], locked: false },
+      { id: "role-b", name: "B", tags: [], locked: false },
+    ],
+    relationships: [
+      {
+        id: "a-b",
+        fromRoleId: "role-a",
+        toRoleId: "role-b",
+        kind: "friends",
+        description: "together",
+        locked: false,
+      },
+    ],
+  };
+
+  const payload = buildVersionPayload(state);
+  assert.deepEqual(payload.metadata.roleCards, state.roleCards);
 });
 
 test("imports a reference into prompt expansion without mutating the library", () => {
@@ -3794,6 +3953,26 @@ test("applies real image analysis returned by the backend", () => {
       rawResults: {
         florence: "multiple girls, pink hair, brown dresses",
       },
+      analysisConsensus: {
+        catalogStatus: "unavailable",
+        items: [
+          {
+            tag: "pink hair",
+            status: "uncertain",
+            sources: ["florence"],
+          },
+        ],
+      },
+      compositionReference: {
+        mode: "advisory_reference",
+        fields: {
+          shotScale: [{ value: "medium shot", sources: ["florence"] }],
+        },
+      },
+      promptMatchDiagnostics: {
+        confirmedMatchRate: 0.5,
+        possibleMatchRate: 0.75,
+      },
       analyzers: [
         {
           id: "florence",
@@ -3817,8 +3996,40 @@ test("applies real image analysis returned by the backend", () => {
   assert.equal(state.analyzers.joycaption.status, "error");
   assert.match(state.analyzers.joycaption.error, /显存不足/);
   assert.equal(state.blocks[0].source, "Florence + 本地 LLM");
+  assert.equal(state.analysisConsensus.items[0].tag, "pink hair");
+  assert.equal(state.compositionReference.fields.shotScale[0].value, "medium shot");
+  assert.equal(state.promptMatchDiagnostics.confirmedMatchRate, 0.5);
   assert.equal(state.version, 0);
   assert.equal(state.hasUnsavedChanges, true);
+});
+
+test("suggests only verified resolution presets after multi-person evidence", () => {
+  const suggestions = multiPersonResolutionSuggestions(
+    {
+      items: [
+        { tag: "multiple girls", rawTags: ["multiple girls"] },
+      ],
+    },
+    {
+      validatedResolutionPresets: [
+        { id: "portrait", width: 832, height: 1216, label: "Portrait" },
+      ],
+      candidateResolutionPresets: [
+        { id: "unverified", width: 1536, height: 1024, label: "Unverified" },
+      ],
+    }
+  );
+
+  assert.deepEqual(suggestions, [
+    { id: "portrait", width: 832, height: 1216, label: "Portrait" },
+  ]);
+  assert.deepEqual(
+    multiPersonResolutionSuggestions(
+      { items: [{ tag: "1girl", rawTags: ["1girl"] }] },
+      { validatedResolutionPresets: [{ width: 1024, height: 1024 }] }
+    ),
+    []
+  );
 });
 
 test("failed image analysis never applies a fixed demo result", () => {
@@ -4495,6 +4706,82 @@ test("editing a block stays pending until changes are applied", () => {
   assert.equal(state.output.positiveEn, originalOutput);
   assert.deepEqual(state.dirtyBlockIds, ["pose"]);
   assert.equal(state.version, 0);
+});
+
+test("moving subject to front remains an explicit pending structural edit", () => {
+  let state = createGeneratedState();
+  state = reduceState(state, {
+    type: "MOVE_SUBJECT_TO_FRONT",
+    diagnostic: { status: "ready", tokenStart: 4, anchorTag: "subject en" },
+  });
+
+  assert.equal(state.blocks[0].id, "subject");
+  assert.equal(state.appliedBlocks[0].id, "quality");
+  assert.deepEqual(state.dirtyBlockIds, ["subject"]);
+  assert.match(state.previewOutput.positiveEn, /^subject en/);
+  assert.equal(state.output.positiveEn.startsWith("subject en"), false);
+  assert.deepEqual(state.subjectPositionDiagnostic, {
+    status: "ready",
+    tokenStart: 4,
+    anchorTag: "subject en",
+  });
+});
+
+test("a saved project template restores its block enablement and parameter preset", () => {
+  let state = createGeneratedState();
+  const templateBlocks = structuredClone(state.blocks).map((block) => ({
+    ...block,
+    en: block.id === "subject" ? "template subject" : block.en,
+    weight: block.id === "effects" ? 0 : block.weight,
+  }));
+  state.resources.snippets.push({
+    id: "project-template-portrait",
+    type: "snippets",
+    name: "Portrait template",
+    blocks: templateBlocks,
+    metadata: {
+      projectTemplate: {
+        schemaVersion: 1,
+        enabledBlockIds: templateBlocks
+          .filter((block) => block.weight !== 0)
+          .map((block) => block.id),
+        generationParameters: {
+          sampler: "Euler a",
+          steps: 42,
+          resolution: { width: 832, height: 1216 },
+        },
+      },
+    },
+  });
+
+  state = reduceState(state, {
+    type: "APPLY_RESOURCE",
+    id: "project-template-portrait",
+  });
+
+  assert.equal(state.blocks.find((block) => block.id === "subject").en, "template subject");
+  assert.equal(state.blocks.find((block) => block.id === "effects").weight, 0);
+  assert.equal(state.generationParameters.sampler, "Euler a");
+  assert.equal(state.generationParameters.steps, 42);
+  assert.deepEqual(state.generationParameters.resolution, { width: 832, height: 1216 });
+  assert.deepEqual(state.manualParameterKeys.sort(), ["resolution", "sampler", "steps"]);
+  assert.equal(state.hasUnsavedChanges, true);
+  assert.ok(state.dirtyBlockIds.includes("subject"));
+});
+
+test("subject move leaves an already-front subject unchanged", () => {
+  let state = createGeneratedState();
+  const subject = state.blocks.splice(2, 1)[0];
+  state.blocks.unshift(subject);
+  state.appliedBlocks = structuredClone(state.blocks);
+
+  state = reduceState(state, {
+    type: "MOVE_SUBJECT_TO_FRONT",
+    diagnostic: { status: "ready", tokenStart: 0, anchorTag: "subject en" },
+  });
+
+  assert.equal(state.dirtyBlockIds.length, 0);
+  assert.match(state.toast, /主体结构块已在正向提示词首位/);
 });
 
 test("applying block edits recompiles output and marks the next server version pending", () => {
@@ -5401,6 +5688,15 @@ test("quick library exposes the artist mixer panel", () => {
   assert.match(app, /function applyArtistMix/);
 });
 
+test("negative presets use the existing persistent resource channel", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  const source = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+
+  assert.match(html, /data-quick-tab="negative_presets"/);
+  assert.match(source, /targetBlock === "negative" \? "negative_presets" : "snippets"/);
+  assert.match(source, /persistFavoriteResource\(resource\)/);
+});
+
 test("a recipe saves all blocks and can be applied back", () => {
   let state = createGeneratedState();
   const recipe = {
@@ -5478,6 +5774,7 @@ test("editor exposes recipe, matrix and tag suggest features", () => {
   const dataJs = fs.readFileSync(path.join(__dirname, "..", "data.js"), "utf8");
 
   assert.match(html, /data-action=["']save-recipe["']/);
+  assert.match(html, /存为项目模板/);
   assert.match(html, /id=["']variantMatrixBtn["']/);
   assert.match(html, /id=["']variantMatrix["']/);
   assert.match(app, /BLOCKS_VARIANT_READY/);
@@ -6072,7 +6369,7 @@ test("deterministic random plans map clothing into the dedicated outfit block", 
           text: "armored bodysuit",
           categoryId: "clothing_outfit",
           locked: true,
-          binding: { blockId: "appearance" },
+          binding: { blockId: "outfit" },
         },
       ],
     },
@@ -6095,7 +6392,8 @@ test("workbench visibly exposes model presets and AI local edit flow", () => {
   assert.match(html, /data-action="wordlist-plan"/);
   assert.match(html, /id="recipeModelProfile"/);
   assert.match(html, /id="recipeResolutionPreset"/);
-  assert.match(html, /候选，待验证/);
+  assert.match(html, /不自动套用建议/);
+  assert.match(appSource, /validatedResolutionPresets/);
   assert.match(html, /AI 局部修改/);
   assert.match(html, /生成修改预览/);
   assert.match(html, /data-action="preview-edit"/);
@@ -6315,6 +6613,10 @@ test("confirmed decomposition handoff preserves all blocks and exact profile lin
     ]
   );
   assert.equal(projection.blocks[0].zh, "identity semantic");
+  assert.equal(
+    projection.blocks[0].en,
+    "identity semantic, identity adapted"
+  );
   assert.deepEqual(projection.blocks[0].metadata.semanticSource, {
     type: "ai", refId: null,
   });

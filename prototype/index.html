@@ -348,6 +348,30 @@
                 <input id="backupFileInput" class="visually-hidden" type="file" accept=".zip,.json,application/zip,application/json" />
               </div>
             </div>
+            <form class="project-filter-form" id="projectFilterForm" aria-label="筛选本机项目">
+              <label>
+                <span>搜索</span>
+                <input id="projectSearchInput" type="search" maxlength="200" placeholder="项目名称或 ID" autocomplete="off" />
+              </label>
+              <label>
+                <span>状态</span>
+                <select id="projectStatusFilter">
+                  <option value="">全部</option>
+                  <option value="draft">草稿</option>
+                </select>
+              </label>
+              <label>
+                <span>模型 ID</span>
+                <input id="projectModelFilter" type="search" maxlength="200" placeholder="可选" autocomplete="off" />
+              </label>
+              <label>
+                <span>LoRA ID</span>
+                <input id="projectLoraFilter" type="search" maxlength="200" placeholder="可选" autocomplete="off" />
+              </label>
+              <button class="secondary-button" type="submit">筛选</button>
+              <button class="text-button" type="button" data-action="clear-project-filters">清除</button>
+            </form>
+            <aside class="project-insights" id="projectInsights" aria-live="polite"></aside>
             <div class="recent-project-list" id="recentProjectList"></div>
           </section>
 
@@ -543,6 +567,7 @@
                     画师收藏
                   </button>
                   <button type="button" data-quick-tab="snippets">我的素材</button>
+                  <button type="button" data-quick-tab="negative_presets">负面预设</button>
                 </div>
                 <div class="resource-source" id="resourceSource">
                   <span class="resource-source-state">
@@ -662,6 +687,8 @@
                 </div>
                 <div class="raw-tabs" id="rawTabs"></div>
                 <pre id="rawOutput">完成分析后显示模型原始输出。</pre>
+                <div class="analysis-consensus" id="analysisConsensus"></div>
+                <div class="composition-reference" id="compositionReference"></div>
               </div>
             </section>
           </aside>
@@ -677,8 +704,8 @@
                 </div>
               </div>
               <div class="editor-actions">
-                <button class="secondary-button" type="button" data-action="save-recipe" title="把当前完整十三块与参数保存为可复用配方">
-                  存为配方
+                <button class="secondary-button" type="button" data-action="save-recipe" title="把当前结构块启用集和参数预设保存为可复用项目模板">
+                  存为项目模板
                 </button>
                 <button class="secondary-button" type="button" data-action="collapse-blocks">
                   收起全部
@@ -771,8 +798,10 @@
             <section class="output-group" data-language="en">
               <div class="output-label">
                 <strong>Positive · English</strong>
+                <button type="button" data-action="move-subject-to-front" title="先用本机 tokenizer 核验主体位置；不会自动应用">主体前移</button>
                 <button type="button" data-copy="positiveEn">复制</button>
               </div>
+              <p class="hidden" id="subjectPositionHint" aria-live="polite"></p>
               <textarea
                 id="positiveEn"
                 readonly
@@ -856,7 +885,7 @@
                 <label>
                   <span>分辨率预设</span>
                   <select id="recipeResolutionPreset">
-                    <option value="">手动分辨率（候选，待验证）</option>
+                    <option value="">手动分辨率（不自动套用建议）</option>
                   </select>
                 </label>
                 <button class="secondary-button" type="button" data-action="restore-model-defaults">恢复模型推荐</button>
@@ -871,6 +900,16 @@
                 <label><span>Img2Img Denoise</span><input id="recipeDenoise" data-generation-param="denoiseStrength" type="number" min="0" max="1" step="0.01" placeholder="可选" /></label>
               </div>
               <p class="parameter-precedence">参数优先级：手动覆盖 › 任务预设 › LoRA 要求 › 模型默认。每项来源随版本保存。</p>
+              <section class="role-card-panel" id="roleCardPanel" aria-labelledby="roleCardTitle">
+                <div class="role-card-heading">
+                  <div>
+                    <strong id="roleCardTitle">角色卡（Recipe v2）</strong>
+                    <span>启用是显式创建 v2；局部修改不会自动改动另一角色或关系。</span>
+                  </div>
+                  <button class="secondary-button" type="button" data-action="enable-role-cards">启用角色卡</button>
+                </div>
+                <div id="roleCardList" class="role-card-list" aria-live="polite"></div>
+              </section>
               <section class="lora-profile-panel" id="loraProfilePanel" aria-labelledby="loraProfileTitle">
                 <div class="lora-profile-heading">
                   <div>
@@ -908,6 +947,28 @@
                 </div>
                 <input id="librarySeed" maxlength="32" autocomplete="off" placeholder="32位十六进制 Seed；留空则生成" />
                 <button class="secondary-button" type="button" data-action="wordlist-plan">生成可复现计划</button>
+                <select id="wordlistProposalCategory" aria-label="词库提案分类">
+                  <option value="theme_mood">主题氛围</option>
+                  <option value="scene_environment">场景环境</option>
+                  <option value="pose_action">姿势动作</option>
+                  <option value="clothing_outfit">服装</option>
+                  <option value="composition_camera">构图镜头</option>
+                  <option value="lighting_color">光影色彩</option>
+                  <option value="effects_props">特效道具</option>
+                  <option value="weather_time">天气时间</option>
+                  <option value="appearance_traits">外观特征</option>
+                </select>
+                <select id="wordlistProposalBlock" aria-label="词库提案目标块">
+                  <option value="appearance">外观</option>
+                  <option value="pose">姿势</option>
+                  <option value="scene">场景</option>
+                  <option value="composition">构图</option>
+                  <option value="lighting">光影</option>
+                  <option value="effects">特效</option>
+                  <option value="subject">主体</option>
+                </select>
+                <input id="wordlistProposalText" maxlength="512" autocomplete="off" placeholder="英文词条提案（ASCII，无逗号）" />
+                <button class="secondary-button" type="button" data-action="propose-wordlist-entry">提交加词提案</button>
               </div>
               <div class="instruction-console">
                 <label for="editInstruction"><strong>AI 局部修改</strong><span>直接描述想改什么；AI 会读取完整提示词，只提出必要修改，确认后保存为新版本。</span></label>
@@ -926,6 +987,13 @@
               <button class="secondary-button" type="button" data-action="copy-all">
                 复制双语
               </button>
+              <button class="secondary-button" type="button" data-action="export-a1111">
+                复制 A1111 参数
+              </button>
+              <button class="secondary-button" type="button" data-action="inspect-generation-result">
+                检查出图 PNG
+              </button>
+              <input id="generationResultInput" class="visually-hidden" type="file" accept="image/png" />
               <button class="secondary-button" type="button" data-action="export-project" data-backup-action>
                 导出当前作品
               </button>
@@ -938,6 +1006,7 @@
                 保存为作品草稿
               </button>
             </div>
+            <section class="generation-result-inspection hidden" id="generationResultInspection" aria-live="polite"></section>
           </aside>
         </section>
       </main>

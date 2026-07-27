@@ -22,10 +22,9 @@ DEFAULT_OUTPUT = (
 
 SCHEMA_VERSION = 1
 SAMPLER_VERSION = "sha256-counter-v1"
-MAPPING_VERSION = "ten-block-v1"
+MAPPING_VERSION = "thirteen-block-v1"
 PROFILE = "adult-character-v1"
 VERSION_PREFIX = "v1"
-EXPECTED_TOTAL = 471
 MAX_SOURCE_FILE_BYTES = 128 * 1024
 MAX_ENTRY_UTF8_BYTES = 512
 FORBIDDEN_ITEM_SEPARATORS = (",", "，", ";", "；", "\r", "\n")
@@ -44,8 +43,7 @@ def fixed_draw(count: int) -> dict[str, Any]:
 CATEGORY_SPECS: tuple[dict[str, Any], ...] = (
     {
         "id": "theme_mood",
-        "sourceFile": "theme_mood.txt",
-        "expectedCount": 50,
+        "sourceFile": "blocks/scene/theme_mood.txt",
         "drawRule": fixed_draw(1),
         "primaryBlock": "scene",
         "allowedBlocks": [
@@ -60,48 +58,42 @@ CATEGORY_SPECS: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "scene_environment",
-        "sourceFile": "scene_environment.txt",
-        "expectedCount": 70,
+        "sourceFile": "blocks/scene/scene_environment.txt",
         "drawRule": fixed_draw(1),
         "primaryBlock": "scene",
         "allowedBlocks": ["scene"],
     },
     {
         "id": "pose_action",
-        "sourceFile": "pose_action.txt",
-        "expectedCount": 60,
+        "sourceFile": "blocks/pose/pose_action.txt",
         "drawRule": fixed_draw(1),
         "primaryBlock": "pose",
         "allowedBlocks": ["pose"],
     },
     {
         "id": "clothing_outfit",
-        "sourceFile": "clothing_outfit.txt",
-        "expectedCount": 60,
+        "sourceFile": "blocks/outfit/clothing_outfit.txt",
         "drawRule": fixed_draw(1),
-        "primaryBlock": "appearance",
-        "allowedBlocks": ["appearance"],
+        "primaryBlock": "outfit",
+        "allowedBlocks": ["outfit"],
     },
     {
         "id": "composition_camera",
-        "sourceFile": "composition_camera.txt",
-        "expectedCount": 45,
+        "sourceFile": "blocks/composition/composition_camera.txt",
         "drawRule": fixed_draw(1),
         "primaryBlock": "composition",
         "allowedBlocks": ["composition"],
     },
     {
         "id": "lighting_color",
-        "sourceFile": "lighting_color.txt",
-        "expectedCount": 50,
+        "sourceFile": "blocks/lighting/lighting_color.txt",
         "drawRule": fixed_draw(1),
         "primaryBlock": "lighting",
         "allowedBlocks": ["lighting"],
     },
     {
         "id": "effects_props",
-        "sourceFile": "effects_props.txt",
-        "expectedCount": 56,
+        "sourceFile": "blocks/effects/effects_props.txt",
         "drawRule": {
             "kind": "uniform-count",
             "minimum": 1,
@@ -113,8 +105,7 @@ CATEGORY_SPECS: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "weather_time",
-        "sourceFile": "weather_time.txt",
-        "expectedCount": 30,
+        "sourceFile": "blocks/scene/weather_time.txt",
         "drawRule": {
             "kind": "bernoulli",
             "probability": 0.5,
@@ -127,8 +118,7 @@ CATEGORY_SPECS: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "appearance_traits",
-        "sourceFile": "appearance_traits.txt",
-        "expectedCount": 50,
+        "sourceFile": "blocks/appearance/appearance_traits.txt",
         "drawRule": {
             "kind": "uniform-count",
             "minimum": 0,
@@ -187,7 +177,7 @@ def _validate_source_files(source_dir: Path) -> None:
     expected = {spec["sourceFile"] for spec in CATEGORY_SPECS}
     if not source_dir.is_dir():
         raise CatalogValidationError(f"wordlist source directory is missing: {source_dir}")
-    actual = {path.name for path in source_dir.glob("*.txt") if path.is_file()}
+    actual = {path.relative_to(source_dir).as_posix() for path in source_dir.rglob("*.txt") if path.is_file()}
     missing = sorted(expected - actual)
     unexpected = sorted(actual - expected)
     if missing or unexpected:
@@ -211,12 +201,8 @@ def _load_category(
     source_file = str(spec["sourceFile"])
     path = source_dir / source_file
     lines = _read_strict_utf8(path).splitlines()
-    expected_count = int(spec["expectedCount"])
-    if len(lines) != expected_count:
-        raise CatalogValidationError(
-            f"{source_file} must contain exactly {expected_count} lines, "
-            f"found {len(lines)}"
-        )
+    if not lines:
+        raise CatalogValidationError(f"{source_file} must contain at least one entry")
 
     entries = []
     for source_line, text in enumerate(lines, start=1):
@@ -275,7 +261,7 @@ def _load_category(
     return {
         "id": spec["id"],
         "sourceFile": source_file,
-        "expectedCount": expected_count,
+        "expectedCount": len(entries),
         "drawRule": spec["drawRule"],
         "primaryBlock": spec["primaryBlock"],
         "allowedBlocks": spec["allowedBlocks"],
@@ -312,10 +298,6 @@ def build_catalog(source_dir: Path = DEFAULT_SOURCE_DIR) -> dict[str, Any]:
         for spec in CATEGORY_SPECS
     ]
     entry_count = sum(len(category["entries"]) for category in categories)
-    if entry_count != EXPECTED_TOTAL:
-        raise CatalogValidationError(
-            f"catalog must contain exactly {EXPECTED_TOTAL} entries, found {entry_count}"
-        )
 
     content: dict[str, Any] = {
         "schemaVersion": SCHEMA_VERSION,
@@ -326,7 +308,7 @@ def build_catalog(source_dir: Path = DEFAULT_SOURCE_DIR) -> dict[str, Any]:
         "semanticReviewRequired": True,
         "contentHashAlgorithm": "sha256-canonical-json-without-version-fields-v1",
         "normalizationUnicodeVersion": unicodedata.unidata_version,
-        "sourceDirectory": "词库原稿",
+        "sourceDirectory": "词库原稿/blocks",
         "categoryCount": len(categories),
         "entryCount": entry_count,
         "categories": categories,
@@ -363,6 +345,7 @@ def generate_catalog(
     output: Path = DEFAULT_OUTPUT,
     *,
     check: bool = False,
+    archive_dir: Path | None = None,
 ) -> Path:
     output = Path(output)
     expected = expected_catalog_bytes(Path(source_dir))
@@ -381,6 +364,15 @@ def generate_catalog(
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_bytes(expected)
+    archive_directory = (
+        Path(archive_dir) if archive_dir is not None else output.parent / "catalogs"
+    )
+    archive_directory.mkdir(parents=True, exist_ok=True)
+    archive_path = archive_directory / f"{build_catalog(Path(source_dir))['version']}.json"
+    if archive_path.exists() and _normalize_checkout_newlines(archive_path.read_bytes()) != expected:
+        raise CatalogValidationError(f"immutable catalog archive conflicts: {archive_path}")
+    if not archive_path.exists():
+        archive_path.write_bytes(expected)
     return output
 
 

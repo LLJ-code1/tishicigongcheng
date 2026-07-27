@@ -18,301 +18,301 @@
       "entries": [
         {
           "entryId": "theme_mood:7d704c5df7deda9b8388fe6a1fc4e6ebc34cc7d41320aaa0ecd14e96f752dde8",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 1,
           "text": "post-apocalyptic tranquility"
         },
         {
           "entryId": "theme_mood:2d55f36b4cb27a6dd986406d4aea3f8be1882129f1aabe792748c162a54991db",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 2,
           "text": "cyberpunk noir"
         },
         {
           "entryId": "theme_mood:d2f38aa7ca017192b096df0ea8dce0724bad291f2bc77f32fa1fb730923dbaf0",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 3,
           "text": "gothic romance"
         },
         {
           "entryId": "theme_mood:0a77271041b1c581c5ccd5a560480472f810f61565a78427d6f1b0743af1e019",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 4,
           "text": "pastoral idyll"
         },
         {
           "entryId": "theme_mood:1dfa32ffc716603cafb24a1f64a75eb2fd31d45799a6507bb73726d718b8050e",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 5,
           "text": "wuxia fantasy"
         },
         {
           "entryId": "theme_mood:3fcec3d7e0646038baca9660554343410f226104b45dc5df6b2f5a2383240ca1",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 6,
           "text": "steampunk expedition"
         },
         {
           "entryId": "theme_mood:87db46af970e7b71f401849de0beafb536817b84a94fec1c78faa15fca0dffb0",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 7,
           "text": "deep sea mystery"
         },
         {
           "entryId": "theme_mood:c784e9d6077611dea385831e1d8c6a3559ae8bcd6aea3f2deaab88e5fd08feec",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 8,
           "text": "shrine festival night"
         },
         {
           "entryId": "theme_mood:087606928ff728e4acaf03963fab9ce09daa9ce35edca910a2ce87c1d5e8c130",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 9,
           "text": "rainy season melancholy"
         },
         {
           "entryId": "theme_mood:dcea112f8b9bddb439949d5afcc698edd571a601660e136913a76af173bf432d",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 10,
           "text": "winter solitude"
         },
         {
           "entryId": "theme_mood:7da3f9d780e4d52d595b2b52b551c1ef410b3b72430cddebc65fa4dad27bb52d",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 11,
           "text": "urban loneliness at midnight"
         },
         {
           "entryId": "theme_mood:915332866294888faf51b4c658ae09f0a783cbf24e45b3513f50a778a23f93ec",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 12,
           "text": "retro 1980s city pop"
         },
         {
           "entryId": "theme_mood:d48e4945aba23de4f7ef1f05df4674068fd5b2866fa400392d17da5b02262efc",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 13,
           "text": "dark fairy tale"
         },
         {
           "entryId": "theme_mood:6bab7c92ed10c6aadcf6147e1c427467d1a9f1311a39f9f0fc6ae3739c41480c",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 14,
           "text": "military science fiction"
         },
         {
           "entryId": "theme_mood:536b4a302a81a86aa92b7e05300ea98d7a1023da71b0250a64faaa9ed195bb4e",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 15,
           "text": "desert caravan journey"
         },
         {
           "entryId": "theme_mood:6e56664c332dc0301eeaeb403e2abeb9a9a7b3abca9a3b4f51c772c4b8382cde",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 16,
           "text": "floating islands fantasy"
         },
         {
           "entryId": "theme_mood:27fe7156785573a9c252650013dfc451667a3008a67062ef6db727a837f764d7",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 17,
           "text": "alchemy workshop daily life"
         },
         {
           "entryId": "theme_mood:1786e06c4e9975ceee7afe591dd265d20e920336d21300470216529b92a6c914",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 18,
           "text": "haunted mansion elegance"
         },
         {
           "entryId": "theme_mood:eb69588f0d18cf394b223408f0a8ca813172b35b3be8c112b291e260968a3859",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 19,
           "text": "tropical vacation laziness"
         },
         {
           "entryId": "theme_mood:e507912b8556cf852f7eef3c53544f42e32b90ca8cd9045c6e89ec0dc569899d",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 20,
           "text": "space opera grandeur"
         },
         {
           "entryId": "theme_mood:93362a41dbe54a9814913f0b3b45a45b95cd38b09265bdf4c038378edb267e1b",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 21,
           "text": "film noir investigation"
         },
         {
           "entryId": "theme_mood:1cf92b24ea94e975047f61ebe2e3e1a0d12dc9cbddf0e5c71d86c60c96df6817",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 22,
           "text": "victorian afternoon tea"
         },
         {
           "entryId": "theme_mood:3280c4e446dfc8e6f92618ba0a062e49de0e37d7fb4296855b66c069225e871c",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 23,
           "text": "aftermath of a samurai duel"
         },
         {
           "entryId": "theme_mood:0dfcb05570ce7595dce27413dc37f2fb38b4524e793bea1392bf7cdead797464",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 24,
           "text": "idol stage performance"
         },
         {
           "entryId": "theme_mood:9fd82da5dfa4f5edd24b21260bdbeea332ea208d3a173c0636bf33454183a8fe",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 25,
           "text": "witchcraft academy term"
         },
         {
           "entryId": "theme_mood:47ef2988e8a5c5ffb7753a6e4289080d440ccc4ca9761538001b7c1fb0c35296",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 26,
           "text": "ruins reclaimed by nature"
         },
         {
           "entryId": "theme_mood:f83ec84f7ee4ab2c492479cf98e810447fec985d6882a24501547cba1bb396a4",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 27,
           "text": "neon street racing"
         },
         {
           "entryId": "theme_mood:9d1f4e4ef72235bbb472b1c8189878e63d737f424302d0072f71e21a3bceadfa",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 28,
           "text": "arctic expedition camp"
         },
         {
           "entryId": "theme_mood:e3dc3c9f39350141b64bd8a75cfbf3dae313bbe0bd848f9e11c2bddd2a0a0e3c",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 29,
           "text": "encounter with a mythological being"
         },
         {
           "entryId": "theme_mood:59e3536f217af6480feb5e8da888856f549d7905f28e3cca288f4523d4abf67f",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 30,
           "text": "dieselpunk industrial era"
         },
         {
           "entryId": "theme_mood:23d2d508303beef485d0c8005c5c6962b35c29d9011d5bd78050b6fd89cec8c1",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 31,
           "text": "royal court intrigue"
         },
         {
           "entryId": "theme_mood:8608a94b54a85dfaf7c3b6dbb7086d917341d30fb8e5f8797c346254ab52e195",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 32,
           "text": "pirate voyage at dawn"
         },
         {
           "entryId": "theme_mood:cbc38ee38618241dc6e2eb665c6ddb8af4faf8db2b737fe6e22db7f60a368c8c",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 33,
           "text": "mountain monastery serenity"
         },
         {
           "entryId": "theme_mood:18e52a0dfbb563033cfdfa6447f69c385610b75cba7ea8a56563715368597a19",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 34,
           "text": "carnival at midnight"
         },
         {
           "entryId": "theme_mood:9956754c342d5f301d22c17e7a15c59cc3f71b14aef468f60a3e7fec5d9bbcdf",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 35,
           "text": "dream world surrealism"
         },
         {
           "entryId": "theme_mood:e1f40a34d2df8f8e26067bd1de6481b8aa1fee4ae018096a3f04f088b458aaa8",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 36,
           "text": "nostalgic childhood summer"
         },
         {
           "entryId": "theme_mood:9be83f5755672dcda8fb6b8f73591135e2ea31845d40cb80f61b98229cb92070",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 37,
           "text": "emergency evacuation chaos"
         },
         {
           "entryId": "theme_mood:8434f3ab243ade587d9aab5c708bb6e1a2edd7bd34e6460f1477eece1ec40537",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 38,
           "text": "celestial observatory vigil"
         },
         {
           "entryId": "theme_mood:6a361a5a09ab3977cde5afced87d0a980d55180b28aa3818465fda03385d8ed2",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 39,
           "text": "underwater city commute"
         },
         {
           "entryId": "theme_mood:bb72b68b9d7e8a7b02ed59e21ffc15c6d5916bb79faa4d882c2297c343a63335",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 40,
           "text": "volcanic forge labor"
         },
         {
           "entryId": "theme_mood:dcf77749eb13e2e757017c7e975b0de07e2061ea68636e5550313f5335f7ed1e",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 41,
           "text": "bamboo forest hermitage"
         },
         {
           "entryId": "theme_mood:9cf9e08148f1e601d98410b40907361f7b1d63b20e6fe4d0a1d50791e67ddfe9",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 42,
           "text": "clockwork palace ceremony"
         },
         {
           "entryId": "theme_mood:dbb309b4eea8d8a2e81d384ed84a6c617c67522559be5cce771b0b436a1924d0",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 43,
           "text": "garden of oversized flowers"
         },
         {
           "entryId": "theme_mood:998f5b09a279e244b6c4138814af13c35971ada52c70ab0d0c88b13de84e6174",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 44,
           "text": "ghost story told at a campfire"
         },
         {
           "entryId": "theme_mood:2974b0925f37cf16a3e1ff42f970b3d59e036f632edee6164fb05505646c04fb",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 45,
           "text": "first day at a new job"
         },
         {
           "entryId": "theme_mood:3e8b936fad675dc2bda4d9d5cfcadcc4769014a7ae72b25ade5485a234a633ab",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 46,
           "text": "quiet morning after heavy snow"
         },
         {
           "entryId": "theme_mood:e16d2b921b3fe69a19451eaa2607e9c5cb15e651954cf635133e22ba13df4dd8",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 47,
           "text": "harvest festival in a village"
         },
         {
           "entryId": "theme_mood:9edbae65e64c21ebd3f2e9a3455980675efbe9b311d2107a733b85e5f407f31e",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 48,
           "text": "secret laboratory discovery"
         },
         {
           "entryId": "theme_mood:5ada6b0f0e0f0bd0018ecf307760a12412e2fcc92dff694ec5d374ba6f68e0f5",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 49,
           "text": "long-distance night train ride"
         },
         {
           "entryId": "theme_mood:b4b166cddbb23219cfb4da7cb8f6a3570ea503b75ed5fa5e15e071d2753cd2dd",
-          "sourceFile": "blocks/scene/theme_mood.txt",
+          "sourceFile": "theme_mood.txt",
           "sourceLine": 50,
           "text": "reunion after many years"
         }
@@ -320,7 +320,7 @@
       "expectedCount": 50,
       "id": "theme_mood",
       "primaryBlock": "scene",
-      "sourceFile": "blocks/scene/theme_mood.txt"
+      "sourceFile": "theme_mood.txt"
     },
     {
       "allowedBlocks": [
@@ -334,421 +334,421 @@
       "entries": [
         {
           "entryId": "scene_environment:689a868f6c97905aa28dc71a898e4ab5d22b8201571d772cc78c87a034b19b99",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 1,
           "text": "abandoned train station overgrown with ivy"
         },
         {
           "entryId": "scene_environment:abfed2f940b7c1acd05a8c4a4031b0ef73e2051ca46a6c3f4cdd5080eaeb081b",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 2,
           "text": "rooftop garden at dusk"
         },
         {
           "entryId": "scene_environment:4615ee8473fd1bc74ea25c690a87bdecf2bb958d997228024e6c794093e7c421",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 3,
           "text": "neon-lit alley in the rain"
         },
         {
           "entryId": "scene_environment:a970ff8193d49495869fa03cff6e3df224d21e0f6733115b14a1e71c6ea15e32",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 4,
           "text": "cathedral interior with stained glass"
         },
         {
           "entryId": "scene_environment:a0f3491d64d9080061fe477daa8504e0a60d2c810daadc3707fc3a4e1a8ad24d",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 5,
           "text": "cliffside lighthouse"
         },
         {
           "entryId": "scene_environment:268d5e26016317af46eab1d1152e3751dfd5a10b81865989336dcebc33952787",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 6,
           "text": "flooded library with floating books"
         },
         {
           "entryId": "scene_environment:3faddc1305f1a2e121bd19c2bdf46ace43021205db457962c112b095c1384157",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 7,
           "text": "terraced rice fields"
         },
         {
           "entryId": "scene_environment:323a21fb264f0dae065b08021c4ebe7dc732b8145e1ec04d1dac359280d14db6",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 8,
           "text": "cherry blossom riverbank"
         },
         {
           "entryId": "scene_environment:c161d9f9c105f2efa76606947c7b9bfbfb163bd75f832afccd49eccf5f2f8fb8",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 9,
           "text": "crowded cyberpunk market street"
         },
         {
           "entryId": "scene_environment:b6c43c3af4bdacecec479907a992ff68a02969bf70f7d18f4e7ad53f2012ce18",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 10,
           "text": "ancient stone bridge in mist"
         },
         {
           "entryId": "scene_environment:6b8358e80710dbbb59eaa4f8170dfe77127965386b486c4ecdf9f4dd02cb30bc",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 11,
           "text": "greenhouse full of exotic plants"
         },
         {
           "entryId": "scene_environment:bc256e0b264178cba38104d0842a2b7a384550d18e11cf8a3844e3af7b3ee10a",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 12,
           "text": "snowy shrine gate"
         },
         {
           "entryId": "scene_environment:0e829354c954080bffa2e79cdc518a903bcfaa8b45ff7d55f4196cc6f231cf16",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 13,
           "text": "desert ruins half-buried in sand"
         },
         {
           "entryId": "scene_environment:773521ce452fc883c482efc9ff42b69eeae9bfb62501ea8c7fa4665dce1780b0",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 14,
           "text": "cramped submarine interior"
         },
         {
           "entryId": "scene_environment:3e12e784e79c78f096eb97954545ab42deaa4d94566bc0900aa57138c0f29b39",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 15,
           "text": "throne room in disrepair"
         },
         {
           "entryId": "scene_environment:d2d48aea68befe181dad05bdce4c286a79673b07bceb19687f201c2e6b089320",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 16,
           "text": "last night bus interior"
         },
         {
           "entryId": "scene_environment:60d6d2a8745b5a8d163c7e0f46e7f7505178bccfb5ef3b9a7c7871e806606649",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 17,
           "text": "convenience store at 3am"
         },
         {
           "entryId": "scene_environment:6f202fdcc5a8341b6cb713acc012d7149250042bcbbb0eb87e4e316e165aec05",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 18,
           "text": "grand opera house stage"
         },
         {
           "entryId": "scene_environment:cb82624a8b546e6531195a11faa8bfef86e7ae8a3ae9961893687868902e0c30",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 19,
           "text": "spiral staircase inside a tower"
         },
         {
           "entryId": "scene_environment:01a657f20f62751ebd99fd004ff0989196d5f0425f13b398f95b09e3c5a59d9b",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 20,
           "text": "open-air hot spring in snow"
         },
         {
           "entryId": "scene_environment:ef95cec719779647440c3dfdb22a4a0f374696088fb324479001db9a35a822be",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 21,
           "text": "wheat field before a storm"
         },
         {
           "entryId": "scene_environment:cb5e6a5aa29b81161b336c5edc6f347f34b12179d19435d2fee3629791070400",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 22,
           "text": "fishing harbor at dawn"
         },
         {
           "entryId": "scene_environment:87f05d5bc5ab6232c78660a04b2d44ebd47e9289571319ea88aa7ab7fa9f319a",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 23,
           "text": "mech hangar with scaffolding"
         },
         {
           "entryId": "scene_environment:392bd1d669e3840574846d01a59ca046c8c19c8e5eb3d34a6e2fba19ed931e01",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 24,
           "text": "alchemist's cluttered study"
         },
         {
           "entryId": "scene_environment:261c45bfb8ca5cfb2d3864385a2234695967b9a26f267d0738026161c973c35a",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 25,
           "text": "moonlit graveyard"
         },
         {
           "entryId": "scene_environment:1a3a51d3c825a74adf54de2b21f687f68fd57125c3e89215ff6a3ee928b39ab7",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 26,
           "text": "glass elevator overlooking the city"
         },
         {
           "entryId": "scene_environment:943039ee89bb21e997457c7dd1a421845b225e9d3177c68e6ec34b0115207af7",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 27,
           "text": "aquarium tunnel"
         },
         {
           "entryId": "scene_environment:a09e1668170c3e1666192b7a8140a4a7da3c8dea2b66d816574b89d6020b10d9",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 28,
           "text": "rope bridge over a gorge"
         },
         {
           "entryId": "scene_environment:9834faee45729322b87be6f94f78d5ee651dc11bd8020cd50a8c5860bd12dee1",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 29,
           "text": "lavender field in bloom"
         },
         {
           "entryId": "scene_environment:aa08734cd32d2e92718204b86491284a7d55a98b3d4d329f71a654a3801a5cc8",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 30,
           "text": "frozen waterfall"
         },
         {
           "entryId": "scene_environment:16c89241b9f9df5086f3f8ecd9789c6e10d53fc2b0daae1f67313d8b574f47e2",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 31,
           "text": "subway platform after the last train"
         },
         {
           "entryId": "scene_environment:00dec6145fe2672390da63fed4d5e2b103ae120b74976de3294b14e19fcbc975",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 32,
           "text": "castle courtyard in autumn"
         },
         {
           "entryId": "scene_environment:d00703ef1b5b4195c843153ac307faac949c0690857d64635428f7fe259855a7",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 33,
           "text": "floating market on canals"
         },
         {
           "entryId": "scene_environment:3f9aa276a60332a270da6ee7a913f2e744c072363a5f0918102dc7e4191d533c",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 34,
           "text": "server room with blinking lights"
         },
         {
           "entryId": "scene_environment:c6b11c581e515de31744939f8fc5734c3459e1640fa27f524de03f8ae8528458",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 35,
           "text": "traditional tatami room"
         },
         {
           "entryId": "scene_environment:0ac73190da2018b178ebe6d2bad411866f0a9b324903e9e499a98985932db57e",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 36,
           "text": "sunflower field at noon"
         },
         {
           "entryId": "scene_environment:3e6b9db52f131103eb527444e1c424e86a3c398525345d4215725b7b4f7eb05e",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 37,
           "text": "cave with bioluminescent mushrooms"
         },
         {
           "entryId": "scene_environment:3bc511530d54f2204747c181cae6ae9f160ecafc7f9cc0abc2cba9795baa812a",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 38,
           "text": "art museum gallery"
         },
         {
           "entryId": "scene_environment:120deda8f2bcc4520717cd0c8273dd60cef542b095db0709ed8e841e5f5b342a",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 39,
           "text": "bell tower at sunset"
         },
         {
           "entryId": "scene_environment:ce27a2b888379653d16bb8ea1ca69a60a576252673d817b5dccd63f4a95bfd11",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 40,
           "text": "war-torn street with barricades"
         },
         {
           "entryId": "scene_environment:10c040e54652be766a82b46217e965958497f5cb1666640089d23958aff096aa",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 41,
           "text": "luxury hotel lobby"
         },
         {
           "entryId": "scene_environment:8704d9c7ea9c7aa0ee34a40d1813589e37b2e3eb31f5783f5c9138bab55f911e",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 42,
           "text": "rain-soaked phone booth"
         },
         {
           "entryId": "scene_environment:7b6bc7f712569c35cb02c6492bf18cd82e101f2c89024668db688bd8f4fa69cb",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 43,
           "text": "mountain summit above a sea of clouds"
         },
         {
           "entryId": "scene_environment:b37d68f09c9463d401adae6f6478aab09b81294f92ad35db8eaa7d76c109f4b3",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 44,
           "text": "ship deck in a storm"
         },
         {
           "entryId": "scene_environment:1f80bae823ee5543864b515729233da942c5285dd015389996a2b6e031d391fd",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 45,
           "text": "witch's cottage kitchen"
         },
         {
           "entryId": "scene_environment:152dc542ba6a0032021e27a0b37f8f23abef9e0e43cd5e112742db3f99508024",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 46,
           "text": "planetarium dome interior"
         },
         {
           "entryId": "scene_environment:c1c8f0e43443f9b359040ed0f341f79d4c0e3fa1da249d6a9eb52fee53d71f67",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 47,
           "text": "redwood forest canopy walkway"
         },
         {
           "entryId": "scene_environment:0a7b37b76bd8f929141e18c0d3226062cf3b8dafbb4b215cfdcd4d7d69a2739e",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 48,
           "text": "salt flats with mirror reflection"
         },
         {
           "entryId": "scene_environment:314512c7487673404b5af055c1da149de61f1c3e65fb56ee20863e594f2af8c3",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 49,
           "text": "old bookstore with narrow aisles"
         },
         {
           "entryId": "scene_environment:a053cb86b9f603e7c6e0505bf4f320442003283da57bbaec9c364a6b19bac875",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 50,
           "text": "ferris wheel gondola"
         },
         {
           "entryId": "scene_environment:72531c790c3dda9cea936b04f9a855456e4c78f34b2d44ebf675df8541a60f12",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 51,
           "text": "drive-in theater at night"
         },
         {
           "entryId": "scene_environment:8231a30401803bd0e7c4892ef31190d375746a5358eae4792faa312c9b08468f",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 52,
           "text": "ruined cathedral open to the sky"
         },
         {
           "entryId": "scene_environment:4349cbb972f2f3bf11968a3f4aafbd68c44aa97dfc64badd50b3d13aadefaba4",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 53,
           "text": "koi pond in a japanese garden"
         },
         {
           "entryId": "scene_environment:ecf3089e8bec3fdf2aa936adba54c9c0839ac901fbab75881e58b5560daaa5af",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 54,
           "text": "airship observation deck"
         },
         {
           "entryId": "scene_environment:9da2c6f6d56caaca5490abbbec17c6cea2297dfe57aff53509caec5f5d999340",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 55,
           "text": "ice hotel suite"
         },
         {
           "entryId": "scene_environment:96d9293993424ae053e8eb98dfaa191bd9a12f7e5dd32d449eacffce5a32fd21",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 56,
           "text": "dim jazz bar interior"
         },
         {
           "entryId": "scene_environment:23343410295bf04d510b393a6317a838f070e42e2459681fe7ad14ed12853bbc",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 57,
           "text": "laundromat at night"
         },
         {
           "entryId": "scene_environment:fa07d3b1d7c70fb4bbca5227d49ecd390bdcf08372f025a850c7a06d3b925402",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 58,
           "text": "scaffolding high on a skyscraper"
         },
         {
           "entryId": "scene_environment:a4f024aa97294719bd3d36c293e20d479a89f2623888237a7bb2872160f99573",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 59,
           "text": "tidal pools at low tide"
         },
         {
           "entryId": "scene_environment:e1679b0ede57296056e3947343bd63ce4e96b5338680acb7750368f7d3c57292",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 60,
           "text": "catwalk above a factory floor"
         },
         {
           "entryId": "scene_environment:5099eeff39c5925a57e2dbc2abf4124da2ee55d60d163da9e140bc2c74900eaf",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 61,
           "text": "hidden courtyard with a fountain"
         },
         {
           "entryId": "scene_environment:e3e5675f6d30afe85d933b178d73145fd7ee7d528f2e30efed718279dd7d577c",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 62,
           "text": "night market food stalls"
         },
         {
           "entryId": "scene_environment:95e840153bb54ab431675d01e8ee31666fa076f73a35f3035e499c903ddb5796",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 63,
           "text": "observatory with a giant telescope"
         },
         {
           "entryId": "scene_environment:112a471b5ccb3d20e33dcecddd672129f2f4a963de8ea246131fd11932bd156c",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 64,
           "text": "abandoned amusement park"
         },
         {
           "entryId": "scene_environment:b69bf1769f0396fd016dd06cc7016c72230c19aec46595c502f328c32e9b9e8d",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 65,
           "text": "bamboo grove path"
         },
         {
           "entryId": "scene_environment:eb9585427a1f7b9afb7a6830c4dada8cf5afd13d3211d0fe1838d390b8a987cd",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 66,
           "text": "rooftop pool at night"
         },
         {
           "entryId": "scene_environment:729d0dbeed013a159938c79a6a1af98ef135b7db72330a4317305e8f1be47ac4",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 67,
           "text": "grand ballroom staircase"
         },
         {
           "entryId": "scene_environment:48e18a39c2074987de0175c299ee59d56cba31e4f9ed909bca271f4dd8b05b3b",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 68,
           "text": "lighthouse interior with spiral stairs"
         },
         {
           "entryId": "scene_environment:4a8e8c8dceff4257890419ed0c681337af0e64ae5ec730d386cf087591b7b444",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 69,
           "text": "riverside laundry stones in a village"
         },
         {
           "entryId": "scene_environment:7a39c916b56ec0697823a41a95c1e282ad12f3fab139785a76817ac380253821",
-          "sourceFile": "blocks/scene/scene_environment.txt",
+          "sourceFile": "scene_environment.txt",
           "sourceLine": 70,
           "text": "attic room with a round window"
         }
@@ -756,7 +756,7 @@
       "expectedCount": 70,
       "id": "scene_environment",
       "primaryBlock": "scene",
-      "sourceFile": "blocks/scene/scene_environment.txt"
+      "sourceFile": "scene_environment.txt"
     },
     {
       "allowedBlocks": [
@@ -770,361 +770,361 @@
       "entries": [
         {
           "entryId": "pose_action:d35f5c744fe4934c4e7f97509f8eb3948c7fe4788582f03ddaa453e098c1b123",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 1,
           "text": "mid-leap between rooftops"
         },
         {
           "entryId": "pose_action:a82ec88cc2b231f390182772c67fc4ee7dd3106f3f54df968aff876adc0ed47c",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 2,
           "text": "drawing a sword from its sheath"
         },
         {
           "entryId": "pose_action:a01ed7c6b14c308ab23a9db677c0ac1edc3a04ea0783cc408c516a55cac93a57",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 3,
           "text": "adjusting a glove"
         },
         {
           "entryId": "pose_action:1adc5ad0e676fee92a1b888353f4df208b805c3ad7144114ee19572edf8b0f12",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 4,
           "text": "tying up long hair"
         },
         {
           "entryId": "pose_action:6f4f8cdfb2bb5b0fb8b6591133df60af331971014b6d5fb99b0ec92d325eb54c",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 5,
           "text": "looking back over shoulder"
         },
         {
           "entryId": "pose_action:1a9e2cf5b9462f49e99a1cfa7e1905b4a5be6887bdb0de3edcd75f5254c91aeb",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 6,
           "text": "crouching on a ledge"
         },
         {
           "entryId": "pose_action:863acb1e438e26f0221bf8136fc655d1c7c8f4677f115c5acb9471d67f5f68cc",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 7,
           "text": "reaching toward the viewer"
         },
         {
           "entryId": "pose_action:30162206dc4569e49dc0ffda6502ef21091f8008413045ea1c73fbf20adcdd05",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 8,
           "text": "leaning against a railing"
         },
         {
           "entryId": "pose_action:4191e794f243a1612354bbb9523a7e1df1e3398c3e4f11db7b693a74dc4abb80",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 9,
           "text": "running through shallow water"
         },
         {
           "entryId": "pose_action:4e4ff49cca2f4b11ba8777165ffb37c83d7d6ff0b21a14e24edd550b7ff627b4",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 10,
           "text": "casting a spell with both hands"
         },
         {
           "entryId": "pose_action:5c53435a944d972197d52bb75f2194f1fae5964865507c9298e3be57ff31155b",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 11,
           "text": "catching falling petals"
         },
         {
           "entryId": "pose_action:f2f01528cb53657af6061bbcf10813bffd1a5d9a00a22ac2d3eb7f44e78fbaec",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 12,
           "text": "dozing against a tree trunk"
         },
         {
           "entryId": "pose_action:c7ca986722b3fc202ee2c9dcb5e55abf3c0ce9d8c5f964f85010079916ebba7d",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 13,
           "text": "stretching after waking up"
         },
         {
           "entryId": "pose_action:76af83fc9c75cf4b16e691dd47dc2d38167244f5d8939ac81601870aa40e441e",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 14,
           "text": "balancing on one foot on a fence"
         },
         {
           "entryId": "pose_action:4c66d78a3c7afc1a267b42ca0b22e3fb7b5129313892bddda1575ddfdfdfaf4b",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 15,
           "text": "pouring tea steadily"
         },
         {
           "entryId": "pose_action:7b5206a3415e362dbfbf7b86cfa5c1beccd3708c8ce9b987e7053dab2019404d",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 16,
           "text": "playing violin with eyes closed"
         },
         {
           "entryId": "pose_action:89410367e4fa7ee734b97d717687f80ea6cd850ff134e336023a827a9943af3a",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 17,
           "text": "reloading a rifle"
         },
         {
           "entryId": "pose_action:95c213df49b715c513bc6e870667c8c5794fb1d043fa61e60b970173cac121b2",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 18,
           "text": "riding a motorcycle mid-turn"
         },
         {
           "entryId": "pose_action:b89cf4a24d5d1f2c0564b2effe7d4079acfe119552a8a3dd1e933bf57650aaaa",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 19,
           "text": "floating underwater with hair spread out"
         },
         {
           "entryId": "pose_action:3e7efc2c2a37f25311e6ba05119458ea0950d21abefda875a1962bde04444f7c",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 20,
           "text": "hanging upside down from a branch"
         },
         {
           "entryId": "pose_action:4b88c4c4c332325b0a6808737d061dd4a5c66db67923835117956e73835c46df",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 21,
           "text": "sitting on a giant sword"
         },
         {
           "entryId": "pose_action:f85e94a216a4d1f318a2e384e21b428468b7d30de181fd7671e78c835509efdc",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 22,
           "text": "wading through waist-deep flowers"
         },
         {
           "entryId": "pose_action:d0f2d54ad8c38bfe0aa8d66eb6ab441b1e2eda7e211a0776760ab970dcbafca8",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 23,
           "text": "holding an umbrella against strong wind"
         },
         {
           "entryId": "pose_action:83bb4ebb81787ee9a66615a35917232b85b384a1901db2b4eda6a4362831a355",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 24,
           "text": "lighting a paper lantern"
         },
         {
           "entryId": "pose_action:40943b8aa9f45c88f30612a2149629bc7078b25265f2b0dbed92e1e3436c25e2",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 25,
           "text": "sharpening a blade on a whetstone"
         },
         {
           "entryId": "pose_action:8fea1da2c8b0971a065dfb8d7600f288713dbef7e270022eaeb81cd63ba1c747",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 26,
           "text": "feeding birds from an open hand"
         },
         {
           "entryId": "pose_action:352a6d34d4984dcf884fab124332242b78e9f2251c0ae22b2f1c17835625996c",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 27,
           "text": "climbing a ladder with tools"
         },
         {
           "entryId": "pose_action:eea7e2d1686c20875b661813d6800b357029567e084eb518da029f101388389f",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 28,
           "text": "kneeling in prayer"
         },
         {
           "entryId": "pose_action:2b74941b5c61cc952a6106316e20ad134c93cb1ccb91cb136b3124e5db36d105",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 29,
           "text": "mid-spin dance move"
         },
         {
           "entryId": "pose_action:9f877f986a427d65a4422a6014d42e699b6c469fc933773d4f5f7f0921026013",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 30,
           "text": "drawing a bow at full stretch"
         },
         {
           "entryId": "pose_action:44dd098fbaa2ff88867d40b1cd87a88fb817c675c295fef0758c70127b11a783",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 31,
           "text": "carrying a tall stack of books"
         },
         {
           "entryId": "pose_action:d87a523b34559626683150441cfbe78474d0b0c7263e6f4e35e6b02e72cdfa93",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 32,
           "text": "jumping over a puddle"
         },
         {
           "entryId": "pose_action:c92ff50a347f6c07052c7411d47e2b7d72ba5fedf9ba1bd71749405a258695ab",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 33,
           "text": "whistling with two fingers"
         },
         {
           "entryId": "pose_action:ce900a91ab98b67977e0d58b5a35b96c27c32bafcd1cd493700a661fa665c7b2",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 34,
           "text": "tying shoelaces on stairs"
         },
         {
           "entryId": "pose_action:c2749a3be39e288d7eec6042afaab0b1b75d184f7a097f964fd77e6eced2153b",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 35,
           "text": "punching toward the camera"
         },
         {
           "entryId": "pose_action:622f3ff552dc59d223f5e51e16fea159845171a68b2c392682aebcbd64c004a0",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 36,
           "text": "bracing behind a shield"
         },
         {
           "entryId": "pose_action:afacd6e60d52eadab455372299e2302d0e68ad8c0e3524b77f56458df8f36cae",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 37,
           "text": "falling backward with arms spread"
         },
         {
           "entryId": "pose_action:8bd2667f5669b81377b19a563f8da1ad01cd95873d72e006e32076dacbff2d87",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 38,
           "text": "sitting cross-legged floating in midair"
         },
         {
           "entryId": "pose_action:cf9a2c9aa3523e5d126c5a222a8dacef8ecddba18f30bda07fc8e42b240bf56e",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 39,
           "text": "peeking around a corner"
         },
         {
           "entryId": "pose_action:7577d0dfdcf8344e2df45eb9198d24f34a2cadc84a31de54351683e05d78279b",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 40,
           "text": "dragging a heavy greatsword"
         },
         {
           "entryId": "pose_action:a92ccfa30e1624b407f61e44ac533b0722ea23891dc52729462e30b5cc6aa826",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 41,
           "text": "saluting sharply"
         },
         {
           "entryId": "pose_action:3704d37c6857d10c4577ff47d2507738de55861a8428d74da29ea6a487ab51d7",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 42,
           "text": "catching a thrown apple"
         },
         {
           "entryId": "pose_action:4662ddfef299beec4604f051b0181a93bb4b15a4b2b0ea21dc59089bd407a2f8",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 43,
           "text": "writing calligraphy with a brush"
         },
         {
           "entryId": "pose_action:375e230edea638b8ba90a935eab5a587bf84d92de9e749eafed0fabdb0f2379d",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 44,
           "text": "releasing a paper airplane"
         },
         {
           "entryId": "pose_action:42af19c551f8e2190cce8af3cba8f1304222dad0c64e002bd666b758bcd9abe5",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 45,
           "text": "hugging knees on a windowsill"
         },
         {
           "entryId": "pose_action:40ae01ff675c00ffd17b6c7b7aadd936f0c2b4d08c2f4866147dc9468211daa8",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 46,
           "text": "holding a lantern aloft in darkness"
         },
         {
           "entryId": "pose_action:9a96703d249837b5c08421b54ddbd9375d3c55b95046c5e3c3c17ff54357504f",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 47,
           "text": "walking a tightrope with arms out"
         },
         {
           "entryId": "pose_action:a653324bfd281a994439d4884128d61ce76b9abead5eb236782b474a2babc47e",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 48,
           "text": "pulling off a cloak dramatically"
         },
         {
           "entryId": "pose_action:ccdcac91aecc8d576a07e44eb24c3a0e37316778da101b457eb83084d5920921",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 49,
           "text": "skipping stones across water"
         },
         {
           "entryId": "pose_action:c05124b1fe4fde7e1fa1c95c032f6acf25cd1ca4eb59422288c229a9b0203d93",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 50,
           "text": "conducting an invisible orchestra"
         },
         {
           "entryId": "pose_action:d7c83eb8705337ff78c482cb93f482863a9ae0a563301c656ba342b648f7442c",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 51,
           "text": "sprinting with exhaust trail behind"
         },
         {
           "entryId": "pose_action:ca254c4adcd567a91a9b3a0b9b6e7fe2b68f9fcd897f81c9d4ebdff1709f345f",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 52,
           "text": "extending a hand to summon a magic circle"
         },
         {
           "entryId": "pose_action:8716242cf8f6447a4428c8e34780309aabb0d4e0d89dac66a605f542d2542fe1",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 53,
           "text": "braiding someone's hair"
         },
         {
           "entryId": "pose_action:3ec445b6a767bad1ee81e69dc29fe5c96faa1172eb89d757a1b743ff8f493ee1",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 54,
           "text": "cannonballing into water"
         },
         {
           "entryId": "pose_action:98278c811422390040b580a11c496cc55b1f8c9028a143432fdbf90c8aae5d4c",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 55,
           "text": "standing on the water surface"
         },
         {
           "entryId": "pose_action:f0c0b250b3cfe3c5bd4d3f26e6e86f1758b16cc71a4947addb1e7b2a50dd939f",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 56,
           "text": "arm wrestling at a table"
         },
         {
           "entryId": "pose_action:220307acecb210f9482c96cc62726eed465048dbd186a35d113079dbe8a4e1ce",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 57,
           "text": "throwing confetti overhead"
         },
         {
           "entryId": "pose_action:bc45cf9d2d8ab5e051cff1f53447f7295ea0616e47437eb6ddfd460dab4d3cef",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 58,
           "text": "shielding eyes against the sun"
         },
         {
           "entryId": "pose_action:eb9d9161e794e3fb86c0684bbddcdcef0d976dc23eced5ecde32677174df1ddf",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 59,
           "text": "chasing a hat blown by the wind"
         },
         {
           "entryId": "pose_action:f03b5fbe66d24f5b8a99a0632e48852155bfff3ade522996acbce5c49e6f7c10",
-          "sourceFile": "blocks/pose/pose_action.txt",
+          "sourceFile": "pose_action.txt",
           "sourceLine": 60,
           "text": "back-to-back combat stance"
         }
@@ -1132,7 +1132,7 @@
       "expectedCount": 60,
       "id": "pose_action",
       "primaryBlock": "pose",
-      "sourceFile": "blocks/pose/pose_action.txt"
+      "sourceFile": "pose_action.txt"
     },
     {
       "allowedBlocks": [
@@ -1146,361 +1146,361 @@
       "entries": [
         {
           "entryId": "clothing_outfit:f4031ff1ad02c7b14871ee867b14676f554ba4b955c58638fd1a21c7d8dd8e96",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 1,
           "text": "tattered wedding dress"
         },
         {
           "entryId": "clothing_outfit:083e2c795419624ba818eb75d21e47dc3796bd16abbd42f9028e3fab9dba97fa",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 2,
           "text": "military greatcoat draped over shoulders"
         },
         {
           "entryId": "clothing_outfit:79e2158e69605b415491f8a83646882a4d2e988cca316514f9c7698b1ccb2822",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 3,
           "text": "translucent raincoat over school uniform"
         },
         {
           "entryId": "clothing_outfit:d6ae39bb2ce045c5dd61f36a23b24d39fa60016a1f6e764a3b0e537f2a23c32c",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 4,
           "text": "kimono with a mechanical arm exposed"
         },
         {
           "entryId": "clothing_outfit:1fa30b2fe1b6e1f63fa2462774e5d9fa0871bf85d399febabaee0e70e9788967",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 5,
           "text": "plate armor with floral engraving"
         },
         {
           "entryId": "clothing_outfit:65091635e9de4cf07abb1e48d2eb1878bf79c5e3dc368cb45faa7a6e437b9df5",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 6,
           "text": "oversized knit sweater"
         },
         {
           "entryId": "clothing_outfit:2204c7d0ab7d6309fc07e1dfbbd5cb72345cff3bb97f92f4319e34e0a56010eb",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 7,
           "text": "flight jacket covered in patches"
         },
         {
           "entryId": "clothing_outfit:757ebf9c745ecbe0725ba8c89643031c1fe6e3f3631a5184650726894bd11edb",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 8,
           "text": "gothic lolita dress"
         },
         {
           "entryId": "clothing_outfit:0a4376040b6b424507f3799080a03c490fa123acae04480d454448f3560c3ece",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 9,
           "text": "hanfu with wide flowing sleeves"
         },
         {
           "entryId": "clothing_outfit:45790ff28b69ea81617cc3ca05250c006c8224b1955d27192ad0895c689b2c48",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 10,
           "text": "wetsuit half-unzipped at the waist"
         },
         {
           "entryId": "clothing_outfit:0035b7282ef2f01b1dd7dad8ace619384ed7381fa2cb90f2607276b584945e73",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 11,
           "text": "white priestess robes"
         },
         {
           "entryId": "clothing_outfit:cf2853260a7958b3deaa24e90c434ad92504eef2555b279e44099178f0dec655",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 12,
           "text": "cyberpunk techwear with glowing seams"
         },
         {
           "entryId": "clothing_outfit:139fbce506e768bb17abff60e6b3821c822b5613234b143a8874bee75ec08e37",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 13,
           "text": "apron over casual clothes"
         },
         {
           "entryId": "clothing_outfit:1282694f494d0246ea1e4a5eb58ae6b3c70527f376f8f849909207b97873d3b1",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 14,
           "text": "marching band uniform with epaulettes"
         },
         {
           "entryId": "clothing_outfit:08a5f2f38011856f390301aeaaf077de0752c6ce7af21f665bdb297eb0976e3c",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 15,
           "text": "cheongsam with dragon embroidery"
         },
         {
           "entryId": "clothing_outfit:48e91597e455e6cbdaf0ecb7222623df9fa84da6e86e14d7ab48ffe149313b1b",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 16,
           "text": "explorer outfit with a map case"
         },
         {
           "entryId": "clothing_outfit:61b813517ebac96e546c075ca1df7c916032aff89827ded2bbbb6125dc960c3b",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 17,
           "text": "fur-lined parka"
         },
         {
           "entryId": "clothing_outfit:be281f9c0edb54d8eaedfbe3ba540b59a79a82f2f2c40db980f211d1571a54e5",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 18,
           "text": "ballet leotard and tutu"
         },
         {
           "entryId": "clothing_outfit:5f61687bc3c568bf176c63d80d2561d1d6ec8b4a80b6580485e62adaf5237427",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 19,
           "text": "lab coat over a turtleneck"
         },
         {
           "entryId": "clothing_outfit:c52be8c1e8ec7094940a17566cb5b333f0ad3d39a5e1a13bb1c5652d5b4a3f18",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 20,
           "text": "shrine maiden outfit"
         },
         {
           "entryId": "clothing_outfit:1627e098ecf4851a63196d8f03a94466e18df1342bfb41175969deb72b32f03d",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 21,
           "text": "leather biker suit"
         },
         {
           "entryId": "clothing_outfit:69e4cfd3bf9efe055b83ca305bb232c2fd2bf6ea6f38c21b3473271e0207164d",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 22,
           "text": "three-piece suit with a pocket watch"
         },
         {
           "entryId": "clothing_outfit:298bd499208931bdd3436a7ec54f4f51a3887ba1e7becca3704818c196fc9441",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 23,
           "text": "rain poncho over backpack"
         },
         {
           "entryId": "clothing_outfit:9505b67cf746a8cc4858e6830d31be6fcd7c46a0b7b8d893a030de955a92f4e2",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 24,
           "text": "witch hat and layered robes"
         },
         {
           "entryId": "clothing_outfit:ef3cc8d151dc22886d3c62aeff7d84e87aac276fa70fa3d313b63da7b4f4d11e",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 25,
           "text": "sailor uniform with a long ribbon"
         },
         {
           "entryId": "clothing_outfit:4a6fede8ddd88033d2c2a5c0e41cbfb52c9d3729f2c1b4a74eb0e0b31305ad0c",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 26,
           "text": "form-fitting armored bodysuit"
         },
         {
           "entryId": "clothing_outfit:6d1cb3914d0056d825b4d2a2baaf7fbfb1ca30eb5ec9a3480abfdd6d10e61f8a",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 27,
           "text": "sundress with a straw hat"
         },
         {
           "entryId": "clothing_outfit:ce98ef846eceff14da9c37e49ba2d64c74621be421765af4df3d89c94de9e10d",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 28,
           "text": "ninja garb with a loose scarf"
         },
         {
           "entryId": "clothing_outfit:76168305ea144f292be98b6964d1f0dbc8acba9418dea7e81a39b7880367d9e6",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 29,
           "text": "victorian mourning dress"
         },
         {
           "entryId": "clothing_outfit:0cf7b29c1b7d6959cd139890efd3a9730752a3f7bc9f16dfb8bd120cfbacd7c0",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 30,
           "text": "hakama and haori"
         },
         {
           "entryId": "clothing_outfit:c88ebc9d5462e5a680af3066d86cd1fe49b8d1eb94c706b030cf8fdd0485c575",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 31,
           "text": "racing jumpsuit tied at the waist"
         },
         {
           "entryId": "clothing_outfit:8aa78d85e7bfc6abaf76e7f76f260a352d67fef6f3de74c9f36a1b19f56eb71e",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 32,
           "text": "chainmail under a tabard"
         },
         {
           "entryId": "clothing_outfit:be17a30983a3639acd08eb31518b05906b7e4d826103759e33c758f4807c8973",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 33,
           "text": "silk pajamas"
         },
         {
           "entryId": "clothing_outfit:48a4c7170a645ff3444a9885de25aaae2ef4b8ce1cb7426c35b441c411cd3724",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 34,
           "text": "firefighter turnout gear"
         },
         {
           "entryId": "clothing_outfit:7746ff28b103a7228f587ed7938a1a6f4a63657000659a6d2be89e2c27f6b2a4",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 35,
           "text": "ceremonial cape with a metal clasp"
         },
         {
           "entryId": "clothing_outfit:a480aba88ee89f87c26e396d268820b3f8ad080693190e92ee61ceffaccc6ed5",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 36,
           "text": "denim overalls with paint stains"
         },
         {
           "entryId": "clothing_outfit:f36216eb144d7075875b7ab0a8126d2330c3613034af2daa65af3d5aaaeca5bd",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 37,
           "text": "figure skating costume"
         },
         {
           "entryId": "clothing_outfit:95b81c9fb86ef01a9c451d1535ecb420ceb0ac1b9010252265b3e9623f0173e6",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 38,
           "text": "desert robes with a face veil"
         },
         {
           "entryId": "clothing_outfit:157c4ebe53b86dd897df4fd777c46bb56fb5480291246be697fec7c1d2bde989",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 39,
           "text": "formal gown with opera gloves"
         },
         {
           "entryId": "clothing_outfit:7ce0415985e54504b6779c648212b83fd114e198bb52546dc423ef28afe7b937",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 40,
           "text": "tracksuit with a school emblem"
         },
         {
           "entryId": "clothing_outfit:e848a5cd01bb1e498e8b3659b7f39e3a3aaec94161b8daa573eee74d574f5f0a",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 41,
           "text": "plague doctor coat and mask"
         },
         {
           "entryId": "clothing_outfit:1f0491d749855a82634cd48b52cf0ac5573a413d83bc39ebfb04237bc1f1e29e",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 42,
           "text": "maid uniform with a long skirt"
         },
         {
           "entryId": "clothing_outfit:6cfc2f2f17d5173857a62c68e51e257d66515191b3776c6c2307fa86e17858bb",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 43,
           "text": "knight's surcoat over armor"
         },
         {
           "entryId": "clothing_outfit:647f239d41c0ef29b4f031f7832b975f58812213ec9b1f2d1e74a8d8c131ab8b",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 44,
           "text": "off-shoulder sweater dress"
         },
         {
           "entryId": "clothing_outfit:38474eb79a35b08d1cb099c1236b460b13481945fdd8d461648018d18359aba8",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 45,
           "text": "utility vest with many pouches"
         },
         {
           "entryId": "clothing_outfit:5fafe2b98dc6ffb3296c98caf4128a1d2f1a5372a0fbe0a3bb5ceec700e8013b",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 46,
           "text": "traditional mongolian deel"
         },
         {
           "entryId": "clothing_outfit:af155c046c854ee3870dc536188c3c6972a66e9c5514dac798543c54c84bae68",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 47,
           "text": "corset over a ruffled blouse"
         },
         {
           "entryId": "clothing_outfit:306c32abaff340243fd710fc4be2cc0e50d30b70ecb8a28beb8ee813aff0a344",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 48,
           "text": "rain boots and an oversized umbrella"
         },
         {
           "entryId": "clothing_outfit:1f57bba46001467fee99e2efe6d45f2c7fae9bbec84871bab0ac6c31258fcc80",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 49,
           "text": "festival yukata with a fox mask worn to the side"
         },
         {
           "entryId": "clothing_outfit:5d0582a405326f5316337c217d62ec5f1007cfab8fe18696f7bdff28c9d494f0",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 50,
           "text": "bomber jacket over a hoodie"
         },
         {
           "entryId": "clothing_outfit:b7b75ee16c4c6fb28ba97d7e39187ceb4d3ec641fb3ab7642d86fdcd831ccc17",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 51,
           "text": "evening dress with a thigh slit"
         },
         {
           "entryId": "clothing_outfit:4cb64496b19ec51980918c53623e1a3b2cf93e5093b2aff8ef0585b6e7f44fcf",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 52,
           "text": "arctic expedition suit"
         },
         {
           "entryId": "clothing_outfit:46ce1959cc7355647047422f155e84644c89210a42595628e6300fcea7ed472a",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 53,
           "text": "matador jacket with gold trim"
         },
         {
           "entryId": "clothing_outfit:15b2e37f5225952ce72bafba0ce08ccc134662beb37cc980dc7a56a7ceef34d6",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 54,
           "text": "monk's kasaya robe"
         },
         {
           "entryId": "clothing_outfit:b0f15b1ba8e0f313034d739cc049c3f02f8719936dac4c80fb399d39bb35bfc2",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 55,
           "text": "steampunk goggles and waistcoat"
         },
         {
           "entryId": "clothing_outfit:df675e83038a10d36b000c855b031fb51a4d315d43220536755c547e6b50cada",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 56,
           "text": "fencing uniform"
         },
         {
           "entryId": "clothing_outfit:aeafdb583ae247b54adcbae5b1ea5800454aca6b606c6459ef5a77d22522e810",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 57,
           "text": "cropped jacket with high-waist trousers"
         },
         {
           "entryId": "clothing_outfit:9ce362983a9201e7446f4e954d1c91013b97a0e2e44e7ab344bc15af609d04a6",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 58,
           "text": "bunny-ear hooded parka"
         },
         {
           "entryId": "clothing_outfit:b2353c069020ac4c63bd7a2172af20f09eff4a387885e48d3ff3b03e1808c746",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 59,
           "text": "glittering idol stage costume"
         },
         {
           "entryId": "clothing_outfit:f194ea0264045b50fc98df06d659bbd7d169dda652de67024c2a744e13a446f8",
-          "sourceFile": "blocks/outfit/clothing_outfit.txt",
+          "sourceFile": "clothing_outfit.txt",
           "sourceLine": 60,
           "text": "kendo gear with the mask held under one arm"
         }
@@ -1508,7 +1508,7 @@
       "expectedCount": 60,
       "id": "clothing_outfit",
       "primaryBlock": "outfit",
-      "sourceFile": "blocks/outfit/clothing_outfit.txt"
+      "sourceFile": "clothing_outfit.txt"
     },
     {
       "allowedBlocks": [
@@ -1522,271 +1522,271 @@
       "entries": [
         {
           "entryId": "composition_camera:ec7eead32ddfb610b4f64012dae6bb1e506cdbb6540e2b655f50c89e6756c35d",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 1,
           "text": "extreme low angle looking up"
         },
         {
           "entryId": "composition_camera:1d48b144957bb3056cba68f5c156053a2c1b9fe70212eb145a705b4802e6b442",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 2,
           "text": "bird's-eye view directly overhead"
         },
         {
           "entryId": "composition_camera:3de33258a49673e01bc0dfadfc826caf0293718e071fc252d5795a2307457f38",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 3,
           "text": "dutch angle"
         },
         {
           "entryId": "composition_camera:1b0d59f0e86f59880d99d58c47f569c1308913b6be54df9febf82947657d63f0",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 4,
           "text": "over-the-shoulder shot"
         },
         {
           "entryId": "composition_camera:f99f0d06d74e666737967d6790120a6929bcf85349ab88e0118c2926ecdbc645",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 5,
           "text": "silhouette against a bright background"
         },
         {
           "entryId": "composition_camera:39b08630d0d7840f35d9a80a707e17e01a91332200a117467068760d1b703e4b",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 6,
           "text": "framed through a doorway"
         },
         {
           "entryId": "composition_camera:3fe226001e8c375a37a70e549ae11b8b957c7a9417c2073b3a35e1654388682f",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 7,
           "text": "reflection in a puddle as the main view"
         },
         {
           "entryId": "composition_camera:87b147cef3827e471eec412d819f7d97d8a69a914d4da277e466b35c1cb63c18",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 8,
           "text": "fisheye lens distortion"
         },
         {
           "entryId": "composition_camera:a658f03abaa40e1788c08104c6dff9de0e671f310b7ee70fd2e99f610a25ad27",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 9,
           "text": "extreme close-up on the eyes"
         },
         {
           "entryId": "composition_camera:8cdc6d001c998a83d926479fae15537c6e43a983201410cec5d1cb60e5b9e29a",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 10,
           "text": "wide establishing shot with a tiny figure"
         },
         {
           "entryId": "composition_camera:8525352db35c816726e66c877e97c63b097e7146d02edcd95ccceb20a60fd4f7",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 11,
           "text": "strict profile view"
         },
         {
           "entryId": "composition_camera:63f7f1f19b6ec2ab23de715256899bf3da18045aae476882e811bbb46ea917ef",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 12,
           "text": "view through rain-streaked glass"
         },
         {
           "entryId": "composition_camera:a80621f79ab7c9e8cf5eb1e2021fb3d2c5b0463588d2826a1f7671905bb616df",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 13,
           "text": "foreground occlusion with out-of-focus flowers"
         },
         {
           "entryId": "composition_camera:2c927db331debd4973067498c2da9ffa554a66d0746c04204d24a41ef6086040",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 14,
           "text": "symmetrical one-point perspective"
         },
         {
           "entryId": "composition_camera:bf5888b54e49c4c050beb192541b40031cf00fa18c79b1feb48057ec44c8de75",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 15,
           "text": "strong diagonal composition"
         },
         {
           "entryId": "composition_camera:95b5dfce2e497bbc98dc513d0b171ffd7b95bd1f6f59569f40515e849316225e",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 16,
           "text": "rule of thirds with vast negative space"
         },
         {
           "entryId": "composition_camera:855993cbbfa9ed5cb92cf18fad4aa7f7ec3a98878cc176c98099ed710ea2b86d",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 17,
           "text": "upside-down camera"
         },
         {
           "entryId": "composition_camera:ed1c24a0f35d211c000bbdc7451f1c077f0667939fc1a5426504d432962e164b",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 18,
           "text": "mirror reflection composition"
         },
         {
           "entryId": "composition_camera:977f4705a2f9c587cfb3552e0f9168bc4e457eae62d486fa98dc73c9a3466647",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 19,
           "text": "panorama with layered mountain silhouettes"
         },
         {
           "entryId": "composition_camera:dbd62a8cf8412c4aaeede29b9069fbb4b96bc27b216ecf6a649f15876201c3a8",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 20,
           "text": "worm's-eye view through blades of grass"
         },
         {
           "entryId": "composition_camera:d37b26eec1f40ecd06ff36ec1f58a2c382344d6b140d25500e088c948b917465",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 21,
           "text": "top-down shot of subject lying on the floor"
         },
         {
           "entryId": "composition_camera:d21f5ca9dfb67984d14f188babd7e0f24467fe194f4e77fbbc51fdf3de01753f",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 22,
           "text": "centered portrait with heavy vignette"
         },
         {
           "entryId": "composition_camera:6dc593c80e4b03eb886afb518c44a781c1f118bc77503e0f3ac2c0b40534dffd",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 23,
           "text": "motion blur on the background only"
         },
         {
           "entryId": "composition_camera:8afe9af357aee7bd982bd4394039f3181925750422f2526aceb5465e9695557d",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 24,
           "text": "tilt-shift miniature effect"
         },
         {
           "entryId": "composition_camera:ecde2888db8443ea01b8ac3ea58428b3a00c9c85223a506b88adbaaee141b046",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 25,
           "text": "shot from behind gazing at the horizon"
         },
         {
           "entryId": "composition_camera:8eaade04c5a2645b64202d54c3f2c52b62736d53885438050709baa08384ac93",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 26,
           "text": "frame within a frame through a window"
         },
         {
           "entryId": "composition_camera:882a2df455cef0e3d14ea0bbba9efb8f61155ad18313b8961aedfcb6ec2fce60",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 27,
           "text": "shallow depth of field with bokeh"
         },
         {
           "entryId": "composition_camera:690a0d52d9795021a5505055bc7c25588acb3c97cd59ea69a94e68dd562434dd",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 28,
           "text": "telephoto compression of a crowd"
         },
         {
           "entryId": "composition_camera:26a29492ebcf8ac63c554030d5af411a26f7cbc266085d66bd4642ff87899078",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 29,
           "text": "first-person POV with hands visible"
         },
         {
           "entryId": "composition_camera:cb3938b489654081b3f54e62436b7434a11b00da2cb169151c0e6fb00cc6f879",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 30,
           "text": "looking down a spiral staircase"
         },
         {
           "entryId": "composition_camera:881e572998cdea4eed5819a33e0cc46edfd8832cb792f7e7a853d1399591c252",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 31,
           "text": "cast shadow as the main subject"
         },
         {
           "entryId": "composition_camera:f378bc619e5875d493b2ebc3233610054eb0ff51e9c5bbb6d33ee8529045bf71",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 32,
           "text": "subject off-center gazing into empty space"
         },
         {
           "entryId": "composition_camera:94b13582b48614ef1480fded7a7a80e3eb841f7ee1dcd7895649723da00d253f",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 33,
           "text": "silhouette standing in a doorway of light"
         },
         {
           "entryId": "composition_camera:4652ec18ec97eaef4080c0d185e00c9a18bbbcfd3fc53539c16ec76bc0b4bd54",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 34,
           "text": "close-up on hands only"
         },
         {
           "entryId": "composition_camera:34448609e09783fa87b0accf9486b5af5f4c10effb3f4c234cda294b10efd795",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 35,
           "text": "wide-angle interior with a vanishing point"
         },
         {
           "entryId": "composition_camera:e846f19ca51dea72435427e7f7c8a8974fdd572870162a71b54dbbd7fdf81a5d",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 36,
           "text": "back view walking away"
         },
         {
           "entryId": "composition_camera:4229d5ad3bb7203b7e5acfcc32c8b531b47bb1efee6806fde14ee52bc1b65d97",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 37,
           "text": "dramatic foreshortening of an outstretched arm"
         },
         {
           "entryId": "composition_camera:3ebb0c69637f9828a99cf2490af197c19f3b18dae6fa24a1f6f53589a94189ba",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 38,
           "text": "keyhole framing"
         },
         {
           "entryId": "composition_camera:4ce1a1a3d9826eb6779108a7bd1d8b88d2c9b7c97dabdca7b60df7381cd4563a",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 39,
           "text": "two-shot across a table"
         },
         {
           "entryId": "composition_camera:8cef0c63c50d557202cf1f95bebc2368936d1dc81837778d66df3118be2573d5",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 40,
           "text": "subject reflected in a blade"
         },
         {
           "entryId": "composition_camera:99089f6b342afe2e3ad7bd66f64e0917e971b97bf15b051a8717d8e23a13097a",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 41,
           "text": "canted horizon with flying hair"
         },
         {
           "entryId": "composition_camera:bf84be2a8dec78b810cea23687b162ed2126f76238b669a497c6590f28a71f5e",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 42,
           "text": "view through smoke haze"
         },
         {
           "entryId": "composition_camera:8c8da3b76fce05ca998b257a6f1a4b8b191cebd2d25c53ecaa5197811791c806",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 43,
           "text": "low camera height at child's eye level"
         },
         {
           "entryId": "composition_camera:cdd7009186fb3c325b02ff0283c8083115bab55bfef868030cb69bc97d39d17a",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 44,
           "text": "subject small in the corner of a vast sky"
         },
         {
           "entryId": "composition_camera:fd57c4cc2284b93a73db4c0e5f2a74068985719c3c6e3f30de97d86f890e4e18",
-          "sourceFile": "blocks/composition/composition_camera.txt",
+          "sourceFile": "composition_camera.txt",
           "sourceLine": 45,
           "text": "split composition divided by a wall edge"
         }
@@ -1794,7 +1794,7 @@
       "expectedCount": 45,
       "id": "composition_camera",
       "primaryBlock": "composition",
-      "sourceFile": "blocks/composition/composition_camera.txt"
+      "sourceFile": "composition_camera.txt"
     },
     {
       "allowedBlocks": [
@@ -1808,301 +1808,301 @@
       "entries": [
         {
           "entryId": "lighting_color:c637045ddbb1ca329e8ef5a7ae5c41ed1fbde6e42de6741440a882ae580eca97",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 1,
           "text": "golden hour backlight"
         },
         {
           "entryId": "lighting_color:200481f031e27e61930cadcc48e237b065d64a284429bef0933b8ace677c441a",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 2,
           "text": "blue hour ambience"
         },
         {
           "entryId": "lighting_color:8efee6bb8079f0b43a67bed6797be7b55c03f34bc54fde5296c5fe2fa003889c",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 3,
           "text": "harsh noon sun with hard shadows"
         },
         {
           "entryId": "lighting_color:529d7b0e5b8f8e188a204cea6746337a35bc44be9ac2f572c299b9531b25063a",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 4,
           "text": "candlelight as the only source"
         },
         {
           "entryId": "lighting_color:a11a701ec74f8d9590b83f661d61d9ce3fac2fb616cbea1856af8a0bf703d132",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 5,
           "text": "neon pink and cyan split lighting"
         },
         {
           "entryId": "lighting_color:ef94c9f308268dd868d56e4a2dda3273deb605d0f487818034370b088b2bc28e",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 6,
           "text": "moonlight through window blinds"
         },
         {
           "entryId": "lighting_color:8fb4809a14b95fda693c11d867e58d9dc43baaf895f2d8a9eac1a4e4c972f1bc",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 7,
           "text": "firelight flickering from below"
         },
         {
           "entryId": "lighting_color:a53eb7745509f4667d3072c082e1db8ae663b35ec7ebd7201ad4513ca5f13be6",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 8,
           "text": "overcast diffuse light"
         },
         {
           "entryId": "lighting_color:39d933645df8f3167bb2d66e5d91d1bb278be1d97c1abae02a2156b78417274d",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 9,
           "text": "god rays through forest canopy"
         },
         {
           "entryId": "lighting_color:bd9471ef601044bf25e913645849a8ed4a0114849b741f7c078e7b28ecae5dd4",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 10,
           "text": "bioluminescent glow"
         },
         {
           "entryId": "lighting_color:b8b71916b83c9e2f6d436ccf9e49338f3ff2353456edecd9d234ebfe254060b3",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 11,
           "text": "lightning flash freezing the moment"
         },
         {
           "entryId": "lighting_color:9b321a765d01b0a6743f8f8646707fa82ee622e957e8b9c8982d26141ebbbec7",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 12,
           "text": "orange sodium vapor street lamps"
         },
         {
           "entryId": "lighting_color:121a41b8a6f965272a4dd20db30868963d478f4fd38a2b42ea4e85598082dd7c",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 13,
           "text": "aquarium blue light with ripples"
         },
         {
           "entryId": "lighting_color:0044dd5f2aceb28b377063704f37f39a582a74f65f13f002b20dbe99eadc8b68",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 14,
           "text": "colored patches from stained glass"
         },
         {
           "entryId": "lighting_color:16c4a0e4a3eed55a959d453c3b0d058fee0e6fe5eed370010117bf02bc148ebe",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 15,
           "text": "warm paper lantern glow"
         },
         {
           "entryId": "lighting_color:da65ddf3007f75842c1a7600e1d7519e0b4882805024165001854166e8a0fe36",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 16,
           "text": "single spotlight in darkness"
         },
         {
           "entryId": "lighting_color:439329509013a860bbf0f02a064904a819a8dbd85bc38c0a2d5a61aaeddf6113",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 17,
           "text": "strong rim light from behind"
         },
         {
           "entryId": "lighting_color:f449a60f444ccd389ab0ed76cdcedbbac0f067ccbff9d17b837d90ed6b354ece",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 18,
           "text": "tv screen glow in a dark room"
         },
         {
           "entryId": "lighting_color:5f07f19a75338e30d30ba23092171b78434eb7a28f0ee97bdb6d14dc44f24400",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 19,
           "text": "sunrise gradient sky"
         },
         {
           "entryId": "lighting_color:934399da4807d8f269b18581e326adefcfdb42702ba8d49d097380169c4eb383",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 20,
           "text": "purple and orange dusk"
         },
         {
           "entryId": "lighting_color:79bfccb015a29d5f4ccc6225c7bb6fb142519f7595192ebce1527b335a5cc920",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 21,
           "text": "underwater light caustics"
         },
         {
           "entryId": "lighting_color:75c909f407380ff8c095b8e30f577c95097ba40bccb18ec3a844127fd7711396",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 22,
           "text": "soft light reflected off snow"
         },
         {
           "entryId": "lighting_color:77344253fc24f63f769e9b809279ca72996d1c9b594f899110e09e5294eb3896",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 23,
           "text": "red emergency lighting"
         },
         {
           "entryId": "lighting_color:f1cf75ac2a92f178aeb4a68068f3f574ce5d00e04534339a39fa9274ed406a7b",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 24,
           "text": "monochrome with a single red accent"
         },
         {
           "entryId": "lighting_color:43c50459943cf4014217ed05bbc62e76eaece8958aa25e76900e794d5c109406",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 25,
           "text": "sepia nostalgia tone"
         },
         {
           "entryId": "lighting_color:368055506783308659705add3ae012c48f9f9dd9ae29ce0f3cb55922ab80aefe",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 26,
           "text": "high-key white on white"
         },
         {
           "entryId": "lighting_color:e05a55508161eadb636682690dc5f5745f811d350ebebb840d6eced047ec1100",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 27,
           "text": "low-key chiaroscuro"
         },
         {
           "entryId": "lighting_color:82c5857aa32e1bae09cddac9a780b69f4e681e24aa96e18b3f31640b894ad32a",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 28,
           "text": "rainbow refraction through a prism"
         },
         {
           "entryId": "lighting_color:dd9a7e1c08dc3c4c5e5fbae1baedef2885dfb84ea5bdfd12f588e9c0a2004d75",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 29,
           "text": "fireworks illuminating faces"
         },
         {
           "entryId": "lighting_color:2c9abc47d113e071eb435a06442467073da17410ee8d32efc146eb217604798c",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 30,
           "text": "aurora glow on snow"
         },
         {
           "entryId": "lighting_color:84aba0d0b395569d41d25fd43471f475ed37dc70df59345eb8bfb40a3fcc40c4",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 31,
           "text": "sparks of welding light"
         },
         {
           "entryId": "lighting_color:c4df1b7bd672378628bb033e9eb47c38f7f38451c9e02346d0960eb386d0180a",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 32,
           "text": "dappled shade under a tree"
         },
         {
           "entryId": "lighting_color:8ba6c552e364170f603e1c0b7c96d2a35eb94214498d9fd479b3d8b538e13756",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 33,
           "text": "mist-diffused morning light"
         },
         {
           "entryId": "lighting_color:d4bba2402adcb1b54f9b53cf159c1db1cc13cbf94f8c7b0b5933422c1634c41f",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 34,
           "text": "projector beam with floating dust"
         },
         {
           "entryId": "lighting_color:6afba7a75c9e1fa54bfa53612fcca65e83786075fceb9e59d17e577cf5619b0f",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 35,
           "text": "lava orange underglow"
         },
         {
           "entryId": "lighting_color:3d3e0b132063b1d7d578435ae1129c7138238a0e10291e54978ceda63fc10c68",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 36,
           "text": "sweeping searchlight"
         },
         {
           "entryId": "lighting_color:e9bd04a9bba06efdeac07c1edc36e6a3c532b620dfdc7fee621152bc32d15ea4",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 37,
           "text": "fog pierced by headlights"
         },
         {
           "entryId": "lighting_color:e347f67e9591144631ca20d9a16937fc1f8815a0c25693a4d455572525b2a9f4",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 38,
           "text": "gold and teal cinematic grade"
         },
         {
           "entryId": "lighting_color:d750466e3660b62db777bc22e65283feee854cded8ca38d9cb796f9504e98f1e",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 39,
           "text": "washed pastel palette"
         },
         {
           "entryId": "lighting_color:2212561e60a861ee45545543e8580e62f3c1246e5914bc29eb5f230d2a4b88cb",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 40,
           "text": "ultraviolet blacklight glow"
         },
         {
           "entryId": "lighting_color:4f1ffa456dab07679475e9404d7eb6b23d95dbc3c5d71e6099682975af0bcaee",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 41,
           "text": "silver moon path on water"
         },
         {
           "entryId": "lighting_color:2fac130405f2f7e0bfd7926de92499e80b53525a13e18ed85dc4e22e90eb7275",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 42,
           "text": "rising ember particles as light"
         },
         {
           "entryId": "lighting_color:6d38a2d9e31ff22da6d8393f28229b9c5e55b090b5fa411291c66749a194abab",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 43,
           "text": "glowing runes as the light source"
         },
         {
           "entryId": "lighting_color:7270f273ad39161b51fa12deeff167b7c5c68a95e9a25cb92db55fe2ca6ea7f7",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 44,
           "text": "last gleam of twilight"
         },
         {
           "entryId": "lighting_color:e613f56bfa98a9f9923d506e12b608e053b1231cf8ffaa0c3279a281b257281d",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 45,
           "text": "desaturated winter palette"
         },
         {
           "entryId": "lighting_color:50db9d9a55b920afa99bfd6ee8f08e9a20b7d729d16234026ed65cba89fa88be",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 46,
           "text": "warm interior seen from cold outside"
         },
         {
           "entryId": "lighting_color:c600e018238c490dcf65cd8095037eb04d9236588242107c72265bd7118b0930",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 47,
           "text": "strobe light freezing water droplets"
         },
         {
           "entryId": "lighting_color:28ccc6f7dc26e4d750a12161245e022a4ff0ecbcb384bc073f040585c63c8eb9",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 48,
           "text": "green glow of old monitors"
         },
         {
           "entryId": "lighting_color:f946e254ab2cc5c969f81c6e448e9173b01628222239731ff53b5f8e9b1afcfd",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 49,
           "text": "shafts of light through broken roof"
         },
         {
           "entryId": "lighting_color:f40d0a5f8f75654d70cc56678f8e0ae9f4311cf036c367fb74a948b705369365",
-          "sourceFile": "blocks/lighting/lighting_color.txt",
+          "sourceFile": "lighting_color.txt",
           "sourceLine": 50,
           "text": "heat-distorted air above flames"
         }
@@ -2110,7 +2110,7 @@
       "expectedCount": 50,
       "id": "lighting_color",
       "primaryBlock": "lighting",
-      "sourceFile": "blocks/lighting/lighting_color.txt"
+      "sourceFile": "lighting_color.txt"
     },
     {
       "allowedBlocks": [
@@ -2126,337 +2126,337 @@
       "entries": [
         {
           "entryId": "effects_props:06c3490050c61f9ddc1ba6eb89e12a6ea579d476e923fee17aaa9d792b72f8a4",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 1,
           "text": "floating cherry blossom petals"
         },
         {
           "entryId": "effects_props:a9dfd62e2f4a5d1c1006c2845b9825f410dc6e69711a8a18ba9b939a82ba748b",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 2,
           "text": "shattered glass suspended in midair"
         },
         {
           "entryId": "effects_props:b7869ec6d327f4b64f47aaad700845a314ee9f2141367ef04280a018ef1c5a55",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 3,
           "text": "long ribbons trailing in the wind"
         },
         {
           "entryId": "effects_props:6d4409e1c8a0fc9abe97d6d1a5fb4cd7b9604a7f2b30b1a92cdda5a49326e319",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 4,
           "text": "glowing magic circle underfoot"
         },
         {
           "entryId": "effects_props:283b26683279d1bd499ab4947e905999197b0cf1b3ca23628fc8ef9d7a72720d",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 5,
           "text": "drifting dandelion seeds"
         },
         {
           "entryId": "effects_props:aa54364c79993809809c1fd5712fe29fd5ec43acc0dd9b8872501f40f83bff85",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 6,
           "text": "sparks from clashing blades"
         },
         {
           "entryId": "effects_props:9c75fa5ece408b1d730f250ce82509e92fec3f41a3af431ce5b1de40bc72031f",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 7,
           "text": "steam rising from a cup"
         },
         {
           "entryId": "effects_props:c5525af4ea4249d75aa253d5990bc51a01526fc67c451a2bf92a24e099517d73",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 8,
           "text": "ink dispersing in water"
         },
         {
           "entryId": "effects_props:b8317e9b0c700dca90e8005ba5aebb797d42d930fe11df3928bf0a52ce0477bf",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 9,
           "text": "glowing butterflies"
         },
         {
           "entryId": "effects_props:5cbf679543813c7ae4e1dbb002e1ac2eaf4706ff6e3266a77357775b14bbab3d",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 10,
           "text": "autumn leaves spiraling down"
         },
         {
           "entryId": "effects_props:156ddbb9843f713fc372bce4e8ced238307ee4793908a37caa62535c6223a734",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 11,
           "text": "crown-shaped water splash"
         },
         {
           "entryId": "effects_props:101980673938733e539e7d472a64d94be09ea82483eab2d1b286f20a52962799",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 12,
           "text": "snowflakes caught on eyelashes"
         },
         {
           "entryId": "effects_props:122fc4915e862c4a2c3337152a8a43e8f9ab5c30bac10755cb3675f05440d5d5",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 13,
           "text": "chains coiling through the air"
         },
         {
           "entryId": "effects_props:322347ad4014c502ab6c612843a830bf37ec093c41ff83432d130c489d1cb509",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 14,
           "text": "paper talismans swirling"
         },
         {
           "entryId": "effects_props:4459a07bb48db72fb34f1de9479288dd0b62be9cb0acde760244c237835a178f",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 15,
           "text": "electric arcs between fingers"
         },
         {
           "entryId": "effects_props:32ff06419f6e602f9d07de3f12fbcb7bebbb54f1905d4245ada6cbc36ca01b61",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 16,
           "text": "soap bubbles catching the light"
         },
         {
           "entryId": "effects_props:96b9dc207e4b931a3d72a443a15edd1ed32a09397da4e0a866a802fe5d3eefb8",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 17,
           "text": "dust ring shockwave"
         },
         {
           "entryId": "effects_props:0db9b479a21360a1ff970dfb1e0fdc98b5420c38df8353d452c2e157a15b1127",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 18,
           "text": "white feathers falling"
         },
         {
           "entryId": "effects_props:6d2e10d6a2dc2416559ae27dd72f767e7faf190ed6d2cab2afc51c90360fc39f",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 19,
           "text": "molten metal droplets"
         },
         {
           "entryId": "effects_props:b31e32c89164b8561e8e5e8cb13625606228c25ee8be7566071d407c6808e62a",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 20,
           "text": "origami cranes in flight"
         },
         {
           "entryId": "effects_props:2a7ec7294277b2ba106db4a18367585f1738d5065a1302fc56b378b2ce06ca81",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 21,
           "text": "holographic ui panels floating"
         },
         {
           "entryId": "effects_props:6a1807cd03f922c938c82c177294291a55f1eabf94f978490b9bc0ec927e8e2c",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 22,
           "text": "clockwork gears suspended around"
         },
         {
           "entryId": "effects_props:fc1de6e2b9f20c5a204709b27d36cd120bee87db6a31c7a51c4aa27d6cdd7efd",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 23,
           "text": "petals transforming into birds"
         },
         {
           "entryId": "effects_props:79d3e500aa91a944f1714941b31e064dbb6ea57917add4fdba783702010ede3b",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 24,
           "text": "mirror shards each showing a different scene"
         },
         {
           "entryId": "effects_props:df749c59f3ee15985fe6033b61d2fc1102cea9f6d555304080a7bb1d5fbe53a5",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 25,
           "text": "smoke curling into shapes"
         },
         {
           "entryId": "effects_props:9742bab5036830e913646d4fe891bcff8506391a5684a08c4fa1b99324f7f6e2",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 26,
           "text": "strong lens flare"
         },
         {
           "entryId": "effects_props:132f0d452b09b411825920f4463e1636a4ad3181fb8b302dcbab64762be770c0",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 27,
           "text": "embers and ash in an updraft"
         },
         {
           "entryId": "effects_props:202e59021353f3f53607af829a856d770e5cc84745cae93108e6bd3f9579103c",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 28,
           "text": "raindrops frozen mid-fall"
         },
         {
           "entryId": "effects_props:3efd3b8e168f6fb2745e2127f98aa603e1329454d655a2d4086b7bc454ed752d",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 29,
           "text": "prayer beads scattering from a snapped string"
         },
         {
           "entryId": "effects_props:e29b086ed9e0153b7de786e89485e37a3dacbc8b84fdd004c688b325376ca3e7",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 30,
           "text": "glowing pollen motes"
         },
         {
           "entryId": "effects_props:092adc6a7682af723fe70154fd7839bf3191f124864246bbef305781a860332d",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 31,
           "text": "torn letter pieces in the wind"
         },
         {
           "entryId": "effects_props:ea28b9cb61973b3e711bc078257eebfca8fbd45668f548744efd8a62c1b6805f",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 32,
           "text": "spiral of playing cards"
         },
         {
           "entryId": "effects_props:a3e084341bc925b51e35b1af605b4131e800dc1ea2f276a4c9266752d6454c28",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 33,
           "text": "banner cloth billowing"
         },
         {
           "entryId": "effects_props:04a0dca0a299d07203499c538bedb6dd88f8544c8afff0b6626cc9e20114156b",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 34,
           "text": "chalk dust cloud"
         },
         {
           "entryId": "effects_props:56145e72546129dfabd03ee7eead25a99c9088f23a102a03d2366e308729a092",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 35,
           "text": "koi fish swimming through the air"
         },
         {
           "entryId": "effects_props:c8e11d7ffc86557e1fcdab91e5c70b2219858302e8747e1e0e9f45f9e4beca71",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 36,
           "text": "crystals growing and spreading"
         },
         {
           "entryId": "effects_props:3c4c6c99115fb02f909a77af2dcca548c161c95daa66db6e46c5b19b9bc1630d",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 37,
           "text": "phantom afterimages of movement"
         },
         {
           "entryId": "effects_props:f7ff3fd4d5756126b228768b36b3ddc28994bd11a5af83308b7a02f772914351",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 38,
           "text": "musical notes visible as light"
         },
         {
           "entryId": "effects_props:1e6d29c704aa5b548197c944764193dc18905a34bc0a72abc677884133b4d9d8",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 39,
           "text": "spilled marbles reflecting the scene"
         },
         {
           "entryId": "effects_props:7302d428e551ae51714e8ffeabafbf1b81ed0922f9141969218ed9d8ee543428",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 40,
           "text": "vines growing in fast motion"
         },
         {
           "entryId": "effects_props:30b3260817e9ecf9d2d4693b2f0d8b7da3b79440a5e005a80b2e42552e57f546",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 41,
           "text": "thrown paint mid-splash"
         },
         {
           "entryId": "effects_props:8da9aa6b1f7a26eac3e0675e0a59306d227e793a0168fb7aed86849ed81d8071",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 42,
           "text": "umbrella blown inside out"
         },
         {
           "entryId": "effects_props:c2977f581d601743724766b5b11d9555d9919e7762a65f408882936eb88a941e",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 43,
           "text": "fluttering book pages"
         },
         {
           "entryId": "effects_props:1a9dd2a2003c9643105c91bdd45f2272a7efb23efaae6219ba1814c51b707d09",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 44,
           "text": "kite string leading out of frame"
         },
         {
           "entryId": "effects_props:24bcbf4bb9faea49dfe5e179640901127a7d24f1cc5521e9bda53044b0a57490",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 45,
           "text": "wisps of blue soul flame"
         },
         {
           "entryId": "effects_props:1dc0054b0d8c72faf31a5e675b8682c8995635009c1c20fde25cdc6ef09e91cc",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 46,
           "text": "confetti cannon burst"
         },
         {
           "entryId": "effects_props:f83fcef1986f18af5d3b20776abbde044c49be0d6fc7615cb7ab88f7f4cd8c1d",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 47,
           "text": "hair lifted by static electricity"
         },
         {
           "entryId": "effects_props:494d3f1250e407294a31624957e048ea9977bffef63e4e1b5754371c9f1044b6",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 48,
           "text": "glowing jellyfish drifting in the air"
         },
         {
           "entryId": "effects_props:a354697b444a51243e9a56b8df4bc21f28fa511122ffb02a61ffb381562b9d2f",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 49,
           "text": "dust motes in a shaft of light"
         },
         {
           "entryId": "effects_props:d554ae93505394df03f4856614bf593450f1e94989cffdda43c3edd4e71797b4",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 50,
           "text": "red spider lilies in full bloom"
         },
         {
           "entryId": "effects_props:f1d2074224107c24827dbd108531bae4a65c7b45650363ec4247f5353106b005",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 51,
           "text": "breath visible in cold air"
         },
         {
           "entryId": "effects_props:4c22f8508c7d7c8144868cf8e00686ce05e5fa20965a92227cfc015d5e90ef84",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 52,
           "text": "sword planted in the ground"
         },
         {
           "entryId": "effects_props:3ceb39b9f2640987293681886bc059945eb90844e52057b38c5223372f68e307",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 53,
           "text": "chess pieces toppled across a board"
         },
         {
           "entryId": "effects_props:82856989c6a7ee435b62391fc850c8212bdf323ec527b2083a070e1bb6ae5f7e",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 54,
           "text": "overflowing suitcase spilling clothes"
         },
         {
           "entryId": "effects_props:8b7f8e289719024f668eabc6256474ef3acf9c706b17862b4901b99bc47696b6",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 55,
           "text": "half-eaten dessert on a table"
         },
         {
           "entryId": "effects_props:4b4a887a253aaa715fa50d602d070ebfdaaf1faec61cc63b909e29da7374f780",
-          "sourceFile": "blocks/effects/effects_props.txt",
+          "sourceFile": "effects_props.txt",
           "sourceLine": 56,
           "text": "old film grain and scratches"
         }
@@ -2464,7 +2464,7 @@
       "expectedCount": 56,
       "id": "effects_props",
       "primaryBlock": "effects",
-      "sourceFile": "blocks/effects/effects_props.txt"
+      "sourceFile": "effects_props.txt"
     },
     {
       "allowedBlocks": [
@@ -2482,181 +2482,181 @@
       "entries": [
         {
           "entryId": "weather_time:f2baf03b7da51cabb147a873d408e99cd1b83734c726f64bf43d18f84f2936c2",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 1,
           "text": "torrential rain"
         },
         {
           "entryId": "weather_time:adf31a660a111eeb3b398f58e7e774639dcc10c5b590a469f3c06569d9f5f4de",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 2,
           "text": "sun shower drizzle"
         },
         {
           "entryId": "weather_time:651429ed8d7c7baa427341ed330143b4ba65ee47544d987d4ba10859c0bc3c5b",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 3,
           "text": "first snow of the year"
         },
         {
           "entryId": "weather_time:6ad189c0c10044478ea9120c53fd3ab873df855541fd271ffc61286b694adfdc",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 4,
           "text": "blizzard whiteout"
         },
         {
           "entryId": "weather_time:3f452b1bd5916800a9e1dd769322d49bf8267588a8bc9af0c520bd21146557e1",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 5,
           "text": "dense fog"
         },
         {
           "entryId": "weather_time:aa9ef8d7b1958c0ee0dcae59ef6689e2eb1bc75b63063de0e565fdfad8c59c51",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 6,
           "text": "approaching sandstorm"
         },
         {
           "entryId": "weather_time:c023e72358c5b63a4ffd6b705523a841422726cdaccbf15583092ec931b516d4",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 7,
           "text": "typhoon winds"
         },
         {
           "entryId": "weather_time:4c2d427c9c6d4a95ea142ca2de1eb93ed84cc8b481532aad58169f76bf04c11d",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 8,
           "text": "hail bouncing off pavement"
         },
         {
           "entryId": "weather_time:a3967687120d929dd4f3d4e9d644e0261aa9f6067e12847b3c5f66a51a44da81",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 9,
           "text": "rainbow after rain"
         },
         {
           "entryId": "weather_time:b0b81a099ef5381b88b791f0f4f4fff2eed5e0e8f09124b9cdec37b655b5ebe1",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 10,
           "text": "heat haze shimmer"
         },
         {
           "entryId": "weather_time:0bcdb891810cde6d4d69ca3dbead12c2ce107eb2dd8466215c0c6d9fc2a9a036",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 11,
           "text": "frost patterns on glass"
         },
         {
           "entryId": "weather_time:de2b29c462f6c69dc9fbe1fc3831b62adb4dd4e8cc4d104b85777d4864d3a857",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 12,
           "text": "dawn mist"
         },
         {
           "entryId": "weather_time:b4d184c19c24880142dd48c61cf37aa8939c1a60b12a1b3395697534e450ee85",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 13,
           "text": "blazing high noon"
         },
         {
           "entryId": "weather_time:edab2638d122a970395603c49c0eeb2c2e00bd5b1755c21e4254f9a877f39ff3",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 14,
           "text": "golden sunset"
         },
         {
           "entryId": "weather_time:010f0aeb50ce162f5bf2398b95338ff736c378e76eaba6f5c756455dd739ee19",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 15,
           "text": "deep twilight"
         },
         {
           "entryId": "weather_time:3fc35f9b21a6f327827eb3fc3b91fcf4dc923e61125e7c0a8a0dd1921e239a78",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 16,
           "text": "midnight under a full moon"
         },
         {
           "entryId": "weather_time:e948be8cf6ef54781e6898fba1fd6c70fd966faeb3073f04343eccb5a57938f9",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 17,
           "text": "new moon starfield"
         },
         {
           "entryId": "weather_time:1adbcb6f00e6d2f7f6637691bc078a5c3aadb5910736448870b2354e31c49ac8",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 18,
           "text": "meteor shower"
         },
         {
           "entryId": "weather_time:0534e248e8c22d9e6e45a18c18dc7370e7ba1a2ea111c223db2e2ab8bf9c0044",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 19,
           "text": "partial solar eclipse"
         },
         {
           "entryId": "weather_time:13826634413af8fd499554e7e357c7f9debea935d483cfcf7ab927e60316713a",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 20,
           "text": "distant thunderstorm"
         },
         {
           "entryId": "weather_time:df81446bbf97f144ffd199ddf0f0131649bf43ac871c3e4e9796af10704ec475",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 21,
           "text": "monsoon flooding the streets"
         },
         {
           "entryId": "weather_time:ba13ef6936b1fc8b93025380b5f63f875555f8f96247ebe86978760012264700",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 22,
           "text": "hazy spring afternoon"
         },
         {
           "entryId": "weather_time:d7f02a49313817b75593053b8da0a60b8f793ea8532365574e0f5532532f5bf5",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 23,
           "text": "crisp clear autumn sky"
         },
         {
           "entryId": "weather_time:f6599963fc1c461380b8b891f03790c9f3a56e31ed88b906c2141b800a0760a5",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 24,
           "text": "humid summer night"
         },
         {
           "entryId": "weather_time:4428531d6a058de1f26d8377235929e63ef9d5b1cd6cd3cfdc68ec2e12538792",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 25,
           "text": "freezing rain glazing branches"
         },
         {
           "entryId": "weather_time:2c08f28367c60dc92934f0c8fe8e5abe4c47543b0f9edb6fe76055d4589024e4",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 26,
           "text": "morning dew on everything"
         },
         {
           "entryId": "weather_time:3694987c44c4856ee0d18b00a1449402b6b0d53b3310ad58e47af4f88c034175",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 27,
           "text": "sea of clouds below the peaks"
         },
         {
           "entryId": "weather_time:eacfb53bd39b69754b816224201bd997c6fca1c2419b97e7ee5c7d5a8df1b094",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 28,
           "text": "gale bending the trees"
         },
         {
           "entryId": "weather_time:66255507cdb2fa95fbf2c923f202aa69a74244941da5ee96d9999a23729bf44e",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 29,
           "text": "aurora-filled night"
         },
         {
           "entryId": "weather_time:25781588c26f82bd174ef203b84ce1eb0de04bd717eb3e974bc0adf023dcb44e",
-          "sourceFile": "blocks/scene/weather_time.txt",
+          "sourceFile": "weather_time.txt",
           "sourceLine": 30,
           "text": "overcast stillness before snow"
         }
@@ -2664,7 +2664,7 @@
       "expectedCount": 30,
       "id": "weather_time",
       "primaryBlock": "scene",
-      "sourceFile": "blocks/scene/weather_time.txt"
+      "sourceFile": "weather_time.txt"
     },
     {
       "allowedBlocks": [
@@ -2680,301 +2680,301 @@
       "entries": [
         {
           "entryId": "appearance_traits:5ab5bb54af31e1db57de88bdd556f467b4e2916a7ee763ba420b957b0c78140c",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 1,
           "text": "waist-length silver hair"
         },
         {
           "entryId": "appearance_traits:cddaadb09e24d6be7eeba522517961a361e26a565eb2188e13965dc1f714def9",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 2,
           "text": "messy short black hair"
         },
         {
           "entryId": "appearance_traits:8f2c9cf2b1c89c06fc3ee7b5685dcf6722815c040e2d0c52e155f12ebd39bd5f",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 3,
           "text": "twin braids with ribbons"
         },
         {
           "entryId": "appearance_traits:ece72404ad30f79ebb9e03d9681e1703c20010288c9a774f9af5b3a2d7596f29",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 4,
           "text": "undercut with long top"
         },
         {
           "entryId": "appearance_traits:3e7d4528081c4fdfebaae78d0889ab223dc813d107c8d70d3518e4af595f8479",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 5,
           "text": "drill curls"
         },
         {
           "entryId": "appearance_traits:c71b0241cf75c182c9c28d5aa341a07a853bc9d84c9b9dd7878a4ccc056dabb9",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 6,
           "text": "hair covering one eye"
         },
         {
           "entryId": "appearance_traits:b5f1bca7d2a9da35ee1b5a2917868765b08a12f9f2afdcc59785392928e1f5ec",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 7,
           "text": "high ponytail with an ahoge"
         },
         {
           "entryId": "appearance_traits:bc771f4d3c62dea579993cd16efd74c60f1a7b4fbdb6d41c491d39a2c1f79c34",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 8,
           "text": "bob cut with blunt bangs"
         },
         {
           "entryId": "appearance_traits:14be0ad3cf329dea15382b4aeb7feee64d986ddaf472472813fda559e450f415",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 9,
           "text": "heterochromia"
         },
         {
           "entryId": "appearance_traits:f9b5fbd6bd25db7e912635e7f86e1e56f8c7b0f5cafe32ea98f5ae248eb67b1a",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 10,
           "text": "fox-like narrow eyes"
         },
         {
           "entryId": "appearance_traits:c9f3249df53f4d4f86015bcf6d3d6244027d6a3b821ebfdb5f2383f0c23676c2",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 11,
           "text": "gentle droopy eyes"
         },
         {
           "entryId": "appearance_traits:876b4314908e3a0e384954677eaebb0186158407ddf9840887331aa9bc0fb3d5",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 12,
           "text": "sharp upturned eyes"
         },
         {
           "entryId": "appearance_traits:79365bb49c5bbf8e84ef2e2f3dc1ad3e38a0263f4c46e7525a97e95a376df96c",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 13,
           "text": "freckles across the nose"
         },
         {
           "entryId": "appearance_traits:32860167f0d898982606e0940fc7ef481de17480f8dd98483d525a8e8437de29",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 14,
           "text": "beauty mark under one eye"
         },
         {
           "entryId": "appearance_traits:34d7bc007a7b05856766d47dcfe4c1e3f601b3082437ddee2d1bde0716f8fa40",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 15,
           "text": "scar through an eyebrow"
         },
         {
           "entryId": "appearance_traits:f73e1e9e2a7f8d1613d47d041f39e710e582e78de24b4bd5e223a494731661b5",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 16,
           "text": "deeply tanned skin"
         },
         {
           "entryId": "appearance_traits:d616407a0ce696b18954a3f4952d6f2d2efadee3457ba89f8888323f3a3e59ad",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 17,
           "text": "porcelain pale skin"
         },
         {
           "entryId": "appearance_traits:8d03edf857fb14db674133776be3906b565d3b88124e6db31ec9eac30e6ef7c1",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 18,
           "text": "athletic toned build"
         },
         {
           "entryId": "appearance_traits:c78c8ca2ae0f4f65ed051eadbc15d8022c8a542455fd52cc5771cdfb11e96494",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 19,
           "text": "petite frame"
         },
         {
           "entryId": "appearance_traits:8c9d24fc6acf52f4e237c04e46bbf6b115670264fd6140143e7f24f06d9b77f4",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 20,
           "text": "tall and lanky"
         },
         {
           "entryId": "appearance_traits:5dc86e585fb45e2174f6701795912296b64d42607951f96468098db24f060ad4",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 21,
           "text": "broad shouldered"
         },
         {
           "entryId": "appearance_traits:de217cb2ea6a9c829d675db1c57c4842c901d53b0817664c80cef5ea34ef1067",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 22,
           "text": "pointed elf ears"
         },
         {
           "entryId": "appearance_traits:80728afb30d58f69e72d01d316df5d7e5a89ae55ff12373b19280998b4484b49",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 23,
           "text": "small fangs"
         },
         {
           "entryId": "appearance_traits:5cc5cb0a53bf058df3bed606d3c8e60dd4002197f0ed6eafaeaf1e7b3600c2af",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 24,
           "text": "semi-rimless glasses"
         },
         {
           "entryId": "appearance_traits:063b0c714a2919e873733545d02c5ebadb83033ed5f8bcf06e9ed9cd65d3a16c",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 25,
           "text": "monocle on a chain"
         },
         {
           "entryId": "appearance_traits:74a8e95dc592a8f719785be7d04aacb536d7a1138bff71dd97ea929cdd55141d",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 26,
           "text": "eyepatch"
         },
         {
           "entryId": "appearance_traits:4bf2745fabfe3b1ebbadb1b02d40f9ae3cfeb6ef0863d468472911b7ddd2b173",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 27,
           "text": "bandaged forearms"
         },
         {
           "entryId": "appearance_traits:be63a6b4fee3e62361778cafe53336271af1778eed11b4ffb055a2f3d6c88e1c",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 28,
           "text": "painted nails"
         },
         {
           "entryId": "appearance_traits:bbcccec13138531715c51f57ea7006552a76f45c8a7a5509498a5d87d5ed18ed",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 29,
           "text": "tattoo on the shoulder blade"
         },
         {
           "entryId": "appearance_traits:1772d539f7064755aaafa688c18c6cace37316772cc7fa9f6278bc93cc536177",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 30,
           "text": "dark circles under the eyes"
         },
         {
           "entryId": "appearance_traits:f85e12e867846a9f9ce3792f37898d33acd6794b3c0e3e05154604b11e02bffb",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 31,
           "text": "gradient-dyed hair tips"
         },
         {
           "entryId": "appearance_traits:b617ddf19ac98dc85bf07a831f1a7cb1a03404e8320ac4855d36fdb6f035c283",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 32,
           "text": "wolf ears and tail"
         },
         {
           "entryId": "appearance_traits:d04cf26fd10e32c0d813026648b7f3a63ff99bcb71c6b3e43573de1a011e32f5",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 33,
           "text": "single curved horn"
         },
         {
           "entryId": "appearance_traits:74799808f62d135854ee412de7bfbff1cc8997ae0589bb1f4ab9f896d873b187",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 34,
           "text": "slightly tilted halo"
         },
         {
           "entryId": "appearance_traits:391667f2d53bf2a0f539b413f3d242b15223cf6d2d1edb44f514094bc8026de0",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 35,
           "text": "mechanical prosthetic arm"
         },
         {
           "entryId": "appearance_traits:bd1b037d690c93471c12a33f658d9f4a2a3e29ef70a31d55acc6207898098de8",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 36,
           "text": "faint scales along the cheekbone"
         },
         {
           "entryId": "appearance_traits:11851a850f02c2d22396223b94b11f9304d9771c388df8e12e1133b5089e46a0",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 37,
           "text": "mole on the collarbone"
         },
         {
           "entryId": "appearance_traits:aff376118265ede40337f3958847ceb6a4b72ba45c4e60f9f3ebd0f5b8d02038",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 38,
           "text": "long lower eyelashes"
         },
         {
           "entryId": "appearance_traits:4a3d2434bd678d6fb57a29294381ec9219c2f8fb4114b358fbd3f9dd27691f5e",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 39,
           "text": "thick straight eyebrows"
         },
         {
           "entryId": "appearance_traits:7542e734cae20d0021d01c6682cad7ea3e5b06c494c2311b55fa0f95cc9e0b4d",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 40,
           "text": "side ponytail"
         },
         {
           "entryId": "appearance_traits:d51dddf037bc881f481e4b69ddb38caa421349374176b163fe421d5f2165e98f",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 41,
           "text": "hime cut"
         },
         {
           "entryId": "appearance_traits:df64368a40c3f88e13e989deb4858fee7b8b814567100c2933634b0a9d4b0cec",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 42,
           "text": "dreadlocks tied back"
         },
         {
           "entryId": "appearance_traits:ddb5f9a2a442545496cc86629c1a4da9945b87d20363b546a436b2c8b35c0ad7",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 43,
           "text": "wavy hair worn loose"
         },
         {
           "entryId": "appearance_traits:d5d13b30703c6eb9d03da43d8b1b558237b7a4d10ca5dd88c56ce974f1852805",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 44,
           "text": "white eyelashes"
         },
         {
           "entryId": "appearance_traits:63b9cbb799cdb110bd51efd676f163eb56a9804633256439f54e742f240400c1",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 45,
           "text": "faintly glowing pupils"
         },
         {
           "entryId": "appearance_traits:457850449e194a585f8fa58caed75a1a0c86828d0871a323840a4030794c7be6",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 46,
           "text": "sleepy half-lidded expression"
         },
         {
           "entryId": "appearance_traits:7bdb9a68d1b669f757e4068ab41c320977dfc27f6524ccd51a9d3601b842fe0d",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 47,
           "text": "confident smirk"
         },
         {
           "entryId": "appearance_traits:f818b03c67f2c60cd44bd6c1b22b34e9a97e636abf57682888a55cccca0bb58a",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 48,
           "text": "serene closed-eyes smile"
         },
         {
           "entryId": "appearance_traits:fd5e3a2d236ee13553c691a2e06fa71ca0e56cb4a8a49b3fe430874ba43b7b5c",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 49,
           "text": "flustered sidelong glance"
         },
         {
           "entryId": "appearance_traits:85c81729e5c3deba1fbfd29bd97f06e7581c90337938996f5302dee9acef9788",
-          "sourceFile": "blocks/appearance/appearance_traits.txt",
+          "sourceFile": "appearance_traits.txt",
           "sourceLine": 50,
           "text": "determined furrowed brow"
         }
@@ -2982,12 +2982,12 @@
       "expectedCount": 50,
       "id": "appearance_traits",
       "primaryBlock": "appearance",
-      "sourceFile": "blocks/appearance/appearance_traits.txt"
+      "sourceFile": "appearance_traits.txt"
     }
   ],
   "categoryCount": 9,
   "contentHashAlgorithm": "sha256-canonical-json-without-version-fields-v1",
-  "contentSha256": "67192b4d6e8a41b8a6be833bc8a6596b351dd162cab8bdba4b4d84cea2024589",
+  "contentSha256": "61a68f13bd402bd4b24c104330a7ec2b6a786d74caf3d59ac8ff05a9eecff5c5",
   "entryCount": 471,
   "mappingVersion": "thirteen-block-v1",
   "normalizationUnicodeVersion": "15.0.0",
@@ -2996,6 +2996,6 @@
   "samplerVersion": "sha256-counter-v1",
   "schemaVersion": 1,
   "semanticReviewRequired": true,
-  "sourceDirectory": "词库原稿/blocks",
-  "version": "v1-67192b4d6e8a41b8"
+  "sourceDirectory": "词库原稿",
+  "version": "v1-61a68f13bd402bd4"
 }

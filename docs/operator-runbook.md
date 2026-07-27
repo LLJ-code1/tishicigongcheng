@@ -83,6 +83,7 @@ Pop-Location
 | `ANIMADEX_URL` | `http://127.0.0.1:5000` |
 | `ANIMADEX_TIMEOUT` | AnimaDex 上游读取超时，默认 3 秒 |
 | `PROMPT_STUDIO_EXPERIMENTAL_WORDLISTS` | 设为 `1` 才允许确定性词库计划 |
+| `PROMPT_STUDIO_TOKENIZER_PATH` | 可选：已在本机存在的当前模型 tokenizer 目录；仅能离线加载，成功后诊断才显示真实 token 数 |
 | `PROMPT_STUDIO_ALLOW_NETWORK` | 非回环监听的第一道显式开关，设为 `1` |
 | `PROMPT_STUDIO_ALLOWED_HOSTS` | 非回环监听时必须列出允许的 Host，逗号分隔 |
 | `PROMPT_STUDIO_LLAMA_DIR` | 自定义 `llama.cpp` 目录 |
@@ -100,6 +101,15 @@ $env:PROMPT_STUDIO_EXPERIMENTAL_WORDLISTS = "1"
 ```
 
 这不会把目录标记为已审核；界面仍显示“实验 / 待人工语义审核”。
+
+## 受管理 PNG 资产
+
+通过“检查出图 PNG”后的“导入受管理资产”保存本机结果。默认文件目录为
+`prototype/data/managed-assets/`；如需将大图放到其他本地磁盘，可在启动服务前设置
+`PROMPT_STUDIO_MANAGED_ASSETS` 为一个专用目录。导入按 SHA-256 去重，SQLite 只保存相对路径和元数据。
+
+删除前必须先解除所有项目版本或实验格子的引用，再调用带
+`confirmLocalFileDeletion=1` 的删除接口；该确认会删除 PNG 与缩略图，不能从数据库恢复。
 
 非回环监听会扩大本地密钥和进程控制接口的攻击面，只有明确需要局域网访问时才同时
 设置两个网络开关。普通个人使用保持默认回环地址。

@@ -21,7 +21,7 @@ DEFAULT_DB_PATH = Path(
     os.environ.get("PROMPT_STUDIO_DB", ROOT / "data" / "prompt_studio.db")
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 APPLICATION_ID = 0x41505354  # "APST"
 RECOVERY_DIRECTORY_NAME = ".prompt-studio-recovery"
 _INIT_LOCK = threading.Lock()
@@ -30,7 +30,13 @@ SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$")
 IDEMPOTENCY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9._~-]{1,128}$")
 SAFE_STATUS_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
 PROJECT_MODES = {"text", "image"}
-FAVORITE_TYPES = {"characters", "artists", "references", "snippets"}
+FAVORITE_TYPES = {
+    "characters",
+    "artists",
+    "references",
+    "snippets",
+    "negative_presets",
+}
 SENSITIVE_METADATA_KEYS = {
     "apikey",
     "apitextkey",
@@ -176,6 +182,32 @@ CREATE TABLE IF NOT EXISTS model_profile_versions (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_model_profile_one_active
 ON model_profile_versions(profile_id)
 WHERE lifecycle_status = 'active';
+
+CREATE TABLE IF NOT EXISTS managed_assets (
+    id TEXT PRIMARY KEY,
+    sha256 TEXT NOT NULL UNIQUE,
+    relative_path TEXT NOT NULL UNIQUE,
+    thumbnail_relative_path TEXT NOT NULL UNIQUE,
+    mime_type TEXT NOT NULL,
+    byte_size INTEGER NOT NULL,
+    width INTEGER NOT NULL,
+    height INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS managed_asset_refs (
+    asset_id TEXT NOT NULL REFERENCES managed_assets(id) ON DELETE RESTRICT,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    version INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (asset_id, project_id, version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_managed_asset_refs_asset
+    ON managed_asset_refs(asset_id);
+
+CREATE INDEX IF NOT EXISTS idx_managed_asset_refs_project
+    ON managed_asset_refs(project_id, version);
 """
 
 
@@ -285,6 +317,23 @@ EXPECTED_SCHEMA_COLUMNS = {
         ("reviewed_at", "TEXT", 0, 0),
         ("activated_at", "TEXT", 0, 0),
     ),
+    "managed_assets": (
+        ("id", "TEXT", 0, 1),
+        ("sha256", "TEXT", 1, 0),
+        ("relative_path", "TEXT", 1, 0),
+        ("thumbnail_relative_path", "TEXT", 1, 0),
+        ("mime_type", "TEXT", 1, 0),
+        ("byte_size", "INTEGER", 1, 0),
+        ("width", "INTEGER", 1, 0),
+        ("height", "INTEGER", 1, 0),
+        ("created_at", "TEXT", 1, 0),
+    ),
+    "managed_asset_refs": (
+        ("asset_id", "TEXT", 1, 1),
+        ("project_id", "TEXT", 1, 2),
+        ("version", "INTEGER", 1, 3),
+        ("created_at", "TEXT", 1, 0),
+    ),
 }
 
 EXPECTED_INDEX_COLUMNS = {
@@ -292,6 +341,8 @@ EXPECTED_INDEX_COLUMNS = {
     "idx_resources_type": ("type",),
     "idx_favorites_type_created": ("type", "created_at"),
     "idx_model_profile_one_active": ("profile_id",),
+    "idx_managed_asset_refs_asset": ("asset_id",),
+    "idx_managed_asset_refs_project": ("project_id", "version"),
 }
 
 V1_TABLE_NAMES = frozenset(
@@ -303,6 +354,12 @@ V1_INDEX_NAMES = frozenset(
         "idx_resources_type",
         "idx_favorites_type_created",
     }
+)
+V2_TABLE_NAMES = frozenset(
+    name for name in EXPECTED_SCHEMA_COLUMNS if not name.startswith("managed_asset")
+)
+V2_INDEX_NAMES = frozenset(
+    name for name in EXPECTED_INDEX_COLUMNS if not name.startswith("idx_managed_asset")
 )
 
 EXPECTED_FOREIGN_KEYS = {
@@ -318,6 +375,10 @@ EXPECTED_FOREIGN_KEYS = {
     "model_profile_versions": {
         ("model_profile_versions", "parent_version_id", "id", "NO ACTION"),
         ("model_research_runs", "research_run_id", "id", "NO ACTION"),
+    },
+    "managed_asset_refs": {
+        ("managed_assets", "asset_id", "id", "RESTRICT"),
+        ("projects", "project_id", "id", "CASCADE"),
     },
 }
 
@@ -817,7 +878,15 @@ def _validate_schema(
             if name in V1_TABLE_NAMES
         }
         if schema_version in {0, 1}
-        else EXPECTED_SCHEMA_COLUMNS
+        else (
+            {
+                name: columns
+                for name, columns in EXPECTED_SCHEMA_COLUMNS.items()
+                if name in V2_TABLE_NAMES
+            }
+            if schema_version == 2
+            else EXPECTED_SCHEMA_COLUMNS
+        )
     )
     expected_indexes = (
         {
@@ -826,7 +895,15 @@ def _validate_schema(
             if name in V1_INDEX_NAMES
         }
         if schema_version in {0, 1}
-        else EXPECTED_INDEX_COLUMNS
+        else (
+            {
+                name: columns
+                for name, columns in EXPECTED_INDEX_COLUMNS.items()
+                if name in V2_INDEX_NAMES
+            }
+            if schema_version == 2
+            else EXPECTED_INDEX_COLUMNS
+        )
     )
     tables = _user_tables(connection)
     expected_tables = set(expected_columns_by_table)
@@ -947,7 +1024,7 @@ def _classify_database(connection: sqlite3.Connection) -> dict:
         raise UnsupportedDatabaseVersionError(
             f"数据库版本 {schema_version} 高于当前支持版本 {SCHEMA_VERSION}"
         )
-    if schema_version not in {0, 1, SCHEMA_VERSION}:
+    if schema_version not in {0, 1, 2, SCHEMA_VERSION}:
         raise UnsupportedDatabaseVersionError(f"不支持数据库版本 {schema_version}")
     if application_id not in {0, APPLICATION_ID}:
         raise DatabaseSchemaError("数据库不是 Anima Prompt Studio 数据库")
@@ -979,6 +1056,12 @@ def _classify_database(connection: sqlite3.Connection) -> dict:
         }
     if application_id != APPLICATION_ID:
         raise DatabaseSchemaError("数据库缺少正确的应用标识")
+    if schema_version == 2:
+        return {
+            "kind": "v2",
+            "schemaVersion": schema_version,
+            "applicationId": application_id,
+        }
     return {
         "kind": "current",
         "schemaVersion": schema_version,
@@ -1060,6 +1143,20 @@ def _migrate_to_v2(connection: sqlite3.Connection) -> None:
             connection.execute(statement)
 
 
+def _migrate_to_v3(connection: sqlite3.Connection) -> None:
+    """Apply managed-asset metadata tables inside the caller's transaction."""
+
+    asset_objects = (
+        "managed_assets",
+        "managed_asset_refs",
+        "idx_managed_asset_refs_asset",
+        "idx_managed_asset_refs_project",
+    )
+    for statement in _schema_statements():
+        if any(object_name in statement for object_name in asset_objects):
+            connection.execute(statement)
+
+
 @contextmanager
 def database(db_path: Path | str | None = None):
     connection = connect(db_path)
@@ -1091,6 +1188,10 @@ def init_db(db_path: Path | str | None = None) -> Path:
             if state["kind"] in {"legacy", "v1"}:
                 _create_recovery_snapshot(path, state["kind"])
                 _migrate_to_v2(connection)
+                _migrate_to_v3(connection)
+            elif state["kind"] == "v2":
+                _create_recovery_snapshot(path, state["kind"])
+                _migrate_to_v3(connection)
             elif state["kind"] == "empty":
                 for statement in _schema_statements():
                     connection.execute(statement)
@@ -1384,10 +1485,59 @@ def _favorite_from_row(row: sqlite3.Row) -> dict:
     }
 
 
-def list_projects(db_path: Path | str | None = None) -> list[dict]:
+def list_projects(
+    db_path: Path | str | None = None,
+    *,
+    query: str = "",
+    status: str = "",
+    model_id: str = "",
+    lora_id: str = "",
+) -> list[dict]:
+    for value, label, maximum in (
+        (query, "项目搜索", 200),
+        (status, "项目状态", 32),
+        (model_id, "模型 ID", 128),
+        (lora_id, "LoRA ID", 128),
+    ):
+        if not isinstance(value, str) or len(value) > maximum:
+            raise ValueError(f"{label}无效")
+    clauses: list[str] = []
+    params: list[str] = []
+    if query.strip():
+        clauses.append("(projects.name LIKE ? OR projects.id LIKE ?)")
+        needle = f"%{query.strip()}%"
+        params.extend((needle, needle))
+    if status.strip():
+        if not SAFE_STATUS_PATTERN.fullmatch(status.strip()):
+            raise ValueError("项目状态无效")
+        clauses.append("projects.status = ?")
+        params.append(status.strip())
+    if model_id.strip():
+        clauses.append(
+            """
+            EXISTS (
+                SELECT 1 FROM prompt_versions AS model_versions
+                WHERE model_versions.project_id = projects.id
+                AND model_versions.metadata_json LIKE ?
+            )
+            """
+        )
+        params.append(f"%{model_id.strip()}%")
+    if lora_id.strip():
+        clauses.append(
+            """
+            EXISTS (
+                SELECT 1 FROM prompt_versions AS lora_versions
+                WHERE lora_versions.project_id = projects.id
+                AND lora_versions.metadata_json LIKE ?
+            )
+            """
+        )
+        params.append(f"%{lora_id.strip()}%")
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
     with database(db_path) as connection:
         rows = connection.execute(
-            """
+            f"""
             SELECT
                 projects.*,
                 COUNT(prompt_versions.id) AS version_count,
@@ -1395,9 +1545,11 @@ def list_projects(db_path: Path | str | None = None) -> list[dict]:
             FROM projects
             LEFT JOIN prompt_versions
                 ON prompt_versions.project_id = projects.id
+            {where}
             GROUP BY projects.id
             ORDER BY projects.updated_at DESC, projects.created_at DESC
-            """
+            """,
+            params,
         ).fetchall()
     items = []
     for row in rows:
@@ -1410,6 +1562,39 @@ def list_projects(db_path: Path | str | None = None) -> list[dict]:
         )
         items.append(item)
     return items
+
+
+def project_usage_statistics(db_path: Path | str | None = None) -> dict:
+    """Count historical model/LoRA selection without converting it to defaults."""
+
+    model_counts: dict[str, int] = {}
+    lora_counts: dict[str, int] = {}
+    with database(db_path) as connection:
+        rows = connection.execute("SELECT metadata_json FROM prompt_versions").fetchall()
+    for row in rows:
+        metadata = load_stored_metadata(row["metadata_json"])
+        recipe = metadata.get("recipe") if isinstance(metadata, dict) else None
+        if not isinstance(recipe, dict):
+            continue
+        model = recipe.get("model")
+        model_id = model.get("id") if isinstance(model, dict) else None
+        if isinstance(model_id, str) and model_id:
+            model_counts[model_id] = model_counts.get(model_id, 0) + 1
+        for lora in recipe.get("loras", []) if isinstance(recipe.get("loras"), list) else []:
+            profile_id = lora.get("profileId") if isinstance(lora, dict) else None
+            if isinstance(profile_id, str) and profile_id:
+                lora_counts[profile_id] = lora_counts.get(profile_id, 0) + 1
+    return {
+        "models": [
+            {"id": item_id, "useCount": count}
+            for item_id, count in sorted(model_counts.items(), key=lambda item: (-item[1], item[0]))
+        ],
+        "loras": [
+            {"id": item_id, "useCount": count}
+            for item_id, count in sorted(lora_counts.items(), key=lambda item: (-item[1], item[0]))
+        ],
+        "policy": "historical_candidates_only",
+    }
 
 
 def _legacy_create_project(payload: dict, db_path: Path | str | None = None) -> dict:
@@ -2151,11 +2336,50 @@ def commit_workspace(
             ).fetchone()
             if row is None:  # pragma: no cover - defensive invariant
                 raise IdempotencyLedgerError("版本写入后不可读取")
+            managed_asset_ids = normalized_version["metadata"].get(
+                "managedAssetIds", []
+            )
+            if managed_asset_ids:
+                if (
+                    not isinstance(managed_asset_ids, list)
+                    or len(managed_asset_ids) > 256
+                    or any(
+                        not isinstance(asset_id, str)
+                        or not SAFE_ID_PATTERN.fullmatch(asset_id)
+                        for asset_id in managed_asset_ids
+                    )
+                ):
+                    raise ValueError("managedAssetIds 必须是最多 256 个有效资产 ID")
+                normalized_asset_ids = sorted(set(managed_asset_ids))
+                found_assets = {
+                    row["id"]
+                    for row in connection.execute(
+                        "SELECT id FROM managed_assets WHERE id IN ({})".format(
+                            ", ".join("?" for _ in normalized_asset_ids)
+                        ),
+                        normalized_asset_ids,
+                    ).fetchall()
+                }
+                unknown_assets = sorted(set(normalized_asset_ids) - found_assets)
+                if unknown_assets:
+                    raise ValueError("managedAssetIds 包含不存在的资产")
+                for asset_id in normalized_asset_ids:
+                    connection.execute(
+                        """
+                        INSERT OR IGNORE INTO managed_asset_refs (
+                            asset_id, project_id, version, created_at
+                        ) VALUES (?, ?, ?, ?)
+                        """,
+                        (asset_id, project_id, version_number, timestamp),
+                    )
             version_result = _version_from_row(row)
             version_result["projectUpdatedAt"] = timestamp
         else:
             timestamp = _next_project_updated_at(current_updated_at)
 
+        _attach_experiment_matrix_assets(
+            connection, project_id, project_metadata, timestamp
+        )
         connection.execute(
             """
             UPDATE projects
@@ -2186,6 +2410,273 @@ def commit_workspace(
             connection, "workspace.commit", descriptor, result
         )
         return result
+
+
+def _managed_asset_from_row(row: sqlite3.Row, reference_count: int = 0) -> dict:
+    return {
+        "id": row["id"],
+        "sha256": row["sha256"],
+        "relativePath": row["relative_path"],
+        "thumbnailRelativePath": row["thumbnail_relative_path"],
+        "mimeType": row["mime_type"],
+        "byteSize": int(row["byte_size"]),
+        "width": int(row["width"]),
+        "height": int(row["height"]),
+        "createdAt": row["created_at"],
+        "referenceCount": int(reference_count),
+    }
+
+
+def _attach_experiment_matrix_assets(
+    connection: sqlite3.Connection,
+    project_id: str,
+    project_metadata: dict,
+    timestamp: str,
+) -> None:
+    """Attach imported result assets named by persisted matrix cells.
+
+    Matrix definitions live in the project metadata committed by the workspace
+    endpoint; this only keeps the asset's deletion guard in sync with them.
+    """
+
+    matrices_by_version = project_metadata.get("experimentMatricesByVersion")
+    references: set[tuple[str, int]] = set()
+    if matrices_by_version is not None:
+        if not isinstance(matrices_by_version, dict):
+            raise ValueError("experimentMatricesByVersion 必须是对象")
+        for raw_version, matrices in matrices_by_version.items():
+            if not isinstance(raw_version, str) or not raw_version.isdecimal():
+                raise ValueError("实验矩阵版本键无效")
+            version = int(raw_version)
+            if version < 1 or not isinstance(matrices, list):
+                raise ValueError("实验矩阵版本数据无效")
+            for matrix in matrices:
+                if not isinstance(matrix, dict) or not isinstance(matrix.get("cells"), list):
+                    raise ValueError("实验矩阵格子无效")
+                for cell in matrix["cells"]:
+                    asset_id = cell.get("assetId") if isinstance(cell, dict) else None
+                    if asset_id is None:
+                        continue
+                    if not isinstance(asset_id, str) or not SAFE_ID_PATTERN.fullmatch(asset_id):
+                        raise ValueError("实验矩阵资产 ID 无效")
+                    references.add((asset_id, version))
+    evidence_by_version = project_metadata.get("generationEvidenceByVersion")
+    if evidence_by_version is not None:
+        if not isinstance(evidence_by_version, dict):
+            raise ValueError("generationEvidenceByVersion 必须是对象")
+        for raw_version, evidence in evidence_by_version.items():
+            asset_id = evidence.get("assetId") if isinstance(evidence, dict) else None
+            if asset_id is None:
+                continue
+            if (
+                not isinstance(raw_version, str)
+                or not raw_version.isdecimal()
+                or int(raw_version) < 1
+                or not isinstance(asset_id, str)
+                or not SAFE_ID_PATTERN.fullmatch(asset_id)
+            ):
+                raise ValueError("本机实测资产引用无效")
+            references.add((asset_id, int(raw_version)))
+    for asset_id, version in references:
+        if connection.execute(
+            "SELECT 1 FROM prompt_versions WHERE project_id = ? AND version = ?",
+            (project_id, version),
+        ).fetchone() is None:
+            raise ValueError("实验矩阵引用的项目版本不存在")
+        if connection.execute(
+            "SELECT 1 FROM managed_assets WHERE id = ?", (asset_id,)
+        ).fetchone() is None:
+            raise ValueError("实验矩阵引用的资产不存在")
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO managed_asset_refs (
+                asset_id, project_id, version, created_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (asset_id, project_id, version, timestamp),
+        )
+
+
+def register_managed_asset(
+    asset: dict, db_path: Path | str | None = None
+) -> tuple[dict, bool]:
+    """Store asset metadata only; managed image bytes never enter SQLite."""
+
+    if not isinstance(asset, dict):
+        raise ValueError("资产元数据必须是对象")
+    required = (
+        "id",
+        "sha256",
+        "relativePath",
+        "thumbnailRelativePath",
+        "mimeType",
+        "byteSize",
+        "width",
+        "height",
+    )
+    if any(key not in asset for key in required):
+        raise ValueError("资产元数据不完整")
+    asset_id = validate_id(asset["id"], "资产 ID")
+    sha256 = asset["sha256"]
+    if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256):
+        raise ValueError("资产 SHA-256 无效")
+    relative_path = asset["relativePath"]
+    thumbnail_relative_path = asset["thumbnailRelativePath"]
+    for value, label in (
+        (relative_path, "资产路径"),
+        (thumbnail_relative_path, "缩略图路径"),
+    ):
+        if (
+            not isinstance(value, str)
+            or not value
+            or Path(value).is_absolute()
+            or ".." in Path(value).parts
+            or "\\" in value
+        ):
+            raise ValueError(f"{label}无效")
+    if asset["mimeType"] != "image/png":
+        raise ValueError("当前仅支持 PNG 资产")
+    numeric_fields = ("byteSize", "width", "height")
+    if any(
+        isinstance(asset[key], bool)
+        or not isinstance(asset[key], int)
+        or asset[key] <= 0
+        for key in numeric_fields
+    ):
+        raise ValueError("资产尺寸元数据无效")
+
+    with database(db_path) as connection:
+        existing = connection.execute(
+            "SELECT * FROM managed_assets WHERE sha256 = ?", (sha256,)
+        ).fetchone()
+        if existing is not None:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM managed_asset_refs WHERE asset_id = ?",
+                (existing["id"],),
+            ).fetchone()[0]
+            return _managed_asset_from_row(existing, count), False
+        created_at = now_iso()
+        connection.execute(
+            """
+            INSERT INTO managed_assets (
+                id, sha256, relative_path, thumbnail_relative_path, mime_type,
+                byte_size, width, height, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                asset_id,
+                sha256,
+                relative_path,
+                thumbnail_relative_path,
+                asset["mimeType"],
+                asset["byteSize"],
+                asset["width"],
+                asset["height"],
+                created_at,
+            ),
+        )
+        row = connection.execute(
+            "SELECT * FROM managed_assets WHERE id = ?", (asset_id,)
+        ).fetchone()
+        if row is None:  # pragma: no cover - defensive invariant
+            raise RuntimeError("资产写入后不可读取")
+        return _managed_asset_from_row(row), True
+
+
+def get_managed_asset(
+    asset_id: str, db_path: Path | str | None = None
+) -> dict | None:
+    asset_id = validate_id(asset_id, "资产 ID")
+    with database(db_path) as connection:
+        row = connection.execute(
+            "SELECT * FROM managed_assets WHERE id = ?", (asset_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        count = connection.execute(
+            "SELECT COUNT(*) FROM managed_asset_refs WHERE asset_id = ?", (asset_id,)
+        ).fetchone()[0]
+        return _managed_asset_from_row(row, count)
+
+
+def get_managed_asset_by_sha256(
+    sha256: str, db_path: Path | str | None = None
+) -> dict | None:
+    if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256):
+        raise ValueError("资产 SHA-256 无效")
+    with database(db_path) as connection:
+        row = connection.execute(
+            "SELECT * FROM managed_assets WHERE sha256 = ?", (sha256,)
+        ).fetchone()
+        if row is None:
+            return None
+        count = connection.execute(
+            "SELECT COUNT(*) FROM managed_asset_refs WHERE asset_id = ?", (row["id"],)
+        ).fetchone()[0]
+        return _managed_asset_from_row(row, count)
+
+
+def list_managed_assets(db_path: Path | str | None = None) -> list[dict]:
+    with database(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT assets.*, COUNT(refs.asset_id) AS reference_count
+            FROM managed_assets AS assets
+            LEFT JOIN managed_asset_refs AS refs ON refs.asset_id = assets.id
+            GROUP BY assets.id
+            ORDER BY assets.created_at DESC, assets.id DESC
+            """
+        ).fetchall()
+        return [
+            _managed_asset_from_row(row, row["reference_count"])
+            for row in rows
+        ]
+
+
+def unlink_managed_asset(
+    asset_id: str,
+    project_id: str,
+    version: int,
+    db_path: Path | str | None = None,
+) -> bool:
+    asset_id = validate_id(asset_id, "资产 ID")
+    project_id = validate_id(project_id, "作品 ID")
+    if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+        raise ValueError("版本号无效")
+    with database(db_path) as connection:
+        result = connection.execute(
+            """
+            DELETE FROM managed_asset_refs
+            WHERE asset_id = ? AND project_id = ? AND version = ?
+            """,
+            (asset_id, project_id, version),
+        )
+        return result.rowcount == 1
+
+
+def delete_unreferenced_managed_asset(
+    asset_id: str, db_path: Path | str | None = None
+) -> dict:
+    """Remove only asset metadata whose reference count is zero.
+
+    The caller is responsible for deleting the explicitly confirmed local files.
+    """
+
+    asset_id = validate_id(asset_id, "资产 ID")
+    with database(db_path) as connection:
+        row = connection.execute(
+            "SELECT * FROM managed_assets WHERE id = ?", (asset_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError("资产不存在")
+        count = connection.execute(
+            "SELECT COUNT(*) FROM managed_asset_refs WHERE asset_id = ?", (asset_id,)
+        ).fetchone()[0]
+        if count:
+            raise ValueError("资产仍被项目版本引用；请先解除全部引用")
+        asset = _managed_asset_from_row(row)
+        connection.execute("DELETE FROM managed_assets WHERE id = ?", (asset_id,))
+        return asset
 
 
 def list_favorites(

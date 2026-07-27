@@ -77,7 +77,7 @@ class RandomSamplerCatalogTests(unittest.TestCase):
         self.assertTrue(catalog.experimental_mode)
         self.assertFalse(catalog.runtime_ready)
         self.assertTrue(catalog.semantic_review_required)
-        self.assertEqual(catalog.version, "v1-05044da9a25cd532")
+        self.assertEqual(catalog.version, "v1-67192b4d6e8a41b8")
         self.assertEqual(len(catalog.entries_by_id), 471)
 
     def test_future_reviewed_catalog_does_not_report_experimental(self):
@@ -115,8 +115,24 @@ class RandomSamplerCatalogTests(unittest.TestCase):
         raw["categories"][0]["entries"][0]["sourceFile"] = "../secret.txt"
         resign_catalog(raw)
 
-        with self.assertRaisesRegex(CatalogValidationError, "safe .txt basename"):
+        with self.assertRaisesRegex(CatalogValidationError, "safe relative .txt path"):
             validate_catalog(raw, experimental=True)
+
+    def test_structural_source_reorganization_preserves_entry_identity(self):
+        previous_path = CATALOG_PATH.parent / "catalogs" / "v1-61a68f13bd402bd4.json"
+        previous = json.loads(previous_path.read_text(encoding="utf-8"))
+        current_entry_ids = {
+            entry["entryId"]
+            for category in self.raw["categories"]
+            for entry in category["entries"]
+        }
+        previous_entry_ids = {
+            entry["entryId"]
+            for category in previous["categories"]
+            for entry in category["entries"]
+        }
+
+        self.assertEqual(current_entry_ids, previous_entry_ids)
 
     def test_version_must_be_derived_from_content_hash(self):
         raw = copy.deepcopy(self.raw)
@@ -194,6 +210,12 @@ class RandomPlanTests(unittest.TestCase):
             first["trace"]["releaseBoundary"]["semanticReviewRequired"]
         )
 
+    def test_current_catalog_is_available_through_its_immutable_version_archive(self):
+        archived = load_catalog(
+            experimental=True, catalog_version=self.catalog.version
+        )
+        self.assertEqual(archived.content_sha256, self.catalog.content_sha256)
+
     def test_golden_plan_is_identical_across_fresh_processes(self):
         root = Path(__file__).resolve().parents[2]
         program = (
@@ -235,6 +257,22 @@ class RandomPlanTests(unittest.TestCase):
         for category_id, entry_ids in baseline_by_category.items():
             if category_id != "theme_mood":
                 self.assertEqual(locked_by_category[category_id], entry_ids)
+
+    def test_scope_category_ids_draws_only_one_server_validated_category(self):
+        plan = resolve_random_plan(
+            self.request(scopeCategoryIds=["clothing_outfit"]), catalog=self.catalog
+        )
+
+        self.assertEqual({item["categoryId"] for item in plan["items"]}, {"clothing_outfit"})
+        self.assertEqual(plan["configuration"]["scopeCategoryIds"], ["clothing_outfit"])
+        with self.assertRaisesRegex(PlanRequestError, "within scopeCategoryIds"):
+            resolve_random_plan(
+                self.request(
+                    scopeCategoryIds=["clothing_outfit"],
+                    drawCounts={"weather_time": 0},
+                ),
+                catalog=self.catalog,
+            )
 
     def test_reroll_is_resolved_by_entry_id_and_is_deterministic(self):
         old_id = GOLDEN_ENTRY_IDS[0]

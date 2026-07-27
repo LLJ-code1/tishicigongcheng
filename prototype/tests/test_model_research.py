@@ -273,6 +273,92 @@ class ModelResearchContractTests(unittest.TestCase):
             {"Accept": "application/json, text/html; q=0.9"},
         )
 
+    def test_by_hash_adapter_keeps_air_as_snapshot_evidence_not_profile_identity(self):
+        sha256 = "a" * 64
+        source_url = model_research.civitai_hash_source_url(sha256.upper())
+        adapter = model_research.default_adapter_registry().resolve(source_url)
+        snapshot = model_research.SourceSnapshot(
+            snapshot_id="snap-by-hash",
+            source_class="original_source",
+            requested_url=source_url,
+            final_url=source_url,
+            retrieved_at="2026-07-27T10:00:00Z",
+            content_type="application/json",
+            body_sha256="b" * 64,
+            extracted_text=json.dumps(
+                {
+                    "id": 42,
+                    "modelId": 9,
+                    "name": "exact checkpoint",
+                    "baseModel": "Illustrious",
+                    "trainedWords": ["local trigger"],
+                    "files": [{"hashes": {"SHA256": sha256}}],
+                    "air": "external-air-identifier",
+                }
+            ),
+            fetch_status="succeeded",
+            error_code=None,
+        )
+
+        claims = adapter.parse(snapshot)
+
+        self.assertEqual(
+            model_research.civitai_hash_model_page(snapshot),
+            "https://civitai.com/models/9?modelVersionId=42",
+        )
+        self.assertEqual(
+            {claim.field_path for claim in claims},
+            {"model.versionId", "model.versionName", "model.baseModel"},
+        )
+        self.assertNotIn("external-air-identifier", str([claim.value for claim in claims]))
+
+    def test_by_hash_rejects_non_sha256_and_failed_source(self):
+        with self.assertRaises(model_research.ResearchError):
+            model_research.civitai_hash_source_url("not-a-hash")
+        failed = dataclasses.replace(
+            self.snapshot,
+            requested_url=model_research.civitai_hash_source_url("c" * 64),
+            final_url=model_research.civitai_hash_source_url("c" * 64),
+            fetch_status="failed",
+            extracted_text="",
+            body_sha256="",
+        )
+        with self.assertRaises(model_research.ResearchError):
+            model_research.civitai_hash_model_page(failed)
+
+    def test_adapter_keeps_only_a_positive_model_version_pin_and_selects_it(self):
+        pinned_url = self.source_url + "?modelVersionId=23"
+        payload = json.loads(self.snapshot.extracted_text)
+        payload["modelVersions"].append(
+            {"id": 23, "name": "pinned", "baseModel": "NoobAI"}
+        )
+        snapshot = dataclasses.replace(
+            self.snapshot,
+            requested_url=pinned_url,
+            final_url=pinned_url,
+            extracted_text=json.dumps(payload),
+        )
+        adapter = model_research.default_adapter_registry().resolve(pinned_url)
+
+        self.assertEqual(adapter.request_for(pinned_url).url, pinned_url)
+        claims = {claim.field_path: claim.value for claim in adapter.parse(snapshot)}
+        self.assertEqual(claims["model.versionId"], 23)
+        self.assertEqual(claims["model.versionName"], "pinned")
+
+    def test_adapter_rejects_unapproved_or_malformed_civitai_queries(self):
+        registry = model_research.default_adapter_registry()
+        for query in (
+            "?modelVersionId=0",
+            "?modelVersionId=not-a-number",
+            "?modelVersionId=23&foo=bar",
+            "?foo=bar",
+            "?modelVersionId=23&modelVersionId=24",
+        ):
+            with self.subTest(query=query), self.assertRaisesRegex(
+                model_research.ResearchError, "unsupported_source"
+            ):
+                registry.resolve(self.source_url + query)
+
     def test_adapter_maps_allowlisted_author_fields_to_original_source_claims(self):
         claims = model_research.default_adapter_registry().resolve(
             self.snapshot.requested_url

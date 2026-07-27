@@ -38,6 +38,15 @@ metadata-only `POST /api/workspace/commit`，与尚未保存的 Recipe 编辑相
 | `POST` | `/api/creative-intake/transition` | 由服务器规范化并应用一次创意意图状态转换 |
 | `POST` | `/api/creative-intake/decomposition-preview` | 生成精确模型版本适配的十三块草稿 |
 | `POST` | `/api/workspace/commit` | 原子保存项目头和可选完整版本 |
+| `GET` | `/api/managed-assets` | 列出本地受管理 PNG 元数据与引用数 |
+| `POST` | `/api/managed-assets/import` | Base64 PNG 导入、SHA-256 去重并生成缩略图 |
+| `POST` | `/api/managed-assets/<id>/unlink` | 解除一个项目版本的资产引用 |
+| `DELETE` | `/api/managed-assets/<id>?confirmLocalFileDeletion=1` | 仅无引用时删除元数据与已确认的本地文件 |
+| `POST` | `/api/experiments/matrix/plan` | 生成单变量或受限笛卡尔实验清单；不会调用出图服务 |
+| `POST` | `/api/recipe/roles/edit` | 预览或确认 Recipe v2 的单角色局部编辑；v1 不会自动迁移 |
+| `POST` | `/api/recipe/relationships/edit` | 在显式确认冲突后编辑 Recipe v2 的角色互动关系 |
+| `GET` | `/api/projects?q=&status=&modelId=&loraId=` | 按名称、状态、历史模型或 LoRA 使用筛选项目 |
+| `GET` | `/api/project-insights` | 返回历史模型与 LoRA 使用计数，仅作候选展示 |
 | `GET` | `/api/model-profiles` | 列出模型档案 |
 | `GET` | `/api/model-profiles/<id>` | 读取单个模型档案及验证状态 |
 | `GET` / `POST` | `/api/lora-profiles` | 列出或创建 LoRA-lite 档案 |

@@ -12,7 +12,7 @@ import socket
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Protocol, Sequence
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urljoin, urlsplit, urlunsplit
 
 
 ALLOWED_CLAIM_PATHS = frozenset(
@@ -61,6 +61,7 @@ _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _CIVITAI_PATH = re.compile(
     r"/models/[1-9][0-9]*(?:/[A-Za-z0-9._~-]+)?/?"
 )
+_CIVITAI_HASH_PATH = re.compile(r"/api/v1/model-versions/by-hash/[0-9a-fA-F]{64}")
 _JSON_SCRIPT = re.compile(
     r"<script\b[^>]*\btype=[\"']application/json[\"'][^>]*>(.*?)</script>",
     re.IGNORECASE | re.DOTALL,
@@ -450,12 +451,65 @@ def _canonical_civitai_page(url: str) -> str | None:
         or parsed.username is not None
         or parsed.password is not None
         or port is not None
-        or parsed.query
         or parsed.fragment
         or not _CIVITAI_PATH.fullmatch(parsed.path)
     ):
         return None
-    return urlunsplit(("https", "civitai.com", parsed.path, "", ""))
+    query_items = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+    if not query_items:
+        query = ""
+    elif (
+        len(query_items) == 1
+        and query_items[0][0] == "modelVersionId"
+        and query_items[0][1].isdigit()
+        and int(query_items[0][1]) > 0
+    ):
+        query = f"modelVersionId={int(query_items[0][1])}"
+    else:
+        return None
+    return urlunsplit(("https", "civitai.com", parsed.path, query, ""))
+
+
+def _civitai_version_id(url: str) -> int | None:
+    """Return the only accepted optional Civitai version pin."""
+
+    canonical = _canonical_civitai_page(url)
+    if canonical is None:
+        return None
+    query = urlsplit(canonical).query
+    return int(query.split("=", 1)[1]) if query else None
+
+
+def _canonical_civitai_hash(url: str) -> str | None:
+    """Accept one exact Civitai by-hash endpoint and no query parameters."""
+
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme != "https"
+        or (parsed.hostname or "").casefold() != "civitai.com"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is not None
+        or parsed.query
+        or parsed.fragment
+        or not _CIVITAI_HASH_PATH.fullmatch(parsed.path)
+    ):
+        return None
+    hash_value = parsed.path.rsplit("/", 1)[1].lower()
+    return f"https://civitai.com/api/v1/model-versions/by-hash/{hash_value}"
+
+
+def civitai_hash_source_url(sha256: str) -> str:
+    """Build the only research URL accepted for a local SHA-256 lookup."""
+
+    normalized = str(sha256 or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", normalized):
+        raise ResearchError("invalid_hash", "sha256 must be 64 lowercase-or-uppercase hex characters")
+    return f"https://civitai.com/api/v1/model-versions/by-hash/{normalized}"
 
 
 def _extract_json_payload(text: str) -> Mapping[str, Any] | None:
@@ -523,8 +577,24 @@ class CivitaiModelPageAdapter:
         if isinstance(payload.get("name"), str) and payload["name"].strip():
             values.append(("displayName", payload["name"].strip()))
         versions = payload.get("modelVersions")
-        if isinstance(versions, list) and versions and isinstance(versions[0], Mapping):
-            version = versions[0]
+        requested_version_id = _civitai_version_id(snapshot.requested_url)
+        version = None
+        if isinstance(versions, list):
+            if requested_version_id is None:
+                version = next(
+                    (item for item in versions if isinstance(item, Mapping)), None
+                )
+            else:
+                version = next(
+                    (
+                        item
+                        for item in versions
+                        if isinstance(item, Mapping)
+                        and item.get("id") == requested_version_id
+                    ),
+                    None,
+                )
+        if version is not None:
             if isinstance(version.get("id"), int) and not isinstance(
                 version.get("id"), bool
             ):
@@ -554,8 +624,88 @@ class CivitaiModelPageAdapter:
         return sorted(claims, key=lambda claim: (claim.field_path, claim.claim_id))
 
 
+class CivitaiHashAdapter:
+    """Read-only evidence adapter for a user-supplied local checkpoint hash.
+
+    The snapshot keeps `trainedWords`, file hashes, metadata and any AIR value as
+    external evidence.  Only profile fields in the existing allowlist become
+    reviewable claims; AIR is never used as an internal profile identifier.
+    """
+
+    adapter_id = "civitai-by-hash-v1"
+
+    def supports(self, url: str) -> bool:
+        return _canonical_civitai_hash(url) is not None
+
+    def request_for(self, url: str) -> FetchRequest:
+        canonical = _canonical_civitai_hash(url)
+        if canonical is None:
+            raise ResearchError("unsupported_source", "not a Civitai by-hash endpoint")
+        return FetchRequest(url=canonical, headers={"Accept": "application/json"})
+
+    def parse(self, snapshot: SourceSnapshot) -> list[EvidenceClaim]:
+        if (
+            snapshot.source_class != "original_source"
+            or not self.supports(snapshot.requested_url)
+            or not self.supports(snapshot.final_url)
+        ):
+            raise ResearchError("source_mismatch", "snapshot is not a Civitai by-hash result")
+        if snapshot.fetch_status != "succeeded" or not snapshot.extracted_text:
+            return []
+        payload = _extract_json_payload(snapshot.extracted_text)
+        if payload is None:
+            return []
+        values: list[tuple[str, Any]] = []
+        if isinstance(payload.get("id"), int) and not isinstance(payload["id"], bool):
+            values.append(("model.versionId", payload["id"]))
+        if isinstance(payload.get("name"), str) and payload["name"].strip():
+            values.append(("model.versionName", payload["name"].strip()))
+        if isinstance(payload.get("baseModel"), str) and payload["baseModel"].strip():
+            values.append(("model.baseModel", payload["baseModel"].strip()))
+        return sorted(
+            [
+                normalize_claim(
+                    {
+                        "claimId": _claim_id(snapshot.snapshot_id, field_path, value),
+                        "fieldPath": field_path,
+                        "value": value,
+                        "evidenceClass": "original_source",
+                        "evidenceRefs": [snapshot.snapshot_id],
+                        "rationale": "Extracted from Civitai by-hash evidence; requires review.",
+                        "verificationStatus": "source_recorded",
+                        "applicationStatus": "proposed",
+                    }
+                )
+                for field_path, value in values
+            ],
+            key=lambda claim: (claim.field_path, claim.claim_id),
+        )
+
+
+def civitai_hash_model_page(snapshot: SourceSnapshot) -> str:
+    """Derive the internal research source from a successful by-hash snapshot."""
+
+    if snapshot.fetch_status != "succeeded" or not snapshot.extracted_text:
+        raise ResearchError("by_hash_unavailable", "by-hash source did not return evidence")
+    payload = _extract_json_payload(snapshot.extracted_text)
+    if payload is None:
+        raise ResearchError("by_hash_invalid_response", "by-hash source did not return JSON")
+    model_id = payload.get("modelId")
+    version_id = payload.get("id")
+    if (
+        isinstance(model_id, bool)
+        or not isinstance(model_id, int)
+        or model_id <= 0
+        or isinstance(version_id, bool)
+        or not isinstance(version_id, int)
+        or version_id <= 0
+    ):
+        raise ResearchError("by_hash_invalid_response", "by-hash evidence is missing model or version ID")
+    return f"https://civitai.com/models/{model_id}?modelVersionId={version_id}"
+
+
 def default_adapter_registry() -> AdapterRegistry:
-    return AdapterRegistry((CivitaiModelPageAdapter(),))
+    return AdapterRegistry((CivitaiHashAdapter(), CivitaiModelPageAdapter()))
 
 
 def default_resolver(host: str) -> tuple[str, ...]:
@@ -1154,6 +1304,8 @@ __all__ = [
     "SourceAdapter",
     "SourceSnapshot",
     "claim_to_dict",
+    "civitai_hash_model_page",
+    "civitai_hash_source_url",
     "apply_claim_decisions",
     "build_pending_profile",
     "default_adapter_registry",

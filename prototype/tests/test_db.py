@@ -14,6 +14,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import db  # noqa: E402
+from experiment_matrix import plan_experiment_matrix  # noqa: E402
 
 
 def confirmed_brief_session():
@@ -71,6 +72,8 @@ class PromptStudioDatabaseTests(unittest.TestCase):
         connection = sqlite3.connect(path)
         try:
             connection.executescript(db.SCHEMA)
+            connection.execute("DROP TABLE managed_asset_refs")
+            connection.execute("DROP TABLE managed_assets")
             connection.execute("DROP TABLE model_profile_versions")
             connection.execute("DROP TABLE model_evidence_claims")
             connection.execute("DROP TABLE model_evidence_snapshots")
@@ -159,7 +162,7 @@ class PromptStudioDatabaseTests(unittest.TestCase):
 
         connection = sqlite3.connect(path)
         try:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
             self.assertEqual(
                 connection.execute(
                     "SELECT name FROM projects WHERE id = 'legacy-project'"
@@ -203,6 +206,37 @@ class PromptStudioDatabaseTests(unittest.TestCase):
         finally:
             snapshot.close()
 
+    def test_v2_database_is_snapshotted_and_migrated_to_v3_assets(self):
+        path = Path(self.tempdir.name) / "v2.db"
+        connection = sqlite3.connect(path)
+        try:
+            connection.executescript(db.SCHEMA)
+            connection.execute("DROP TABLE managed_asset_refs")
+            connection.execute("DROP TABLE managed_assets")
+            connection.execute("PRAGMA user_version = 2")
+            connection.execute(f"PRAGMA application_id = {db.APPLICATION_ID}")
+            connection.commit()
+        finally:
+            connection.close()
+
+        db.init_db(path)
+
+        connection = sqlite3.connect(path)
+        try:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertIsNotNone(
+                connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'managed_assets'"
+                ).fetchone()
+            )
+        finally:
+            connection.close()
+        snapshot = sqlite3.connect(next(db.recovery_directory(path).glob("*.db")))
+        try:
+            self.assertEqual(snapshot.execute("PRAGMA user_version").fetchone()[0], 2)
+        finally:
+            snapshot.close()
+
     def test_v1_migration_failure_rolls_back_schema_and_version(self):
         path = Path(self.tempdir.name) / "v1-rollback.db"
         self.create_v1_database(path)
@@ -241,7 +275,7 @@ class PromptStudioDatabaseTests(unittest.TestCase):
 
         self.assertEqual(results, [path] * 4)
         self.assertEqual(len(list(db.recovery_directory(path).glob("*.db"))), 1)
-        self.assertEqual(db.get_database_status(path)["schemaVersion"], 2)
+        self.assertEqual(db.get_database_status(path)["schemaVersion"], 3)
 
     def test_now_iso_keeps_microsecond_precision(self):
         self.assertRegex(
@@ -861,6 +895,45 @@ class PromptStudioDatabaseTests(unittest.TestCase):
         self.assertRegex(favorite["favoriteId"], r"^favorite-[a-f0-9]{24}$")
         self.assertTrue(db.delete_favorite(favorite["favoriteId"], self.db_path))
 
+    def test_favorite_persists_named_negative_preset(self):
+        preset = db.upsert_favorite(
+            {
+                "id": "negative-preset-hands",
+                "type": "negative_presets",
+                "name": "Hands cleanup",
+                "targetBlock": "negative",
+                "en": "bad hands, extra fingers",
+                "zh": "手部修正",
+            },
+            self.db_path,
+        )
+
+        self.assertEqual(preset["type"], "negative_presets")
+        self.assertEqual(
+            db.list_favorites("negative_presets", db_path=self.db_path)[0]["id"],
+            "negative-preset-hands",
+        )
+
+    def test_recipe_template_preserves_parameter_preset_metadata(self):
+        template = db.upsert_favorite(
+            {
+                "id": "recipe-template-portrait",
+                "type": "snippets",
+                "name": "Portrait template",
+                "projectTemplate": {
+                    "schemaVersion": 1,
+                    "enabledBlockIds": ["subject", "appearance"],
+                    "generationParameters": {"steps": 42},
+                },
+            },
+            self.db_path,
+        )
+
+        self.assertEqual(
+            template["metadata"]["projectTemplate"]["generationParameters"]["steps"],
+            42,
+        )
+
     def test_favorite_delete_removes_historical_duplicate_rows(self):
         resource_id = "animadex-characters-duplicate/resource"
         favorite = db.upsert_favorite(
@@ -1093,7 +1166,7 @@ class PromptStudioDatabaseTests(unittest.TestCase):
 
         connection = sqlite3.connect(self.db_path)
         try:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
         finally:
             connection.close()
 
@@ -1304,6 +1377,127 @@ class PromptStudioDatabaseTests(unittest.TestCase):
         with db.database(self.db_path) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM projects").fetchone()[0], 1)
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM prompt_versions").fetchone()[0], 1)
+
+    def test_project_search_filters_and_usage_statistics_are_historical_only(self):
+        first = db.create_project(
+            {"id": "project-filter-a", "name": "Rain Study", "status": "draft"},
+            self.db_path,
+        )
+        second = db.create_project(
+            {"id": "project-filter-b", "name": "Portrait", "status": "done"},
+            self.db_path,
+        )
+        for project in (first, second):
+            db.create_prompt_version(
+                project["id"],
+                {
+                    "positiveEn": "one",
+                    "metadata": {
+                        "recipe": {
+                            "model": {"id": "anima-1.1-v1"},
+                            "loras": [{"profileId": "lora-rain"}],
+                        }
+                    },
+                },
+                self.db_path,
+            )
+        self.assertEqual(
+            [item["id"] for item in db.list_projects(self.db_path, query="Rain")],
+            ["project-filter-a"],
+        )
+        self.assertEqual(
+            [item["id"] for item in db.list_projects(self.db_path, status="done")],
+            ["project-filter-b"],
+        )
+        self.assertEqual(
+            len(db.list_projects(self.db_path, model_id="anima-1.1-v1", lora_id="lora-rain")),
+            2,
+        )
+        statistics = db.project_usage_statistics(self.db_path)
+        self.assertEqual(statistics["models"], [{"id": "anima-1.1-v1", "useCount": 2}])
+        self.assertEqual(statistics["policy"], "historical_candidates_only")
+
+    def test_workspace_commit_attaches_managed_asset_and_unlink_allows_delete(self):
+        asset, created = db.register_managed_asset(
+            {
+                "id": "asset-test-1",
+                "sha256": "a" * 64,
+                "relativePath": "files/aa/test.png",
+                "thumbnailRelativePath": "thumbnails/aa/test.jpg",
+                "mimeType": "image/png",
+                "byteSize": 12,
+                "width": 2,
+                "height": 2,
+            },
+            self.db_path,
+        )
+        self.assertTrue(created)
+        result = db.commit_workspace(
+            {
+                "operationId": "asset-commit-1",
+                "createProject": True,
+                "project": {"id": "project-asset-1", "name": "Asset"},
+                "version": {
+                    "id": "version-asset-1",
+                    "baseVersion": 0,
+                    "positiveEn": "one",
+                    "metadata": {"managedAssetIds": [asset["id"]]},
+                },
+            },
+            self.db_path,
+        )
+        self.assertEqual(db.get_managed_asset(asset["id"], self.db_path)["referenceCount"], 1)
+        self.assertTrue(
+            db.unlink_managed_asset(
+                asset["id"], "project-asset-1", result["version"]["version"], self.db_path
+            )
+        )
+        removed = db.delete_unreferenced_managed_asset(asset["id"], self.db_path)
+        self.assertEqual(removed["id"], asset["id"])
+        self.assertIsNone(db.get_managed_asset(asset["id"], self.db_path))
+
+    def test_workspace_commit_keeps_matrix_result_asset_referenced(self):
+        asset, _ = db.register_managed_asset(
+            {
+                "id": "asset-matrix-1",
+                "sha256": "b" * 64,
+                "relativePath": "files/bb/matrix.png",
+                "thumbnailRelativePath": "thumbnails/bb/matrix.jpg",
+                "mimeType": "image/png",
+                "byteSize": 12,
+                "width": 2,
+                "height": 2,
+            },
+            self.db_path,
+        )
+        matrix = plan_experiment_matrix(
+            {
+                "name": "Seed check",
+                "version": 1,
+                "attributionSeed": 7,
+                "design": "one-factor",
+                "variables": [{"key": "cfgScale", "values": [5, 7]}],
+            }
+        )
+        matrix["cells"][0]["assetId"] = asset["id"]
+        db.commit_workspace(
+            {
+                "operationId": "matrix-asset-commit",
+                "createProject": True,
+                "project": {
+                    "id": "project-matrix-asset",
+                    "name": "Matrix",
+                    "metadata": {"experimentMatricesByVersion": {"1": [matrix]}},
+                },
+                "version": {
+                    "id": "version-matrix-asset",
+                    "baseVersion": 0,
+                    "positiveEn": "one",
+                },
+            },
+            self.db_path,
+        )
+        self.assertEqual(db.get_managed_asset(asset["id"], self.db_path)["referenceCount"], 1)
 
     def test_workspace_commit_changed_replay_and_failed_write_do_not_partially_mutate(self):
         payload = {

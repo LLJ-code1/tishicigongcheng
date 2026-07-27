@@ -193,6 +193,7 @@ prototype/data/prompt_studio.db
 - `GET /api/model-profiles`
 - `GET /api/model-profiles/<id>`
 - `POST /api/model-research`
+- `POST /api/model-research/by-hash`（仅 SHA-256 的 Civitai by-hash 证据查询；失败关闭，AIR 只保留为外部证据）
 - `GET /api/model-research/<runId>`
 - `GET /api/model-profile-versions/<versionId>`
 - `PUT /api/model-profile-versions/<versionId>`
@@ -201,6 +202,12 @@ prototype/data/prompt_studio.db
 - `GET|POST /api/lora-profiles`
 - `GET|PUT|DELETE /api/lora-profiles/<id>`
 - `POST /api/recipe/resolve`
+- `POST /api/generation-results/inspect`（只读解析 PNG 中的 A1111/ComfyUI 元数据并返回 Recipe 字段差异；不触发生成或保存）
+- `GET /api/managed-assets`、`POST /api/managed-assets/import`、`POST /api/managed-assets/<id>/unlink`、`DELETE /api/managed-assets/<id>?confirmLocalFileDeletion=1`（本地 PNG 资产、引用和显式删除）
+- `POST /api/experiments/matrix/plan`（仅生成可复现实验参数计划，不触发出图）
+- `POST /api/recipe/roles/edit`（仅对显式 Recipe v2 的一个未锁定角色做局部预览；有关联关系时必须显式确认）
+- `POST /api/recipe/relationships/edit`（仅在显式确认后编辑 Recipe v2 的角色互动关系）
+- `GET /api/projects?q=&status=&modelId=&loraId=`、`GET /api/project-insights`（项目筛选和项目页展示的历史使用候选，统计不改默认值）
 
 确定性词库与 AI 局部编辑：
 
@@ -239,6 +246,18 @@ prototype/data/prompt_studio.db
 
 - `GET /api/vision/status`
 - `POST /api/vision/analyze`
+- `POST /api/vision/cancel`（按服务端 taskId 终止当前本地识图 worker；不把共享 llama.cpp HTTP 推理伪称为可取消）
+
+识图响应还会携带仅供参考的构图字段：景别、视角、主体位置、景深和光影。它只从原始识图文本中匹配这些字段，不回写角色、服装或场景内容到提示词。检测到多人标签时，前端仅展示当前模型档案中已经验证的尺寸预设，且不会自动套用。
+
+当工作台已有英文正向提示词时，识图响应还会返回提示词命中诊断。它只对逗号分隔的字面标签做已确认／不确定／冲突／未观察到的比较；结果始终是辅助证据，不能改写 Recipe 或替代人工判断。
+
+个人资源继续复用 `favorites` 存储：普通单块片段使用 `snippets`，目标块为 `negative` 的命名资源使用 `negative_presets`。两类资源都可插入相应结构块，并随既有逻辑备份导出和隔离恢复，不新增图片二进制或第二套资源库。
+“存为项目模板”同样复用 `snippets`：其 metadata 保存版本化的启用结构块 ID 集合与参数预设。用户明确带入模板后，结构块仍作为待应用修改；参数仅以受限的手动预设写入当前工作区，不会从历史统计自动套用。
+
+`POST /api/recipe/resolve` 同时返回非阻塞诊断：标签数量、构图互斥提示和已知抽象词；
+只有配置 `PROMPT_STUDIO_TOKENIZER_PATH` 且可由本机离线加载目标模型 tokenizer 时才返回真实 token 计数；其他情况明确返回不可用，不以估算值伪装精确 token 数。
+同一诊断还会在主体标签能唯一定位时返回其前缀的真实 token 数。工作台的“主体前移”必须先取得该证据，随后只把 `subject` 结构块移到待应用顺序；它不自动改写或保存 Recipe。
 
 AnimaDex 网关：
 
@@ -267,7 +286,7 @@ Unicode 数据版本不同而产生不同去重键。
 
 ## 项目保存与重开
 
-- 首页项目列表读取 `GET /api/projects` 的 `versionCount` 和 `latestVersion` 摘要；
+- 首页项目列表读取 `GET /api/projects` 的 `versionCount` 和 `latestVersion` 摘要，并可将名称、状态、模型 ID、LoRA ID 作为只读查询参数；
   空库、加载中、失败和正常列表分别呈现。
 - 打开项目时读取 `GET /api/projects/<id>` 的全部持久化版本，以服务端版本号作为唯一
   权威。生成和本地应用修改只标记“待保存”，不提前伪造版本号。

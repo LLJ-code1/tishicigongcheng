@@ -17,9 +17,9 @@ metadata-only workspace commit 保存，不会伪造 Recipe 版本。
 
 ## 数据库结构版本
 
-Prompt Studio SQLite 当前为 schema v2，并使用专用 `application_id` 防止把其他
+Prompt Studio SQLite 当前为 schema v3，并使用专用 `application_id` 防止把其他
 SQLite 文件误当工作区。首次启动对兼容的旧 v0/v1 库先生成本地精确人工故障回滚副本，
-再迁移并登记结构版本；空库直接创建 v2。未来版本、残缺结构、错误应用标识和完整性失败
+再迁移并登记结构版本；空库直接创建 v3。未来版本、残缺结构、错误应用标识和完整性失败
 会在写入前拒绝。
 
 `.prompt-studio-recovery/` 人工故障回滚副本可能含本机密钥，只用于迁移故障时由用户
@@ -53,6 +53,22 @@ SQLite 文件误当工作区。首次启动对兼容的旧 v0/v1 库先生成本
 `POST /api/workspace/commit`。同一个 `operationId` 同时作为 `Idempotency-Key`，项目
 头、可选提示词版本和幂等结果在一个事务中提交。数据库已提交但 HTTP 响应丢失时，
 完全相同的请求会重放第一次结果，不会产生孤儿或重复项目。
+
+## 受管理资产与实验矩阵
+
+`managed_assets` 只保存 PNG 的 SHA-256、相对路径、缩略图路径、尺寸和时间；图片二进制保存在
+`prototype/data/managed-assets/`（或 `PROMPT_STUDIO_MANAGED_ASSETS`）而不进入 SQLite。相同 SHA-256
+只保留一份文件。`managed_asset_refs` 以资产、项目和版本为联合主键，防止仍被历史版本或实验格子
+引用的文件被删除。
+
+项目元数据中的 `experimentMatricesByVersion` 保存版本化实验计划。每个矩阵声明设计
+（`one-factor` 或受 64 格上限约束的 `cartesian`）、变量候选集和固定 `attributionSeed`；格子只可
+附加受管理 `assetId` 或已确认的 `evidenceId`。矩阵定义和结果仍由 `workspace/commit` 保存，服务端
+重新计算格子 ID 与参数，拒绝伪造或不一致的历史记录。
+
+## Recipe v2 角色卡
+
+Recipe v1 保持可读、可校验和原样重开，系统不会自动迁移它。工作台只有用户显式启用角色卡时才创建 v2 草稿。Recipe v2 才允许 `roleCards`：其中保存角色的 ID、名称、标签和锁定标志，以及两角色间的关系 ID、类型、描述和锁定标志。局部角色编辑不会改动其他角色或关系；只要该角色关联了关系，服务端先返回受影响关系和锁定项，调用方必须再次带 `confirmAffected=true` 才能取得可保存的新 v2 Recipe。关系自身的类型或描述编辑同样先返回受影响角色并要求显式确认；锁定关系不可编辑。
 
 ## `projects.metadata_json.creativeIntake`
 
@@ -277,10 +293,11 @@ LoRA 快照。
 - `artists`
 
 
-补充：`type = snippets` 且携带 `blocks` 数组的收藏用于“结构块配方”——
-把当前十三个工作台结构块整组保存；前端从“我的素材”带入时按 `blocks`
-逐块回填。该入口通过 favorites API 持久化，未新增表或字段；它不等同于包含模型、
-LoRA、参数、来源和图片关联的完整生成配方。
+补充：`type = snippets` 且携带 `blocks` 数组的收藏用于“结构块配方”。其中显式的
+`metadata_json.projectTemplate` 会保存 `schemaVersion`、启用的块 ID 与参数预设；前端
+从“我的素材”带入时逐块回填，禁用未列出的块，并只接纳受当前参数范围约束的预设。
+该入口通过 favorites API 持久化，未新增表或字段；它不等同于包含模型、LoRA、来源和
+图片关联的完整生成配方。
 
 AnimaDex 的真实 slug 可能包含括号、斜杠、井号或百分号。`resource_id` 保留原值，
 HTTP 删除使用根据它生成的稳定 `favorite-<hash>` ID；旧收藏也会映射到同一路由 ID，
@@ -309,9 +326,10 @@ SQLite，GET 返回空值与 `*Configured` 标记；空白 PUT 不会清除已�
 不是用户数据表。它保存目录/抽样器/映射版本、稳定词条 ID、来源位置、抽取规则和初步
 允许结构块，并明确标记 `runtimeReady = false`。当前目录是
 `v1-05044da9a25cd532`，规范化 Unicode 版本为 `15.0.0`；在尚未正式发布运行时前，
-同一路径可由原稿重建覆盖。实验开关开启时，`random-plan` 会读取该目录并把完整轨迹
+同一路径可由原稿重建覆盖。每次构建还会写入 `catalogs/<version>.json` 不可变副本；
+实验开关开启时，`random-plan` 会按请求固定版本读取当前目录或该归档，并把完整轨迹
 保存进 Recipe；正式发布 sampler 前仍必须完成逐条语义审核、建立不可变目录版本历史，
-并发布十三块原生 mapping 版本。
+并发布十三块原生 mapping 版本。当前 `thirteen-block-v1` 已发布，语义审核和 `runtimeReady=true` 仍是独立门禁。
 
 ## 逻辑备份格式（非 SQLite schema）
 

@@ -11,6 +11,7 @@ from scripts.build_random_wordlists import (
     CatalogValidationError,
     build_catalog,
     catalog_content_sha256,
+    generate_catalog,
     render_catalog,
 )
 
@@ -35,17 +36,26 @@ class RandomWordlistBuildTests(unittest.TestCase):
 
         self.assertEqual(catalog["schemaVersion"], 1)
         self.assertEqual(catalog["samplerVersion"], "sha256-counter-v1")
-        self.assertEqual(catalog["mappingVersion"], "ten-block-v1")
+        self.assertEqual(catalog["mappingVersion"], "thirteen-block-v1")
         self.assertEqual(catalog["profile"], "adult-character-v1")
         self.assertFalse(catalog["runtimeReady"])
         self.assertTrue(catalog["semanticReviewRequired"])
         self.assertEqual(catalog["categoryCount"], 9)
-        self.assertEqual(catalog["entryCount"], 471)
+        self.assertEqual(
+            catalog["entryCount"],
+            sum(
+                len((SOURCE / spec["sourceFile"]).read_text(encoding="utf-8").splitlines())
+                for spec in CATEGORY_SPECS
+            ),
+        )
         self.assertRegex(catalog["normalizationUnicodeVersion"], r"^\d+\.\d+\.\d+$")
         self.assertEqual(len(catalog["categories"]), len(CATEGORY_SPECS))
         self.assertEqual(
             [len(category["entries"]) for category in catalog["categories"]],
-            [spec["expectedCount"] for spec in CATEGORY_SPECS],
+            [
+                len((SOURCE / spec["sourceFile"]).read_text(encoding="utf-8").splitlines())
+                for spec in CATEGORY_SPECS
+            ],
         )
         self.assertTrue(
             all(category["drawRule"] for category in catalog["categories"])
@@ -66,27 +76,31 @@ class RandomWordlistBuildTests(unittest.TestCase):
     def test_rejects_invalid_utf8(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source = self.copy_source(Path(temp_dir))
-            (source / "theme_mood.txt").write_bytes(b"\xff\xfeinvalid")
+            (source / "blocks" / "scene" / "theme_mood.txt").write_bytes(b"\xff\xfeinvalid")
 
             with self.assertRaisesRegex(CatalogValidationError, "strict UTF-8"):
                 build_catalog(source)
 
-    def test_rejects_wrong_per_file_count(self):
+    def test_source_count_changes_build_and_check_detects_unpublished_catalog(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source = self.copy_source(Path(temp_dir))
-            path = source / "scene_environment.txt"
+            path = source / "blocks" / "scene" / "scene_environment.txt"
             lines = path.read_text(encoding="utf-8").splitlines()
-            write_lines(path, lines[:-1])
+            baseline = Path(temp_dir) / "catalog.json"
+            baseline.write_text(render_catalog(build_catalog(source)), encoding="utf-8")
+            lines.append("new deterministic scene")
+            write_lines(path, lines)
 
-            with self.assertRaisesRegex(CatalogValidationError, "exactly 70 lines"):
-                build_catalog(source)
+            self.assertEqual(build_catalog(source)["entryCount"], 472)
+            with self.assertRaisesRegex(CatalogValidationError, "stale"):
+                generate_catalog(source, baseline, check=True)
 
     def test_rejects_normalized_duplicate_across_categories(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source = self.copy_source(Path(temp_dir))
-            scene_path = source / "scene_environment.txt"
+            scene_path = source / "blocks" / "scene" / "scene_environment.txt"
             duplicate = scene_path.read_text(encoding="utf-8").splitlines()[0]
-            theme_path = source / "theme_mood.txt"
+            theme_path = source / "blocks" / "scene" / "theme_mood.txt"
             theme_lines = theme_path.read_text(encoding="utf-8").splitlines()
             theme_lines[0] = duplicate.upper()
             write_lines(theme_path, theme_lines)
@@ -99,7 +113,7 @@ class RandomWordlistBuildTests(unittest.TestCase):
             with self.subTest(replacement=repr(replacement)):
                 with tempfile.TemporaryDirectory() as temp_dir:
                     source = self.copy_source(Path(temp_dir))
-                    path = source / "theme_mood.txt"
+                    path = source / "blocks" / "scene" / "theme_mood.txt"
                     lines = path.read_text(encoding="utf-8").splitlines()
                     lines[0] = replacement
                     write_lines(path, lines)
@@ -110,7 +124,7 @@ class RandomWordlistBuildTests(unittest.TestCase):
     def test_rejects_prompt_separator_pollution(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source = self.copy_source(Path(temp_dir))
-            path = source / "theme_mood.txt"
+            path = source / "blocks" / "scene" / "theme_mood.txt"
             lines = path.read_text(encoding="utf-8").splitlines()
             lines[0] = f"{lines[0]}, extra item"
             write_lines(path, lines)
@@ -133,7 +147,7 @@ class RandomWordlistBuildTests(unittest.TestCase):
             with self.subTest(codepoint=f"U+{ord(control_character):04X}"):
                 with tempfile.TemporaryDirectory() as temp_dir:
                     source = self.copy_source(Path(temp_dir))
-                    path = source / "theme_mood.txt"
+                    path = source / "blocks" / "scene" / "theme_mood.txt"
                     lines = path.read_text(encoding="utf-8").splitlines()
                     lines[0] = f"{lines[0]}{control_character}fragment"
                     write_lines(path, lines)
@@ -147,7 +161,7 @@ class RandomWordlistBuildTests(unittest.TestCase):
     def test_rejects_oversized_source_and_entry(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source = self.copy_source(Path(temp_dir))
-            path = source / "theme_mood.txt"
+            path = source / "blocks" / "scene" / "theme_mood.txt"
             lines = path.read_text(encoding="utf-8").splitlines()
             lines[0] = "x" * 513
             write_lines(path, lines)
@@ -156,7 +170,7 @@ class RandomWordlistBuildTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             source = self.copy_source(Path(temp_dir))
-            path = source / "theme_mood.txt"
+            path = source / "blocks" / "scene" / "theme_mood.txt"
             path.write_bytes(b"x" * (128 * 1024 + 1))
             with self.assertRaisesRegex(CatalogValidationError, "source limit"):
                 build_catalog(source)
@@ -171,7 +185,7 @@ class RandomWordlistBuildTests(unittest.TestCase):
                 item for item in before_entries if item["text"] == target_text
             )
 
-            path = source / "theme_mood.txt"
+            path = source / "blocks" / "scene" / "theme_mood.txt"
             lines = path.read_text(encoding="utf-8").splitlines()
             lines[0], lines[1] = lines[1], lines[0]
             write_lines(path, lines)

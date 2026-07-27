@@ -1,6 +1,9 @@
 import tempfile
+import threading
 import unittest
+import json
 from pathlib import Path
+from unittest.mock import patch
 
 
 import sys
@@ -11,11 +14,123 @@ from prompt_engine import PromptEngineError  # noqa: E402
 from vision_engine import (  # noqa: E402
     VisionEngineError,
     analyze_image_bytes,
+    extract_composition_reference,
+    normalize_analyzer_results,
+    run_analyzer,
     vision_model_status,
 )
 
 
 class VisionEngineTests(unittest.TestCase):
+    def test_composition_reference_extracts_only_the_five_allowed_fields(self):
+        result = extract_composition_reference(
+            {
+                "wd14": "1girl, medium shot, low angle, centered subject, shallow depth of field, rim light",
+                "florence": "a red-haired woman in a medium shot, rim light",
+            }
+        )
+
+        self.assertEqual(result["mode"], "advisory_reference")
+        self.assertEqual(
+            set(result["fields"]),
+            {"shotScale", "viewAngle", "subjectPosition", "depthOfField", "lighting"},
+        )
+        self.assertEqual(result["fields"]["shotScale"][0]["value"], "medium shot")
+        self.assertEqual(result["fields"]["shotScale"][0]["sources"], ["wd14", "florence"])
+        self.assertNotIn("1girl", json.dumps(result))
+        self.assertNotIn("red-haired", json.dumps(result))
+
+    def test_composition_reference_does_not_guess_from_generic_caption_text(self):
+        result = extract_composition_reference(
+            {"florence": "a woman standing beside a neon shop"}
+        )
+
+        self.assertTrue(all(not values for values in result["fields"].values()))
+
+    def test_normalizes_confirmed_uncertain_and_catalog_conflicts(self):
+        catalog = {
+            "schemaVersion": 1,
+            "version": "fixture-semantic-v1",
+            "sourceReview": {
+                "licenseReviewed": True,
+                "redistributionApproved": True,
+            },
+            "policy": {"lowFrequencyPostCount": 10},
+            "tags": [
+                {
+                    "canonical": "day",
+                    "aliases": ["daytime"],
+                    "implications": [],
+                    "postCount": 100,
+                    "category": "time",
+                },
+                {
+                    "canonical": "night",
+                    "aliases": [],
+                    "implications": [],
+                    "postCount": 100,
+                    "category": "time",
+                },
+            ],
+            "conflictRules": [
+                {"left": "day", "right": "night", "decision": "manual_decision"}
+            ],
+        }
+        with patch("vision_engine.load_catalog", return_value=catalog):
+            result = normalize_analyzer_results(
+                {
+                    "wd14": "daytime, blue hair",
+                    "florence": "day, night",
+                    "qwenvl": "night",
+                }
+            )
+
+        items = {item["tag"]: item for item in result["items"]}
+        self.assertEqual(result["catalogVersion"], "fixture-semantic-v1")
+        self.assertEqual(items["day"]["status"], "conflict")
+        self.assertEqual(items["day"]["sources"], ["wd14", "florence"])
+        self.assertEqual(items["night"]["status"], "conflict")
+        self.assertEqual(items["blue hair"]["status"], "uncertain")
+
+    def test_normalization_fails_closed_without_semantic_catalog(self):
+        with patch("vision_engine.load_catalog", return_value=None):
+            result = normalize_analyzer_results(
+                {"wd14": "blue hair", "florence": "blue hair"}
+            )
+
+        self.assertEqual(result["catalogStatus"], "unavailable")
+        self.assertEqual(result["items"][0]["status"], "confirmed")
+
+    def test_cancellation_terminates_the_active_worker_process(self):
+        class RunningProcess:
+            returncode = None
+
+            def __init__(self):
+                self.terminated = False
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                self.terminated = True
+                self.returncode = -15
+
+            def communicate(self, timeout=None):
+                return "", ""
+
+        process = RunningProcess()
+        cancel_event = threading.Event()
+        cancel_event.set()
+        with patch(
+            "vision_engine.vision_model_status",
+            return_value={"wd14": {"installed": True}},
+        ), patch("vision_engine.subprocess.Popen", return_value=process):
+            with self.assertRaises(VisionEngineError) as raised:
+                run_analyzer("wd14", "input.png", 1, cancel_event=cancel_event)
+
+        self.assertEqual(raised.exception.code, "vision_cancelled")
+        self.assertTrue(process.terminated)
+
     def test_real_image_bytes_flow_from_florence_into_local_decomposer(self):
         captured = {}
 

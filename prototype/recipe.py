@@ -15,8 +15,11 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
+from role_cards import RoleCardError, normalize_role_cards
+
 
 RECIPE_SCHEMA_VERSION = 1
+ROLE_CARD_RECIPE_SCHEMA_VERSION = 2
 RECIPE_KIND = "anima_prompt_recipe"
 
 PARAMETER_SOURCE_PRIORITY = (
@@ -945,7 +948,7 @@ def _normalize_object_list(value: object, label: str, maximum: int) -> list[dict
 
 
 def normalize_recipe(value: object) -> dict[str, Any]:
-    """Validate and canonicalize one complete Recipe schema-v1 value."""
+    """Validate schema-v1/v2 Recipes without implicitly migrating v1."""
 
     recipe = _mapping(value, "recipe")
     allowed = {
@@ -961,13 +964,17 @@ def normalize_recipe(value: object) -> dict[str, Any]:
         "imageRefs",
         "sourceRefs",
         "metadata",
+        "roleCards",
     }
     _reject_unknown_keys(recipe, allowed, "recipe")
     kind = recipe.get("kind", RECIPE_KIND)
     if kind != RECIPE_KIND:
         raise RecipeValidationError(f"unsupported recipe kind: {kind}")
     version = recipe.get("schemaVersion")
-    if isinstance(version, bool) or version != RECIPE_SCHEMA_VERSION:
+    if (
+        isinstance(version, bool)
+        or version not in {RECIPE_SCHEMA_VERSION, ROLE_CARD_RECIPE_SCHEMA_VERSION}
+    ):
         raise RecipeValidationError(
             f"unsupported recipe schemaVersion: {version}"
         )
@@ -978,9 +985,11 @@ def normalize_recipe(value: object) -> dict[str, Any]:
     if not isinstance(metadata, Mapping):
         raise RecipeValidationError("metadata must be an object")
     source_refs = recipe.get("sourceRefs", [])
-    return {
+    if version == RECIPE_SCHEMA_VERSION and "roleCards" in recipe:
+        raise RecipeValidationError("roleCards requires Recipe schemaVersion 2")
+    result = {
         "kind": RECIPE_KIND,
-        "schemaVersion": RECIPE_SCHEMA_VERSION,
+        "schemaVersion": version,
         "model": _normalize_model(recipe.get("model")),
         "prompts": _normalize_prompts(recipe.get("prompts")),
         "blocks": normalize_blocks(recipe.get("blocks")),
@@ -998,6 +1007,12 @@ def normalize_recipe(value: object) -> dict[str, Any]:
         "sourceRefs": _normalize_object_list(source_refs, "sourceRefs", 10_000),
         "metadata": _json_copy(metadata, "metadata"),
     }
+    if version == ROLE_CARD_RECIPE_SCHEMA_VERSION:
+        try:
+            result["roleCards"] = normalize_role_cards(recipe.get("roleCards"))
+        except RoleCardError as error:
+            raise RecipeValidationError(str(error)) from error
+    return result
 
 
 def build_recipe(
@@ -1145,7 +1160,7 @@ def project_recipe_to_prompt_version(
             )
     projection_metadata.update(
         {
-            "recipeSchemaVersion": RECIPE_SCHEMA_VERSION,
+            "recipeSchemaVersion": normalized["schemaVersion"],
             "recipeHash": recipe_hash(normalized),
             "recipe": deepcopy(normalized),
         }
@@ -1191,9 +1206,9 @@ def extract_recipe_from_prompt_version(
 
     version = _mapping(value, "prompt version")
     metadata = _mapping(version.get("metadata"), "prompt version metadata")
-    if metadata.get("recipeSchemaVersion") != RECIPE_SCHEMA_VERSION:
-        raise RecipeValidationError("prompt version has no supported embedded recipe")
     normalized = normalize_recipe(metadata.get("recipe"))
+    if metadata.get("recipeSchemaVersion") != normalized["schemaVersion"]:
+        raise RecipeValidationError("prompt version has no supported embedded recipe")
     if verify_hash:
         expected = _text(
             metadata.get("recipeHash"),

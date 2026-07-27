@@ -8,6 +8,8 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -17,6 +19,8 @@ from prompt_engine import (
     decompose_text_prompt,
     translate_pending_items,
 )
+from tag_semantics import load_catalog
+from generation_match import prompt_match_diagnostics
 from vision_worker_joycaption import resolve_joycaption_model
 from vision_worker_qwenvl import qwen_model_status
 
@@ -76,6 +80,165 @@ ANALYZER_LABELS = {
     "joycaption": "JoyCaption",
     "qwenvl": "Qwen3-VL",
 }
+
+_COMPOSITION_REFERENCE_PATTERNS = {
+    "shotScale": (
+        "extreme close-up",
+        "close-up",
+        "medium shot",
+        "cowboy shot",
+        "full body",
+        "wide shot",
+        "long shot",
+    ),
+    "viewAngle": (
+        "eye level",
+        "low angle",
+        "high angle",
+        "from above",
+        "from below",
+        "bird's-eye view",
+        "worm's-eye view",
+    ),
+    "subjectPosition": (
+        "centered subject",
+        "centered composition",
+        "lower third",
+        "upper third",
+        "left third",
+        "right third",
+        "foreground subject",
+        "background subject",
+    ),
+    "depthOfField": (
+        "shallow depth of field",
+        "deep depth of field",
+        "deep focus",
+        "bokeh",
+        "blurry background",
+    ),
+    "lighting": (
+        "soft light",
+        "hard light",
+        "rim light",
+        "backlit",
+        "golden hour",
+        "neon lighting",
+        "dramatic lighting",
+        "low key",
+        "high key",
+    ),
+}
+
+
+def _raw_tag_candidates(raw: str) -> list[str]:
+    """Extract bounded, literal candidates without inventing visual claims."""
+
+    candidates = []
+    seen = set()
+    for part in re.split(r"[,;\n\r，；]+", raw):
+        candidate = part.strip().strip("-•* ").strip()
+        if candidate.startswith("(") and candidate.endswith(")"):
+            candidate = candidate[1:-1].strip()
+        key = candidate.casefold()
+        if not candidate or len(candidate) > 160 or key in seen:
+            continue
+        seen.add(key)
+        candidates.append(candidate)
+    return candidates
+
+
+def normalize_analyzer_results(raw_results: dict[str, str]) -> dict:
+    """Classify literal analyzer agreement, retaining all source evidence.
+
+    A single analyzer is never treated as confirmation.  Conflict detection is
+    available only through the locally reviewed semantic catalog; absent or
+    invalid catalogs fail closed to ``uncertain`` rather than guessing.
+    """
+
+    catalog = load_catalog()
+    aliases = {}
+    conflicts: dict[str, list[dict]] = {}
+    if catalog is not None:
+        for record in catalog["tags"]:
+            aliases[record["canonical"]] = record["canonical"]
+            aliases.update(
+                {alias: record["canonical"] for alias in record["aliases"]}
+            )
+        for rule in catalog["conflictRules"]:
+            conflicts.setdefault(rule["left"], []).append(rule)
+            conflicts.setdefault(rule["right"], []).append(rule)
+
+    items: dict[str, dict] = {}
+    for analyzer_id, raw in raw_results.items():
+        for candidate in _raw_tag_candidates(raw):
+            literal = candidate.casefold()
+            canonical = aliases.get(literal, literal)
+            item = items.setdefault(
+                canonical,
+                {
+                    "tag": canonical,
+                    "sources": [],
+                    "rawTags": [],
+                    "supportCount": 0,
+                    "conflicts": [],
+                },
+            )
+            if analyzer_id not in item["sources"]:
+                item["sources"].append(analyzer_id)
+            if candidate not in item["rawTags"]:
+                item["rawTags"].append(candidate)
+
+    selected = set(items)
+    for canonical, item in items.items():
+        for rule in conflicts.get(canonical, []):
+            counterpart = rule["right"] if rule["left"] == canonical else rule["left"]
+            if counterpart in selected:
+                item["conflicts"].append(
+                    {
+                        "tag": counterpart,
+                        "decision": rule["decision"],
+                    }
+                )
+        item["supportCount"] = len(item["sources"])
+        item["status"] = (
+            "conflict"
+            if item["conflicts"]
+            else "confirmed"
+            if item["supportCount"] >= 2
+            else "uncertain"
+        )
+
+    return {
+        "catalogStatus": "ready" if catalog is not None else "unavailable",
+        "catalogVersion": catalog["version"] if catalog is not None else None,
+        "items": list(items.values()),
+    }
+
+
+def extract_composition_reference(raw_results: dict[str, str]) -> dict:
+    """Extract only compositional evidence from raw analyzer text.
+
+    This deliberately returns no subject identity, clothing, setting, or other
+    prompt content.  It is a reference aid, not an automatic prompt rewrite.
+    """
+
+    fields = {field: [] for field in _COMPOSITION_REFERENCE_PATTERNS}
+    seen = {field: set() for field in _COMPOSITION_REFERENCE_PATTERNS}
+    for analyzer_id, raw in raw_results.items():
+        text = raw.casefold()
+        for field, patterns in _COMPOSITION_REFERENCE_PATTERNS.items():
+            for pattern in patterns:
+                if pattern not in text:
+                    continue
+                if pattern in seen[field]:
+                    next(
+                        item for item in fields[field] if item["value"] == pattern
+                    )["sources"].append(analyzer_id)
+                else:
+                    seen[field].add(pattern)
+                    fields[field].append({"value": pattern, "sources": [analyzer_id]})
+    return {"mode": "advisory_reference", "fields": fields}
 
 
 @dataclass(frozen=True)
@@ -214,6 +377,8 @@ def run_analyzer(
     analyzer_id: str,
     image_path: str | Path,
     timeout: float | None = None,
+    *,
+    cancel_event: threading.Event | None = None,
 ) -> str:
     if analyzer_id not in ANALYZERS:
         raise VisionEngineError(
@@ -231,29 +396,50 @@ def run_analyzer(
     spec = ANALYZERS[analyzer_id]
     failed = []
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             _worker_command(analyzer_id, image_path),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout or spec.timeout,
-            check=False,
         )
-    except subprocess.TimeoutExpired as error:
-        raise VisionEngineError(
-            f"{analyzer_id} 识图超时",
-            "vision_worker_timeout",
-            504,
-        ) from error
     except OSError as error:
         raise VisionEngineError(
             f"{analyzer_id} 识图进程无法启动",
             "vision_worker_failed",
             503,
         ) from error
-    if completed.returncode != 0:
-        detail = completed.stderr.strip()[-1200:] or "未知错误"
+    deadline = time.monotonic() + (timeout or spec.timeout)
+    while process.poll() is None:
+        if cancel_event and cancel_event.is_set():
+            process.terminate()
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate(timeout=5)
+            raise VisionEngineError(
+                f"{analyzer_id} 识图已取消，已终止本地 worker 进程",
+                "vision_cancelled",
+                409,
+            )
+        if time.monotonic() >= deadline:
+            process.terminate()
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate(timeout=5)
+            raise VisionEngineError(
+                f"{analyzer_id} 识图超时",
+                "vision_worker_timeout",
+                504,
+            )
+        time.sleep(0.05)
+    stdout, stderr = process.communicate()
+    if process.returncode != 0:
+        detail = stderr.strip()[-1200:] or "未知错误"
         if "out of memory" in detail.casefold():
             detail = "CUDA 显存不足；请关闭 ComfyUI 或本地文本 LLM 后重试"
         raise VisionEngineError(
@@ -262,7 +448,7 @@ def run_analyzer(
             502,
         )
     try:
-        payload = json.loads(completed.stdout.strip().splitlines()[-1])
+        payload = json.loads(stdout.strip().splitlines()[-1])
         result = str(payload["result"]).strip()
     except (IndexError, KeyError, TypeError, json.JSONDecodeError) as error:
         raise VisionEngineError(
@@ -288,11 +474,13 @@ def _call_runner(
     analyzer_id: str,
     image_path: Path,
     timeout: float,
+    cancel_event: threading.Event | None = None,
 ) -> str:
-    parameters = inspect.signature(runner).parameters.values()
+    parameters = inspect.signature(runner).parameters
+    parameter_values = parameters.values()
     positional = [
         parameter
-        for parameter in parameters
+        for parameter in parameter_values
         if parameter.kind
         in (
             inspect.Parameter.POSITIONAL_ONLY,
@@ -301,11 +489,19 @@ def _call_runner(
     ]
     has_varargs = any(
         parameter.kind == inspect.Parameter.VAR_POSITIONAL
-        for parameter in parameters
+        for parameter in parameters.values()
     )
+    accepts_cancel_event = (
+        "cancel_event" in parameters
+        or any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+    )
+    kwargs = {"cancel_event": cancel_event} if accepts_cancel_event else {}
     if has_varargs or len(positional) >= 3:
-        return runner(analyzer_id, image_path, timeout)
-    return runner(image_path, timeout)
+        return runner(analyzer_id, image_path, timeout, **kwargs)
+    return runner(image_path, timeout, **kwargs)
 
 
 def _repair_translations(
@@ -378,6 +574,8 @@ def analyze_image_bytes(
     runner: Callable = run_analyzer,
     decomposer: Callable = decompose_text_prompt,
     translator: Callable = translate_pending_items,
+    cancel_event: threading.Event | None = None,
+    expected_prompt: str | None = None,
 ) -> dict:
     requested = {
         str(item).strip()
@@ -407,13 +605,26 @@ def analyze_image_bytes(
         image_path = Path(folder) / f"input{suffix}"
         image_path.write_bytes(image_bytes)
         for analyzer_id in selected:
+            if cancel_event and cancel_event.is_set():
+                raise VisionEngineError(
+                    "识图已取消；未启动后续分析器",
+                    "vision_cancelled",
+                    409,
+                )
             try:
                 raw = _call_runner(
                     runner,
                     analyzer_id,
                     image_path,
                     ANALYZERS[analyzer_id].timeout,
+                    cancel_event,
                 )
+                if cancel_event and cancel_event.is_set():
+                    raise VisionEngineError(
+                        "识图已取消；不再整理本次结果",
+                        "vision_cancelled",
+                        409,
+                    )
                 raw_results[analyzer_id] = raw
                 analyzer_states.append(
                     {"id": analyzer_id, "status": "ready", "raw": raw}
@@ -455,8 +666,15 @@ def analyze_image_bytes(
     except PromptEngineError as error:
         checks = structured.setdefault("checks", {})
         checks["translationWarning"] = error.message
-    return {
+    result = {
         **structured,
         "rawResults": raw_results,
         "analyzers": analyzer_states,
+        "analysisConsensus": normalize_analyzer_results(raw_results),
+        "compositionReference": extract_composition_reference(raw_results),
     }
+    if expected_prompt is not None:
+        result["promptMatchDiagnostics"] = prompt_match_diagnostics(
+            expected_prompt, result["analysisConsensus"]
+        )
+    return result

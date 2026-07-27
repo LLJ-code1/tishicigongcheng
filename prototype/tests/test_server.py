@@ -18,7 +18,7 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 from unittest.mock import patch
 
-from PIL import Image
+from PIL import Image, PngImagePlugin
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -27,8 +27,12 @@ from server import (  # noqa: E402
     MAX_JSON_BODY_BYTES,
     PROMPT_TEMPLATES,
     PromptStudioHandler,
+    _finish_vision_task,
+    _register_vision_task,
+    cancel_vision_task,
     map_artist,
     map_character,
+    enrich_workspace_commit_payload,
     normalize_search_result,
     process_model_adapted_decomposition_request,
     process_recipe_resolve_request,
@@ -42,9 +46,13 @@ from server import (  # noqa: E402
     process_text_regenerate_blocks_request,
     process_text_translate_pending_request,
     process_vision_analyze_request,
+    process_generation_result_inspect_request,
+    process_role_card_edit_request,
+    process_relationship_edit_request,
     read_prompt_template,
 )
 import db  # noqa: E402
+import managed_assets  # noqa: E402
 import creative_director  # noqa: E402
 import creative_intake  # noqa: E402
 import model_research  # noqa: E402
@@ -59,6 +67,22 @@ def make_png_bytes() -> bytes:
     output = io.BytesIO()
     Image.new("RGB", (2, 2), color=(12, 34, 56)).save(output, format="PNG")
     return output.getvalue()
+
+
+def v2_role_recipe() -> dict:
+    item = process_recipe_resolve_request({"prompts": {"positiveEn": "1girl"}, "blocks": []})["recipe"]
+    item["schemaVersion"] = 2
+    item["roleCards"] = {
+        "schemaVersion": 1,
+        "roles": [
+            {"id": "role-a", "name": "A", "tags": ["red hair"], "locked": False},
+            {"id": "role-b", "name": "B", "tags": ["blue hair"], "locked": False},
+        ],
+        "relationships": [
+            {"id": "a-b", "fromRoleId": "role-a", "toRoleId": "role-b", "kind": "friends", "description": "together", "locked": True}
+        ],
+    }
+    return item
 
 
 def decomposition_current() -> dict:
@@ -330,6 +354,56 @@ class ModelAdaptedDecompositionProcessorTests(unittest.TestCase):
 
 
 class ExactProfileRecipeResolveTests(unittest.TestCase):
+    def test_resolve_keeps_explicit_role_cards_as_recipe_v2(self):
+        cards = v2_role_recipe()["roleCards"]
+        resolved = process_recipe_resolve_request(
+            {"prompts": {"positiveEn": "1girl"}, "blocks": [], "roleCards": cards}
+        )
+        self.assertEqual(resolved["recipe"]["schemaVersion"], 2)
+        self.assertEqual(resolved["recipe"]["roleCards"], cards)
+
+    def test_workspace_enrichment_projects_explicit_role_cards_as_v2(self):
+        cards = v2_role_recipe()["roleCards"]
+        payload = {
+            "project": {"id": "role-project", "name": "Roles", "status": "draft"},
+            "version": {
+                "id": "role-version",
+                "baseVersion": 0,
+                "source": "manual",
+                "positiveEn": "1girl",
+                "positiveZh": "",
+                "negativeEn": "",
+                "negativeZh": "",
+                "blocks": [],
+                "metadata": {"roleCards": cards},
+            },
+        }
+        enriched = enrich_workspace_commit_payload(payload)
+        self.assertEqual(enriched["version"]["metadata"]["recipeSchemaVersion"], 2)
+        self.assertEqual(enriched["version"]["metadata"]["recipe"]["roleCards"], cards)
+
+    def test_resolve_returns_advisory_composition_density_and_abstract_checks(self):
+        result = process_recipe_resolve_request(
+            {
+                "prompts": {
+                    "positiveEn": "beautiful, amazing, 1girl",
+                    "positiveZh": "",
+                    "negativeEn": "",
+                    "negativeZh": "",
+                },
+                "blocks": [
+                    {"id": "composition", "en": "close-up, full body", "zh": ""}
+                ],
+            }
+        )
+
+        diagnostics = result["diagnostics"]
+        self.assertEqual(diagnostics["tagDensity"]["status"], "low")
+        self.assertEqual(diagnostics["abstractTerms"], ["beautiful", "amazing"])
+        self.assertEqual(diagnostics["compositionConflicts"][0]["group"], "shotScale")
+        self.assertIsNone(diagnostics["tokenCount"])
+        self.assertEqual(diagnostics["subjectPosition"]["status"], "subject_missing")
+
     def test_resolve_uses_only_the_requested_activated_profile_snapshot(self):
         profile = model_profiles.load_model_profile()
         calls = []
@@ -844,6 +918,146 @@ class AnimaDexAdapterTests(unittest.TestCase):
         self.assertEqual(captured["analyzers"], ["florence"])
         self.assertEqual(captured["model"], "local-model")
 
+    def test_vision_task_cancellation_reaches_the_running_engine(self):
+        task_id = "vision-test-cancel"
+        cancel_event = _register_vision_task(task_id)
+        image_bytes = make_png_bytes()
+        try:
+            self.assertTrue(cancel_vision_task(task_id))
+            captured = {}
+
+            def fake_engine(*args, cancel_event=None):
+                captured["cancelled"] = cancel_event.is_set()
+                return {"blocks": []}
+
+            result = process_vision_analyze_request(
+                {
+                    "filename": "reference.png",
+                    "mimeType": "image/png",
+                    "dataBase64": base64.b64encode(image_bytes).decode("ascii"),
+                    "analyzerIds": ["florence"],
+                },
+                settings_payload={},
+                engine=fake_engine,
+                cancel_event=cancel_event,
+            )
+        finally:
+            _finish_vision_task(task_id)
+
+        self.assertEqual(result, {"blocks": []})
+        self.assertTrue(captured["cancelled"])
+        self.assertFalse(cancel_vision_task(task_id))
+
+    def test_vision_analysis_passes_bounded_expected_prompt_for_advisory_matching(self):
+        captured = {}
+        image_bytes = make_png_bytes()
+
+        def fake_engine(*args, expected_prompt=None):
+            captured["expectedPrompt"] = expected_prompt
+            return {"blocks": []}
+
+        process_vision_analyze_request(
+            {
+                "filename": "reference.png",
+                "mimeType": "image/png",
+                "dataBase64": base64.b64encode(image_bytes).decode("ascii"),
+                "analyzerIds": ["florence"],
+                "expectedPrompt": "pink hair, library",
+            },
+            settings_payload={},
+            engine=fake_engine,
+        )
+
+        self.assertEqual(captured["expectedPrompt"], "pink hair, library")
+
+    def test_generation_result_inspection_is_png_only_and_does_not_persist(self):
+        recipe = process_recipe_resolve_request(
+            {
+                "prompts": {
+                    "positiveEn": "1girl",
+                    "positiveZh": "",
+                    "negativeEn": "bad hands",
+                    "negativeZh": "",
+                },
+                "blocks": [],
+            }
+        )["recipe"]
+        infotext = "1girl\nNegative prompt: bad hands\nSteps: 30, Sampler: Euler, Schedule type: Normal, CFG scale: 5.5, Seed: 0, Size: 1024x1024"
+        image = Image.new("RGB", (2, 2), "white")
+        info = PngImagePlugin.PngInfo()
+        info.add_text("parameters", infotext)
+        encoded = io.BytesIO()
+        image.save(encoded, format="PNG", pnginfo=info)
+
+        result = process_generation_result_inspect_request(
+            {
+                "filename": "result.png",
+                "mimeType": "image/png",
+                "dataBase64": base64.b64encode(encoded.getvalue()).decode("ascii"),
+                "recipe": recipe,
+            }
+        )
+
+        self.assertEqual(result["source"], "a1111")
+        self.assertTrue(result["metadataAvailable"])
+        with self.assertRaisesRegex(ValueError, "PNG"):
+            process_generation_result_inspect_request(
+                {
+                    "filename": "result.jpg",
+                    "mimeType": "image/jpeg",
+                    "dataBase64": base64.b64encode(encoded.getvalue()).decode("ascii"),
+                    "recipe": recipe,
+                }
+            )
+
+    def test_recipe_resolve_keeps_inline_variant_template_and_selection(self):
+        result = process_recipe_resolve_request(
+            {
+                "prompts": {
+                    "positiveEn": "{red|blue} dress",
+                    "positiveZh": "",
+                    "negativeEn": "",
+                    "negativeZh": "",
+                },
+                "inlineVariantSelections": {"positiveEn": [1]},
+                "blocks": [],
+            }
+        )
+
+        recipe = result["recipe"]
+        self.assertEqual(recipe["prompts"]["positiveEn"], "blue dress")
+        self.assertEqual(
+            recipe["metadata"]["inlineVariants"]["fields"]["positiveEn"]["variants"][0]["selectedIndex"],
+            1,
+        )
+
+    def test_workspace_commit_rejects_malicious_wordlist_proposals_before_writing(self):
+        payload = {
+            "operationId": "proposal-adversarial",
+            "createProject": True,
+            "project": {
+                "id": "project-proposal",
+                "name": "Proposal",
+                "mode": "text",
+                "status": "draft",
+                "metadata": {
+                    "wordlistProposals": [
+                        {
+                            "id": "proposal-one",
+                            "categoryId": "scene_environment",
+                            "targetBlock": "scene",
+                            "text": "rainy, library",
+                            "status": "submitted",
+                        }
+                    ]
+                },
+            },
+            "version": None,
+        }
+
+        with self.assertRaisesRegex(ValueError, "printable ASCII"):
+            enrich_workspace_commit_payload(payload)
+
     def test_vision_analysis_rejects_invalid_or_empty_image_data(self):
         for payload in (
             {},
@@ -915,6 +1129,43 @@ class AnimaDexAdapterTests(unittest.TestCase):
         self.assertIn('"/api/vision/analyze"', source)
 
 
+class RoleCardServerContractTests(unittest.TestCase):
+    def test_role_edit_requires_explicit_confirmation_then_returns_v2_recipe(self):
+        payload = {
+            "recipe": v2_role_recipe(),
+            "targetRoleId": "role-a",
+            "patch": {"name": "Changed"},
+            "confirmAffected": False,
+        }
+        preview = process_role_card_edit_request(payload)
+        self.assertFalse(preview["applied"])
+        self.assertTrue(preview["requiresConfirmation"])
+        payload["confirmAffected"] = True
+        applied = process_role_card_edit_request(payload)
+        self.assertTrue(applied["applied"])
+        self.assertEqual(applied["recipe"]["schemaVersion"], 2)
+        self.assertEqual(applied["recipe"]["roleCards"]["roles"][0]["name"], "Changed")
+
+    def test_relationship_edit_requires_confirmation_then_returns_v2_recipe(self):
+        recipe_value = v2_role_recipe()
+        recipe_value["roleCards"]["relationships"][0]["locked"] = False
+        payload = {
+            "recipe": recipe_value,
+            "relationshipId": "a-b",
+            "patch": {"description": "walking together"},
+            "confirmAffected": False,
+        }
+        preview = process_relationship_edit_request(payload)
+        self.assertFalse(preview["applied"])
+        payload["confirmAffected"] = True
+        applied = process_relationship_edit_request(payload)
+        self.assertTrue(applied["applied"])
+        self.assertEqual(
+            applied["recipe"]["roleCards"]["relationships"][0]["description"],
+            "walking together",
+        )
+
+
 class PromptStudioServerTests(unittest.TestCase):
     """Exercise malformed requests and direct static-file access at the HTTP boundary."""
 
@@ -935,6 +1186,10 @@ class PromptStudioServerTests(unittest.TestCase):
         self.api_db_path = self.root / "data" / "api-test.db"
         self.db_path_patch = patch("db.DEFAULT_DB_PATH", self.api_db_path)
         self.db_path_patch.start()
+        self.asset_root_patch = patch.object(
+            managed_assets, "DEFAULT_ASSET_ROOT", self.root / "managed-assets"
+        )
+        self.asset_root_patch.start()
         db.init_db(self.api_db_path)
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), PromptStudioHandler)
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
@@ -946,6 +1201,7 @@ class PromptStudioServerTests(unittest.TestCase):
         self.thread.join(timeout=2)
         self.httpd.server_close()
         self.db_path_patch.stop()
+        self.asset_root_patch.stop()
         self.root_patch.stop()
         self.tempdir.cleanup()
 
@@ -3503,6 +3759,121 @@ class PromptStudioServerTests(unittest.TestCase):
         self.assertEqual(recipe["model"]["versionId"], 3004063)
         self.assertNotIn("safe", recipe["prompts"]["positiveEn"].split(", "))
 
+    def test_managed_asset_import_dedupe_link_unlink_and_confirmed_delete(self):
+        image_bytes = make_png_bytes()
+        payload = {
+            "filename": "result.png",
+            "mimeType": "image/png",
+            "dataBase64": base64.b64encode(image_bytes).decode("ascii"),
+        }
+        status, imported = self.json_request("/api/managed-assets/import", payload)
+        self.assertEqual(status, 201)
+        asset = imported["item"]
+        replay_status, replay = self.json_request("/api/managed-assets/import", payload)
+        self.assertEqual(replay_status, 200)
+        self.assertFalse(replay["created"])
+        self.assertEqual(replay["item"]["id"], asset["id"])
+
+        with urlopen(f"{self.base_url}/api/managed-assets/{asset['id']}/thumbnail") as response:
+            self.assertEqual(response.headers.get_content_type(), "image/jpeg")
+            self.assertGreater(len(response.read()), 20)
+
+        commit = {
+            "operationId": "managed-asset-http-commit",
+            "createProject": True,
+            "project": {"id": "project-http-asset", "name": "Asset linked"},
+            "version": {
+                "id": "version-http-asset",
+                "baseVersion": 0,
+                "positiveEn": "one",
+                "metadata": {"managedAssetIds": [asset["id"]]},
+            },
+        }
+        self.json_request("/api/workspace/commit", commit)
+        denied = self.assert_http_error_json(
+            Request(
+                f"{self.base_url}/api/managed-assets/{asset['id']}?confirmLocalFileDeletion=1",
+                headers={"Content-Type": "application/json"},
+                method="DELETE",
+            ),
+            409,
+        )
+        self.assertIn("引用", denied["error"])
+        unlink_status, unlink = self.json_request(
+            f"/api/managed-assets/{asset['id']}/unlink",
+            {"projectId": "project-http-asset", "version": 1},
+        )
+        self.assertEqual(unlink_status, 200)
+        self.assertTrue(unlink["unlinked"])
+        missing_confirmation = self.assert_http_error_json(
+            Request(
+                f"{self.base_url}/api/managed-assets/{asset['id']}",
+                headers={"Content-Type": "application/json"},
+                method="DELETE",
+            ),
+            400,
+        )
+        self.assertIn("confirmLocalFileDeletion", missing_confirmation["error"])
+        request = Request(
+            f"{self.base_url}/api/managed-assets/{asset['id']}?confirmLocalFileDeletion=1",
+            headers={"Content-Type": "application/json"},
+            method="DELETE",
+        )
+        with urlopen(request) as response:
+            deleted = json.loads(response.read().decode("utf-8"))
+        self.assertTrue(deleted["deleted"])
+        with urlopen(f"{self.base_url}/api/managed-assets") as response:
+            self.assertEqual(json.loads(response.read().decode("utf-8"))["items"], [])
+
+    def test_experiment_matrix_plan_is_deterministic_and_workspace_validates_it(self):
+        payload = {
+            "name": "Sampler control",
+            "version": 1,
+            "attributionSeed": 77,
+            "design": "one-factor",
+            "variables": [
+                {"key": "sampler", "values": ["Euler", "DPM++ 2M"]},
+                {"key": "cfgScale", "values": [5, 7]},
+            ],
+        }
+        status, result = self.json_request("/api/experiments/matrix/plan", payload)
+        self.assertEqual(status, 201)
+        matrix = result["item"]
+        self.assertEqual(result["limits"]["execution"], "plan_only")
+        self.assertTrue(all(cell["generationSeed"] == 77 for cell in matrix["cells"]))
+        commit = {
+            "operationId": "matrix-http-commit",
+            "createProject": True,
+            "project": {
+                "id": "project-http-matrix",
+                "name": "Matrix",
+                "metadata": {"experimentMatricesByVersion": {"1": [matrix]}},
+            },
+            "version": {
+                "id": "version-http-matrix",
+                "baseVersion": 0,
+                "positiveEn": "one",
+            },
+        }
+        _, saved = self.json_request("/api/workspace/commit", commit)
+        stored = saved["item"]["project"]["metadata"]["experimentMatricesByVersion"]
+        self.assertEqual(stored["1"][0]["id"], matrix["id"])
+        matrix["cells"][0]["parameters"] = {"sampler": "forged"}
+        commit["operationId"] = "matrix-http-forged"
+        commit["project"]["baseUpdatedAt"] = saved["item"]["project"]["updatedAt"]
+        commit["createProject"] = False
+        commit["version"] = None
+        error = self.assert_http_error_json(
+            Request(
+                f"{self.base_url}/api/workspace/commit",
+                data=json.dumps(commit).encode("utf-8"),
+                headers={"Content-Type": "application/json", "Idempotency-Key": "matrix-http-forged"},
+                method="POST",
+            ),
+            400,
+        )
+        self.assertIn("格子参数", error["error"])
+
     def test_profile_and_random_catalog_are_readable_but_runtime_is_guarded(self):
         with urlopen(f"{self.base_url}/api/model-profiles/anima-1.1-v1") as response:
             profile = json.loads(response.read().decode("utf-8"))["item"]
@@ -3522,6 +3893,32 @@ class PromptStudioServerTests(unittest.TestCase):
             409,
         )
         self.assertEqual(error["code"], "random_catalog_not_release_ready")
+
+    def test_project_list_filters_and_insights_are_read_only(self):
+        project = db.create_project(
+            {"id": "project-insight", "name": "Rain Board", "status": "draft"},
+            self.api_db_path,
+        )
+        db.create_prompt_version(
+            project["id"],
+            {
+                "positiveEn": "rain",
+                "metadata": {
+                    "recipe": {
+                        "model": {"id": "anima-1.1-v1"},
+                        "loras": [{"profileId": "lora-rain"}],
+                    }
+                },
+            },
+            self.api_db_path,
+        )
+        with urlopen(f"{self.base_url}/api/projects?q=Rain&status=draft") as response:
+            items = json.loads(response.read().decode("utf-8"))["items"]
+        self.assertEqual([item["id"] for item in items], ["project-insight"])
+        with urlopen(f"{self.base_url}/api/project-insights") as response:
+            insights = json.loads(response.read().decode("utf-8"))["item"]
+        self.assertEqual(insights["models"][0], {"id": "anima-1.1-v1", "useCount": 1})
+        self.assertEqual(insights["policy"], "historical_candidates_only")
 
     def test_backup_export_inspect_and_isolated_restore_flow(self):
         project = db.create_project(

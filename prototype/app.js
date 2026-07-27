@@ -1452,6 +1452,9 @@
       },
       manualParameterKeys: [],
       randomPlan: null,
+      roleCards: null,
+      wordlistProposals: [],
+      generationEvidenceByVersion: {},
       randomCatalog: null,
       randomCatalogStatus: "idle",
       instructionHistory: [],
@@ -1467,6 +1470,7 @@
         characters: [],
         artists: [],
         snippets: [],
+        negative_presets: [],
       }),
       blocks: [],
       appliedBlocks: [],
@@ -1479,6 +1483,10 @@
       analysisComplete: false,
       activeRawResult: "merged",
       rawMergedResult: "",
+      analysisConsensus: { catalogStatus: "unavailable", items: [] },
+      compositionReference: { mode: "advisory_reference", fields: {} },
+      promptMatchDiagnostics: null,
+      subjectPositionDiagnostic: null,
       output: {
         positiveEn: "",
         positiveZh: "",
@@ -1563,6 +1571,7 @@
     state.dirtyBlockIds = [];
     state.previewOutput = null;
     state.output = emptyOutput();
+    state.subjectPositionDiagnostic = null;
     state.outputChecks = {
       preservedUserIntent: true,
       bilingualAligned: true,
@@ -1573,6 +1582,7 @@
     state.pendingChange = null;
     state.recipeHash = "";
     state.randomPlan = null;
+    state.roleCards = null;
     state.instructionHistory = [];
     state.sourceRefs = [];
     state.loras = [];
@@ -1803,6 +1813,18 @@
       ...group,
       rows: groups[group.id],
     }));
+  }
+
+  function completeBriefPrompt(brief) {
+    const facts = [
+      ...(Array.isArray(brief?.items) ? brief.items : []),
+      ...(Array.isArray(brief?.aiAdditions) ? brief.aiAdditions : []),
+    ]
+      .map((item) =>
+        typeof item === "string" ? item.trim() : String(item?.text || "").trim()
+      )
+      .filter(Boolean);
+    return facts.length ? facts.join("\n") : String(brief?.summary || "").trim();
   }
 
   function buildBriefRevisionMessage(item) {
@@ -2811,6 +2833,9 @@
     next.creativeIntake = projectMetadataIsCurrent
       ? normalizeCreativeIntake(metadata.creativeIntake)
       : emptyCreativeIntake();
+    next.generationEvidenceByVersion = projectMetadataIsCurrent
+      ? normalizeGenerationEvidenceByVersion(metadata.generationEvidenceByVersion)
+      : {};
     const persistedResearch = safeObject(metadata.modelResearch);
     next.modelResearch = {
       ...emptyModelResearch(),
@@ -2881,6 +2906,13 @@
     next.randomPlan = latestRecipe.randomPlan
       ? clone(latestRecipe.randomPlan)
       : null;
+    next.roleCards = latestRecipe.schemaVersion === 2 && latestRecipe.roleCards
+      ? clone(latestRecipe.roleCards)
+      : null;
+    next.wordlistProposals =
+      projectMetadataIsCurrent && Array.isArray(metadata.wordlistProposals)
+        ? clone(metadata.wordlistProposals)
+        : [];
     next.instructionHistory = Array.isArray(latestRecipe.instructionHistory)
       ? clone(latestRecipe.instructionHistory)
       : [];
@@ -2911,6 +2943,7 @@
     next.blocks = latest ? clone(latest.blocks) : [];
     next.appliedBlocks = latest ? clone(latest.blocks) : [];
     next.outputChecks = clone(safeObject(latestMetadata.outputChecks));
+    next.subjectPositionDiagnostic = null;
     next.dirtyBlockIds = [];
     next.previewOutput = null;
     next.selectedVariantBlockIds = [];
@@ -2996,6 +3029,12 @@
         imageName: state.imageName,
         creativeIntake: normalizeCreativeIntake(state.creativeIntake),
         modelResearch: modelResearchPersistenceMetadata(state.modelResearch),
+        wordlistProposals: Array.isArray(state.wordlistProposals)
+          ? clone(state.wordlistProposals)
+          : [],
+        generationEvidenceByVersion: normalizeGenerationEvidenceByVersion(
+          state.generationEvidenceByVersion
+        ),
         workspaceBaseVersion: Number.isSafeInteger(state.version)
           ? state.version
           : 0,
@@ -3009,6 +3048,48 @@
       payload.baseUpdatedAt = state.projectUpdatedAt;
     }
     return payload;
+  }
+
+  function normalizeGenerationEvidenceByVersion(value) {
+    const result = {};
+    for (const [version, entry] of Object.entries(safeObject(value))) {
+      if (!/^[1-9][0-9]*$/.test(version)) continue;
+      const item = safeObject(entry);
+      const source = String(item.source || "manual").slice(0, 64);
+      const observedAt = String(item.observedAt || "").slice(0, 64);
+      const actual = safeObject(item.actual);
+      const assetId = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$/.test(
+        String(item.assetId || "")
+      ) ? String(item.assetId) : "";
+      result[version] = {
+        source,
+        observedAt,
+        ...(assetId ? { assetId } : {}),
+        actual: {
+          positivePrompt: String(actual.positivePrompt || "").slice(0, 20_000),
+          negativePrompt: String(actual.negativePrompt || "").slice(0, 20_000),
+          sampler: String(actual.sampler || "").slice(0, 256),
+          scheduler: String(actual.scheduler || "").slice(0, 256),
+          steps: Number.isFinite(Number(actual.steps)) ? Number(actual.steps) : null,
+          cfg: Number.isFinite(Number(actual.cfg)) ? Number(actual.cfg) : null,
+          generationSeed: Number.isFinite(Number(actual.generationSeed))
+            ? Number(actual.generationSeed)
+            : null,
+          resolution: {
+            width: Number.isFinite(Number(safeObject(actual.resolution).width))
+              ? Number(safeObject(actual.resolution).width)
+              : null,
+            height: Number.isFinite(Number(safeObject(actual.resolution).height))
+              ? Number(safeObject(actual.resolution).height)
+              : null,
+          },
+          denoiseStrength: Number.isFinite(Number(actual.denoiseStrength))
+            ? Number(actual.denoiseStrength)
+            : null,
+        },
+      };
+    }
+    return result;
   }
 
   function buildVersionPayload(state) {
@@ -3056,6 +3137,7 @@
         manual_override: manualOverride,
       },
       randomPlan: state.randomPlan ? clone(state.randomPlan) : null,
+      ...(state.roleCards ? { roleCards: clone(state.roleCards) } : {}),
       instructionHistory: Array.isArray(state.instructionHistory)
         ? clone(state.instructionHistory)
         : [],
@@ -3443,6 +3525,44 @@
     // Pending block edits are not persisted until APPLY_CHANGES, but they still
     // invalidate any project-open request that captured an older workspace.
     next.workingRevision = Number(next.workingRevision || 0) + 1;
+    next.subjectPositionDiagnostic = null;
+  }
+
+  function applyProjectTemplateParameters(next, value) {
+    const parameters = safeObject(value);
+    const applied = [];
+    for (const key of Object.keys(next.generationParameters)) {
+      if (!Object.prototype.hasOwnProperty.call(parameters, key)) continue;
+      let parameter = parameters[key];
+      if (["sampler", "scheduler"].includes(key)) {
+        if (typeof parameter !== "string" || parameter.length > 128) continue;
+        parameter = parameter.trim();
+        if (!parameter) continue;
+      } else if (["steps", "cfg", "generationSeed", "denoiseStrength"].includes(key)) {
+        parameter = parameter === null || parameter === "" ? null : Number(parameter);
+        if (parameter !== null && !Number.isFinite(parameter)) continue;
+        if (key === "steps") parameter = Math.max(1, Math.min(1000, Math.round(parameter)));
+        if (key === "cfg") parameter = Math.max(0, Math.min(100, parameter));
+        if (key === "generationSeed") {
+          parameter = Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, Math.round(parameter)));
+        }
+        if (key === "denoiseStrength" && parameter !== null) {
+          parameter = Math.max(0, Math.min(1, parameter));
+        }
+      } else if (key === "resolution") {
+        if (!parameter || !Number.isInteger(parameter.width) || !Number.isInteger(parameter.height)) {
+          continue;
+        }
+        parameter = {
+          width: Math.max(64, Math.min(8192, parameter.width)),
+          height: Math.max(64, Math.min(8192, parameter.height)),
+        };
+      }
+      next.generationParameters[key] = clone(parameter);
+      if (!next.manualParameterKeys.includes(key)) next.manualParameterKeys.push(key);
+      applied.push(key);
+    }
+    return applied;
   }
 
   function findResource(resources, id) {
@@ -3822,6 +3942,21 @@
         next.saveError = action.error || "作品保存失败";
         next.toast = next.saveError;
         return next;
+      case "CONFIRM_GENERATION_EVIDENCE": {
+        next.generationEvidenceByVersion = {
+          ...normalizeGenerationEvidenceByVersion(next.generationEvidenceByVersion),
+          [String(action.version)]: action.evidence,
+        };
+        markProjectChanged(next);
+        next.toast = `已确认本机实测：V${action.version}`;
+        return next;
+      }
+      case "SET_ROLE_CARDS": {
+        next.roleCards = action.value ? clone(action.value) : null;
+        markWorkspaceChanged(next);
+        next.toast = action.message || "角色卡已更新，保存后生成新的 Recipe v2 版本";
+        return next;
+      }
       case "NAVIGATE":
         if (action.view !== "home" && action.view !== next.view) {
           markProjectChanged(next);
@@ -3964,11 +4099,14 @@
             return next;
           }
           next.view = "text";
+          const brief = next.creativeIntake.brief;
+          const currentDraft = String(next.draftInput || "").trim();
+          const briefPrompt = completeBriefPrompt(brief);
           if (
-            !String(next.draftInput || "").trim() &&
-            next.creativeIntake.brief?.summary
+            briefPrompt &&
+            (!currentDraft || currentDraft === String(brief?.summary || "").trim())
           ) {
-            next.draftInput = next.creativeIntake.brief.summary;
+            next.draftInput = briefPrompt;
             markProjectChanged(next);
           }
           next.toast =
@@ -4366,8 +4504,7 @@
         );
         const grouped = new Map();
         for (const item of plan.items) {
-          let blockId = item?.binding?.blockId;
-          if (item?.categoryId === "clothing_outfit") blockId = "outfit";
+          const blockId = item?.binding?.blockId;
           if (!blocks.some((block) => block.id === blockId)) continue;
           if (!grouped.has(blockId)) grouped.set(blockId, []);
           grouped.get(blockId).push(item);
@@ -4389,6 +4526,15 @@
       }
       case "RANDOM_PLAN_FAILED":
         next.toast = action.error || "确定性随机计划生成失败";
+        return next;
+      case "ADD_WORDLIST_PROPOSAL":
+        if (!action.item?.id) return next;
+        next.wordlistProposals = [
+          ...(Array.isArray(next.wordlistProposals) ? next.wordlistProposals : []),
+          clone(action.item),
+        ];
+        markProjectChanged(next);
+        next.toast = "词库加词提案已保存，等待本地审核发布";
         return next;
       case "EDIT_PREVIEW_STARTED":
         next.pendingEditPreview = { loading: true };
@@ -4740,6 +4886,11 @@
         const foundResource = findResource(next.resources, action.id);
         if (!foundResource) return next;
         const resource = normalizeResourceWeights(foundResource);
+        const projectTemplate = safeObject(
+          resource.metadata?.projectTemplate || resource.projectTemplate
+        );
+        const isProjectTemplate = projectTemplate.schemaVersion === 1 &&
+          Array.isArray(projectTemplate.enabledBlockIds);
         if (!next.blocks.length) {
           next.blocks = normalizeBlocks(data.promptBlocks || []);
           next.appliedBlocks = clone(next.blocks);
@@ -4764,6 +4915,20 @@
           block.source = resource.source || block.source;
           markDirty(next, block.id);
         });
+        if (isProjectTemplate) {
+          const enabledBlockIds = new Set(
+            projectTemplate.enabledBlockIds.filter((id) => typeof id === "string")
+          );
+          next.blocks.forEach((block) => {
+            if (!enabledBlockIds.has(block.id) && block.weight !== 0) {
+              block.weight = 0;
+              markDirty(next, block.id);
+            }
+          });
+          if (applyProjectTemplateParameters(next, projectTemplate.generationParameters).length) {
+            markWorkspaceChanged(next);
+          }
+        }
         refreshPreview(next);
         next.view = "text";
         next.toast = `已带入资源：${resource.name}，等待应用`;
@@ -4808,6 +4973,9 @@
         next.view = "image";
         next.analysisQueue = queue;
         next.analysisComplete = false;
+        next.analysisConsensus = { catalogStatus: "unavailable", items: [] };
+        next.compositionReference = { mode: "advisory_reference", fields: {} };
+        next.promptMatchDiagnostics = null;
         next.analyzers = resetAnalyzerStatuses(next.analyzers, queue);
         next.analysisNotice = queue.length
           ? `正在运行 ${next.analyzers[queue[0]].name}`
@@ -4838,6 +5006,17 @@
           item.blocks || []
         );
         next.outputChecks = clone(item.checks || {});
+        next.analysisConsensus = clone(item.analysisConsensus || {
+          catalogStatus: "unavailable",
+          items: [],
+        });
+        next.compositionReference = clone(item.compositionReference || {
+          mode: "advisory_reference",
+          fields: {},
+        });
+        next.promptMatchDiagnostics = item.promptMatchDiagnostics
+          ? clone(item.promptMatchDiagnostics)
+          : null;
         next.rawMergedResult = item.positiveEn || "";
         next.analysisQueue = [];
         next.analysisComplete = true;
@@ -5005,8 +5184,36 @@
         next.blocks = clone(next.appliedBlocks);
         next.dirtyBlockIds = [];
         next.previewOutput = null;
+        next.subjectPositionDiagnostic = null;
         next.toast = "已撤销未应用修改";
         return next;
+      case "SUBJECT_POSITION_DIAGNOSTIC":
+        next.subjectPositionDiagnostic = action.item ? clone(action.item) : null;
+        next.toast = action.message || next.toast;
+        return next;
+      case "MOVE_SUBJECT_TO_FRONT": {
+        const index = next.blocks.findIndex((block) => block.id === "subject");
+        if (index < 0) {
+          next.toast = "当前 Recipe 没有可前移的主体结构块";
+          return next;
+        }
+        if (index === 0) {
+          next.subjectPositionDiagnostic = action.diagnostic
+            ? clone(action.diagnostic)
+            : null;
+          next.toast = "主体结构块已在正向提示词首位";
+          return next;
+        }
+        const [subject] = next.blocks.splice(index, 1);
+        next.blocks.unshift(subject);
+        markDirty(next, "subject");
+        refreshPreview(next);
+        next.subjectPositionDiagnostic = action.diagnostic
+          ? clone(action.diagnostic)
+          : null;
+        next.toast = "已将主体前移到正向提示词首位，等待应用";
+        return next;
+      }
       case "APPLY_CHANGES": {
         if (!next.dirtyBlockIds.length) return next;
         next.blocks.forEach((block) => {
@@ -5396,7 +5603,10 @@
         hint: definition.hint || "",
         locked: block.locked,
         weight: 100,
-        en: block.en,
+        // Keep the confirmed semantic text in the executable prompt.  The
+        // model-generated English is an adaptation aid, not a replacement for
+        // facts the user already confirmed in the brief.
+        en: [block.zh, block.en].filter(Boolean).join(", "),
         zh: block.zh,
         source: decompositionSemanticSourceLabel(block.source),
         confidence: 100,
@@ -5781,6 +5991,37 @@
     };
   }
 
+  function multiPersonResolutionSuggestions(analysisConsensus, profile) {
+    const items = Array.isArray(analysisConsensus?.items)
+      ? analysisConsensus.items
+      : [];
+    const evidence = items
+      .flatMap((item) => [item?.tag, ...(Array.isArray(item?.rawTags) ? item.rawTags : [])])
+      .filter((item) => typeof item === "string")
+      .join(" ")
+      .toLowerCase();
+    if (!/(multiple|two|three|four|group|crowd)\s+(girls?|boys?|people|persons?|characters?)/.test(evidence)) {
+      return [];
+    }
+    const presets = Array.isArray(profile?.validatedResolutionPresets)
+      ? profile.validatedResolutionPresets
+      : [];
+    return presets
+      .filter(
+        (preset) =>
+          Number.isSafeInteger(preset?.width) &&
+          Number.isSafeInteger(preset?.height) &&
+          preset.width > 0 &&
+          preset.height > 0
+      )
+      .map((preset) => ({
+        id: String(preset.id || `${preset.width}x${preset.height}`),
+        width: preset.width,
+        height: preset.height,
+        label: String(preset.label || `${preset.width} × ${preset.height}`),
+      }));
+  }
+
   const api = {
     createInitialState,
     createNewProjectState,
@@ -5871,6 +6112,7 @@
     normalizeDecompositionWarnings,
     validateDecompositionPreviewResponse,
     performDecompositionPreviewRequest,
+    multiPersonResolutionSuggestions,
     randomVariantBlockIds: Array.from(RANDOM_VARIANT_BLOCKS),
   };
 
@@ -5912,6 +6154,8 @@
   let directorProgressTimer = null;
   let activeTextAbort = null;
   let activeVisionAbort = null;
+  let activeVisionTaskId = null;
+  let generationResultInspection = null;
   let activeDirectorImageAbort = null;
   let activeDirectorAbort = null;
   let activeDecompositionPreviewAbort = null;
@@ -5931,6 +6175,7 @@
     });
   const directorImageFlowGuard = app.createDirectorImageFlowGuard();
   let projectListRequestId = 0;
+  let projectInsights = null;
   let projectOpenRequestId = 0;
   let workspaceSessionId = 0;
   let saveInFlight = null;
@@ -6176,12 +6421,25 @@
     const requestId = ++projectListRequestId;
     if (!silent) dispatch({ type: "PROJECTS_LOADING" });
     try {
-      const result = await apiJson("/api/projects");
+      const params = new URLSearchParams();
+      const filters = [
+        ["q", $("#projectSearchInput")?.value],
+        ["status", $("#projectStatusFilter")?.value],
+        ["modelId", $("#projectModelFilter")?.value],
+        ["loraId", $("#projectLoraFilter")?.value],
+      ];
+      filters.forEach(([key, value]) => {
+        const normalized = typeof value === "string" ? value.trim() : "";
+        if (normalized) params.set(key, normalized);
+      });
+      const query = params.toString();
+      const result = await apiJson(`/api/projects${query ? `?${query}` : ""}`);
       if (requestId !== projectListRequestId) return;
       dispatch({
         type: "PROJECTS_LOADED",
         items: Array.isArray(result.items) ? result.items : [],
       });
+      void loadProjectInsights();
     } catch (error) {
       if (requestId !== projectListRequestId) return;
       dispatch({
@@ -6470,6 +6728,9 @@
         if (!known.has(item.id)) state.resources.snippets.push(item);
       }
     }
+    state.resources.negative_presets = favoriteResources.filter(
+      (item) => item.type === "negative_presets"
+    );
   }
 
   function isFavoriteResource(id) {
@@ -8066,7 +8327,7 @@
       id: `recipe-${Date.now()}`,
       type: "snippets",
       name: `${state.projectName || "未命名作品"} · 配方 V${state.version || 1}`,
-      meta: "配方 · 整组结构块",
+      meta: "项目模板 · 结构块与参数预设",
       targetBlock: "",
       en: state.blocks
         .map((block) => block.en)
@@ -8080,6 +8341,13 @@
         zh: block.zh,
         weight: block.weight,
       })),
+      projectTemplate: {
+        schemaVersion: 1,
+        enabledBlockIds: state.blocks
+          .filter((block) => normalizeBlockWeight(block.weight) !== 0)
+          .map((block) => block.id),
+        generationParameters: clone(state.generationParameters),
+      },
     };
     dispatch({ type: "ADD_RECIPE", recipe });
     try {
@@ -8093,6 +8361,8 @@
   }
 
   let variantMatrix = null;
+  let inspectedGenerationFile = null;
+  let inspectedGenerationAssetId = "";
 
   async function generateVariantMatrix(count = 3) {
     const targetBlockIds = state.selectedVariantBlockIds.filter((blockId) => {
@@ -8262,6 +8532,7 @@
       instructionHistory: versionPayload.metadata.instructionHistory,
       imageRefs: versionPayload.metadata.imageRefs,
       sourceRefs: versionPayload.metadata.sourceRefs || [],
+      ...(state.roleCards ? { roleCards: clone(state.roleCards) } : {}),
       metadata: {
         textMode: state.textMode,
         draftInput: state.draftInput,
@@ -9731,6 +10002,24 @@
       .join("");
   }
 
+  function renderProjectInsights() {
+    const container = $("#projectInsights");
+    if (!container) return;
+    const item = safeObject(projectInsights);
+    const renderItems = (values) => (Array.isArray(values) ? values : [])
+      .slice(0, 8)
+      .map((value) => `${escapeHtml(String(value?.id || ""))} ×${Number(value?.useCount) || 0}`)
+      .filter(Boolean)
+      .join("、");
+    const models = renderItems(item.models);
+    const loras = renderItems(item.loras);
+    if (!models && !loras) {
+      container.textContent = "历史模型与 LoRA 候选会在保存配方后出现；它们不会自动成为默认值。";
+      return;
+    }
+    container.innerHTML = `<strong>历史使用候选</strong><span>模型：${models || "暂无"}</span><span>LoRA：${loras || "暂无"}</span><em>仅供筛选和参考，不会自动套用。</em>`;
+  }
+
   function renderProjectContext() {
     const nameInput = $("#projectNameInput");
     const saveButton = $("#saveDraftButton");
@@ -10369,6 +10658,66 @@
       raw = state.analyzers[state.activeRawResult].raw;
     }
     $("#rawOutput").textContent = raw;
+    const consensus = state.analysisConsensus || {};
+    const labels = {
+      confirmed: "已确认",
+      conflict: "冲突",
+      uncertain: "不确定",
+    };
+    const items = Array.isArray(consensus.items) ? consensus.items : [];
+    $("#analysisConsensus").innerHTML = items.length
+      ? items
+          .map((item) => {
+            const status = labels[item.status] || "不确定";
+            const sources = Array.isArray(item.sources)
+              ? item.sources.join(" + ")
+              : "";
+            return `<span class="${escapeHtml(item.status || "uncertain")}" title="${escapeHtml(sources)}">${escapeHtml(status)} · ${escapeHtml(item.tag || "")}</span>`;
+          })
+          .join("")
+      : state.analysisComplete
+        ? '<span>未提供可归一的标签证据</span>'
+        : "";
+    const compositionFields = safeObject(state.compositionReference?.fields);
+    const labelsByField = {
+      shotScale: "景别",
+      viewAngle: "视角",
+      subjectPosition: "主体位置",
+      depthOfField: "景深",
+      lighting: "光影",
+    };
+    const referenceRows = Object.entries(labelsByField)
+      .map(([field, label]) => {
+        const values = Array.isArray(compositionFields[field])
+          ? compositionFields[field]
+          : [];
+        if (!values.length) return "";
+        return `<span><strong>${escapeHtml(label)}</strong> · ${escapeHtml(values.map((item) => item.value).join("、"))}</span>`;
+      })
+      .filter(Boolean);
+    $("#compositionReference").innerHTML = referenceRows.length
+      ? `<strong>构图参考（仅供辅助，不自动写入提示词）</strong>${referenceRows.join("")}`
+      : "";
+    const selectedProfile = (state.modelProfiles || []).find(
+      (item) => item.profileId === state.modelProfileId
+    );
+    const multiPersonPresets = app.multiPersonResolutionSuggestions(
+      consensus,
+      selectedProfile
+    );
+    if (multiPersonPresets.length) {
+      $("#compositionReference").insertAdjacentHTML(
+        "beforeend",
+        `<span><strong>多人画幅建议</strong> · ${escapeHtml(multiPersonPresets.map((preset) => preset.label).join("、"))}（仅已验证预设，不自动套用）</span>`
+      );
+    }
+    const match = state.promptMatchDiagnostics;
+    if (match && Number.isFinite(match.confirmedMatchRate)) {
+      $("#compositionReference").insertAdjacentHTML(
+        "beforeend",
+        `<span><strong>提示词命中（辅助）</strong> · 已确认 ${Math.round(match.confirmedMatchRate * 100)}% · 含不确定 ${Math.round((match.possibleMatchRate || 0) * 100)}%</span>`
+      );
+    }
   }
 
   function renderBlocks() {
@@ -10611,6 +10960,22 @@
           section.dataset.language !== outputLanguage
       );
     });
+    const subjectHint = $("#subjectPositionHint");
+    if (subjectHint) {
+      const item = state.subjectPositionDiagnostic;
+      subjectHint.classList.toggle("hidden", !item);
+      if (!item) {
+        subjectHint.textContent = "";
+      } else if (item.status === "ready") {
+        subjectHint.textContent = `主体锚点“${item.anchorTag}”前有 ${item.tokenStart} 个真实 token；前移只会创建待应用修改。`;
+      } else if (item.status === "subject_anchor_not_unique") {
+        subjectHint.textContent = "主体标签在提示词中不唯一，无法可靠定位 token 边界。";
+      } else if (item.status === "subject_missing") {
+        subjectHint.textContent = "当前 Recipe 没有可定位的主体标签。";
+      } else {
+        subjectHint.textContent = "本机目标模型 tokenizer 不可用，未显示估算 token 数。";
+      }
+    }
     const translateButton = $("#translatePendingBtn");
     if (translateButton) {
       translateButton.disabled = state.translatingPending;
@@ -10618,6 +10983,199 @@
         ? "翻译中..."
         : "本地 LLM 翻译";
     }
+    renderGenerationResultInspection();
+  }
+
+  async function submitWordlistProposal() {
+    const categoryId = String($("#wordlistProposalCategory")?.value || "");
+    const requestedBlock = String($("#wordlistProposalBlock")?.value || "");
+    const proposalBlocks = {
+      theme_mood: ["subject", "appearance", "pose", "scene", "composition", "lighting", "effects"],
+      scene_environment: ["scene"],
+      pose_action: ["pose"],
+      clothing_outfit: ["outfit"],
+      composition_camera: ["composition"],
+      lighting_color: ["lighting"],
+      effects_props: ["effects", "lighting"],
+      weather_time: ["scene", "lighting", "effects"],
+      appearance_traits: ["appearance", "pose"],
+    };
+    const allowedBlocks = proposalBlocks[categoryId] || [];
+    const targetBlock = allowedBlocks.includes(requestedBlock)
+      ? requestedBlock
+      : allowedBlocks[0];
+    const text = String($("#wordlistProposalText")?.value || "").trim();
+    if (!/^[\x21-\x7e](?:[\x20-\x7e]{0,510}[\x21-\x7e])?$/.test(text) || /[,;]/.test(text)) {
+      state.toast = "词条必须是单个 ASCII 英文提示词，且不能包含逗号或分号";
+      renderToast();
+      return;
+    }
+    dispatch({
+      type: "ADD_WORDLIST_PROPOSAL",
+      item: {
+        id: app.createClientId("wordlist"),
+        categoryId,
+        targetBlock,
+        text,
+        status: "submitted",
+      },
+    });
+    $("#wordlistProposalText").value = "";
+    render();
+    await saveCreativeIntakeMetadata();
+  }
+
+  function renderGenerationResultInspection() {
+    const panel = $("#generationResultInspection");
+    if (!panel) return;
+    const item = generationResultInspection;
+    panel.classList.toggle("hidden", !item);
+    if (!item) return;
+    const rows = Array.isArray(item.diff)
+      ? item.diff
+          .map((entry) => `<li><b>${escapeHtml(entry.field)}</b>：${escapeHtml(entry.status)}${entry.status === "mismatch" ? `（配方 ${escapeHtml(JSON.stringify(entry.expected))}，出图 ${escapeHtml(JSON.stringify(entry.actual))}）` : ""}</li>`)
+          .join("")
+      : "";
+    const canConfirm = Number.isSafeInteger(state.version) && state.version > 0;
+    const importLabel = inspectedGenerationAssetId
+      ? "已导入受管理资产"
+      : "导入受管理资产";
+    panel.innerHTML = `<strong>出图检查：${escapeHtml(item.source || "none")}</strong><span>${item.metadataAvailable ? "已读取 PNG 元数据；确认后可记录本机实测。" : "未发现可读的生成元数据；请按下方配方手动核对。"}</span><ul>${rows}</ul><button type="button" class="ghost" data-action="import-generation-asset" ${inspectedGenerationFile && !inspectedGenerationAssetId ? "" : "disabled"}>${importLabel}</button><button type="button" class="ghost" data-action="confirm-generation-evidence" ${canConfirm ? "" : "disabled"}>确认并记录到当前版本</button>`;
+  }
+
+  function a1111Infotext(recipe) {
+    const prompts = safeObject(recipe?.prompts);
+    const parameters = safeObject(recipe?.parameters);
+    const value = (key) => safeObject(parameters[key]).value;
+    const resolution = safeObject(value("resolution"));
+    const fields = [
+      `Steps: ${value("steps") ?? ""}`,
+      `Sampler: ${value("sampler") ?? ""}`,
+      `Schedule type: ${value("scheduler") ?? ""}`,
+      `CFG scale: ${value("cfg") ?? ""}`,
+      `Seed: ${value("generationSeed") ?? ""}`,
+      `Size: ${resolution.width ?? ""}x${resolution.height ?? ""}`,
+    ];
+    if (value("denoiseStrength") !== null && value("denoiseStrength") !== undefined) {
+      fields.push(`Denoising strength: ${value("denoiseStrength")}`);
+    }
+    return `${prompts.positiveEn || ""}\nNegative prompt: ${prompts.negativeEn || ""}\n${fields.join(", ")}`;
+  }
+
+  async function resolveCurrentRecipeResult() {
+    const result = await apiJson("/api/recipe/resolve", {
+      method: "POST",
+      body: JSON.stringify(currentRecipeResolvePayload()),
+    });
+    return result.item;
+  }
+
+  async function resolveCurrentRecipe() {
+    return (await resolveCurrentRecipeResult()).recipe;
+  }
+
+  async function moveSubjectToFront() {
+    try {
+      const resolved = await resolveCurrentRecipeResult();
+      const diagnostic = resolved?.diagnostics?.subjectPosition;
+      if (diagnostic?.status !== "ready") {
+        dispatch({
+          type: "SUBJECT_POSITION_DIAGNOSTIC",
+          item: diagnostic,
+          message: "未移动主体：需要可用的本机 tokenizer 与唯一主体锚点",
+        });
+        return;
+      }
+      dispatch({ type: "MOVE_SUBJECT_TO_FRONT", diagnostic });
+    } catch (error) {
+      state.toast = error.message || "无法读取当前 Recipe 的 token 位置";
+      renderToast();
+    }
+  }
+
+  async function exportA1111Infotext() {
+    try {
+      await copyText(a1111Infotext(await resolveCurrentRecipe()));
+    } catch (error) {
+      state.toast = error.message || "无法导出 A1111 参数";
+      renderToast();
+    }
+  }
+
+  async function loadProjectInsights() {
+    try {
+      const result = await apiJson("/api/project-insights");
+      projectInsights = safeObject(result.item);
+    } catch {
+      projectInsights = null;
+    }
+    renderProjectInsights();
+  }
+
+  async function inspectGenerationResult(file) {
+    if (!file || file.type !== "image/png") {
+      state.toast = "请选择 PNG 出图文件";
+      renderToast();
+      return;
+    }
+    try {
+      const [recipe, dataBase64] = await Promise.all([resolveCurrentRecipe(), fileToBase64(file)]);
+      const result = await apiJson("/api/generation-results/inspect", {
+        method: "POST",
+        body: JSON.stringify({ filename: file.name, mimeType: file.type, dataBase64, recipe }),
+      });
+      generationResultInspection = result.item;
+      inspectedGenerationFile = file;
+      inspectedGenerationAssetId = "";
+      renderGenerationResultInspection();
+    } catch (error) {
+      state.toast = error.message || "出图 PNG 检查失败";
+      renderToast();
+    }
+  }
+
+  async function importInspectedGenerationAsset() {
+    const file = inspectedGenerationFile;
+    if (!file || generationResultInspection === null || inspectedGenerationAssetId) return;
+    try {
+      const result = await apiJson("/api/managed-assets/import", {
+        method: "POST",
+        body: JSON.stringify({
+          filename: file.name,
+          mimeType: file.type,
+          dataBase64: await fileToBase64(file),
+        }),
+      });
+      inspectedGenerationAssetId = String(result.item?.id || "");
+      if (!inspectedGenerationAssetId) throw new Error("资产导入未返回 ID");
+      state.toast = result.created ? "PNG 已导入受管理资产" : "复用了已有受管理 PNG 资产";
+      renderGenerationResultInspection();
+      renderToast();
+    } catch (error) {
+      state.toast = error.message || "PNG 资产导入失败";
+      renderToast();
+    }
+  }
+
+  async function confirmGenerationEvidence() {
+    const item = generationResultInspection;
+    if (!item || !Number.isSafeInteger(state.version) || state.version < 1) {
+      state.toast = "请先保存当前配方版本，再确认本机实测";
+      renderToast();
+      return;
+    }
+    dispatch({
+      type: "CONFIRM_GENERATION_EVIDENCE",
+      version: state.version,
+      evidence: {
+        source: String(item.source || "manual"),
+        observedAt: new Date().toISOString(),
+        actual: clone(safeObject(item.actual)),
+        ...(inspectedGenerationAssetId ? { assetId: inspectedGenerationAssetId } : {}),
+      },
+    });
+    render();
+    await saveCreativeIntakeMetadata();
   }
 
   function renderDrawer() {
@@ -10756,6 +11314,7 @@
     renderViews();
     renderDirector();
     renderProjects();
+    renderProjectInsights();
     renderProjectContext();
     renderTextModes();
     renderTextProvider();
@@ -10802,6 +11361,8 @@
     if (!analyzerIds.length) return;
     const request = beginWorkspaceRequest();
     activeVisionAbort = request.controller;
+    const taskId = createClientId("vision");
+    activeVisionTaskId = taskId;
     try {
       const dataBase64 = await fileToBase64(uploadedImageFile);
       if (
@@ -10824,6 +11385,8 @@
           mimeType: uploadedImageFile.type,
           dataBase64,
           analyzerIds,
+          taskId,
+          expectedPrompt: String(state.output.positiveEn || "").slice(0, 20_000),
         }),
       });
       if (
@@ -10850,8 +11413,26 @@
       });
     } finally {
       finishWorkspaceRequest(request);
-      if (activeVisionAbort === request.controller) activeVisionAbort = null;
+      if (activeVisionAbort === request.controller) {
+        activeVisionAbort = null;
+        activeVisionTaskId = null;
+      }
     }
+  }
+
+  async function cancelActiveVisionTask() {
+    const taskId = activeVisionTaskId;
+    if (taskId) {
+      try {
+        await apiJson("/api/vision/cancel", {
+          method: "POST",
+          body: JSON.stringify({ taskId }),
+        });
+      } catch (error) {
+        // The analysis request may have finished between the two clicks.
+      }
+    }
+    if (activeVisionAbort) activeVisionAbort.abort();
   }
 
   function splitLoraEditorList(value) {
@@ -10984,6 +11565,151 @@
     }
   }
 
+  function initialRoleCards() {
+    return {
+      schemaVersion: 1,
+      roles: [
+        { id: "role-a", name: "角色 A", tags: [], locked: false },
+        { id: "role-b", name: "角色 B", tags: [], locked: false },
+      ],
+      relationships: [
+        {
+          id: "relation-a-b",
+          fromRoleId: "role-a",
+          toRoleId: "role-b",
+          kind: "co-presence",
+          description: "同场出现",
+          locked: false,
+        },
+      ],
+    };
+  }
+
+  function renderRoleCards() {
+    const container = $("#roleCardList");
+    const enableButton = $('[data-action="enable-role-cards"]');
+    if (!container || !enableButton) return;
+    const cards = state.roleCards;
+    enableButton.disabled = Boolean(cards);
+    if (!cards) {
+      container.innerHTML = "<span class=\"role-card-relationship\">当前是 Recipe v1；不会自动迁移。</span>";
+      return;
+    }
+    const names = new Map(cards.roles.map((role) => [role.id, role.name]));
+    const roles = cards.roles
+      .map(
+        (role) => `<article class="role-card-editor">
+          <label><span>角色名</span><input data-role-name="${escapeHtml(role.id)}" maxlength="160" value="${escapeHtml(role.name)}" ${role.locked ? "readonly" : ""} /></label>
+          <label><span>标签（逗号分隔）</span><input data-role-tags="${escapeHtml(role.id)}" maxlength="4096" value="${escapeHtml(role.tags.join(", "))}" ${role.locked ? "readonly" : ""} /></label>
+          <button class="secondary-button" type="button" data-action="save-role-card" data-role-id="${escapeHtml(role.id)}" ${role.locked ? "disabled" : ""}>更新角色</button>
+        </article>`)
+      .join("");
+    const relationships = cards.relationships
+      .map((item) => `<article class="role-card-editor role-card-relationship-editor">
+        <p class="role-card-relationship">关系：${escapeHtml(names.get(item.fromRoleId) || item.fromRoleId)} → ${escapeHtml(names.get(item.toRoleId) || item.toRoleId)}${item.locked ? "（锁定）" : ""}</p>
+        <label><span>关系类型</span><input data-relationship-kind="${escapeHtml(item.id)}" maxlength="80" value="${escapeHtml(item.kind)}" ${item.locked ? "readonly" : ""} /></label>
+        <label><span>关系描述</span><input data-relationship-description="${escapeHtml(item.id)}" maxlength="1000" value="${escapeHtml(item.description)}" ${item.locked ? "readonly" : ""} /></label>
+        <button class="secondary-button" type="button" data-action="save-relationship-card" data-relationship-id="${escapeHtml(item.id)}" ${item.locked ? "disabled" : ""}>更新关系</button>
+      </article>`)
+      .join("");
+    container.innerHTML = `${roles}${relationships}`;
+  }
+
+  async function updateRoleCard(roleId) {
+    const cards = state.roleCards;
+    const role = cards?.roles?.find((item) => item.id === roleId);
+    if (!role || role.locked) return;
+    const name = $(`[data-role-name="${roleId}"]`)?.value.trim() || "";
+    const tags = ($(`[data-role-tags="${roleId}"]`)?.value || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (!name || new Set(tags).size !== tags.length) {
+      state.toast = "角色名不能为空，且标签不能重复";
+      renderToast();
+      return;
+    }
+    const request = beginWorkspaceRequest();
+    try {
+      const recipe = await resolveCurrentRecipe();
+      if (!app.isWorkspaceRequestCurrent(request, workspaceSessionId, state)) return;
+      const submit = (confirmAffected) =>
+        apiJson("/api/recipe/roles/edit", {
+          method: "POST",
+          signal: request.controller.signal,
+          body: JSON.stringify({
+            recipe,
+            targetRoleId: roleId,
+            patch: { name, tags },
+            confirmAffected,
+          }),
+        });
+      let result = await submit(false);
+      if (result.requiresConfirmation) {
+        const message = `该角色关联 ${result.affectedRelationships?.length || 0} 条关系；其他角色会保持锁定。是否确认只更新此角色？`;
+        if (!window.confirm(message)) return;
+        result = await submit(true);
+      }
+      if (!result.applied || !app.isWorkspaceRequestCurrent(request, workspaceSessionId, state)) {
+        return;
+      }
+      dispatch({ type: "SET_ROLE_CARDS", value: result.recipe.roleCards });
+      render();
+    } catch (error) {
+      if (!request.controller.signal.aborted) {
+        state.toast = error.message || "角色卡更新失败";
+        renderToast();
+      }
+    } finally {
+      finishWorkspaceRequest(request);
+    }
+  }
+
+  async function updateRelationshipCard(relationshipId) {
+    const relationship = state.roleCards?.relationships?.find(
+      (item) => item.id === relationshipId
+    );
+    if (!relationship || relationship.locked) return;
+    const kind = $(`[data-relationship-kind="${relationshipId}"]`)?.value.trim() || "";
+    const description = $(`[data-relationship-description="${relationshipId}"]`)?.value.trim() || "";
+    if (!kind || !description) {
+      state.toast = "关系类型和描述均不能为空";
+      renderToast();
+      return;
+    }
+    const request = beginWorkspaceRequest();
+    try {
+      const recipe = await resolveCurrentRecipe();
+      if (!app.isWorkspaceRequestCurrent(request, workspaceSessionId, state)) return;
+      const submit = (confirmAffected) =>
+        apiJson("/api/recipe/relationships/edit", {
+          method: "POST",
+          signal: request.controller.signal,
+          body: JSON.stringify({
+            recipe,
+            relationshipId,
+            patch: { kind, description },
+            confirmAffected,
+          }),
+        });
+      let result = await submit(false);
+      if (result.requiresConfirmation) {
+        if (!window.confirm("这会只更新当前关系，关联角色保持锁定。确认继续？")) return;
+        result = await submit(true);
+      }
+      if (!result.applied || !app.isWorkspaceRequestCurrent(request, workspaceSessionId, state)) return;
+      dispatch({ type: "SET_ROLE_CARDS", value: result.recipe.roleCards });
+      render();
+    } catch (error) {
+      if (!request.controller.signal.aborted) {
+        state.toast = error.message || "角色关系更新失败";
+        renderToast();
+      }
+    } finally {
+      finishWorkspaceRequest(request);
+    }
+  }
+
   function renderRecipeConsole() {
     const parameters = state.generationParameters || {};
     const modelSelect = $("#recipeModelProfile");
@@ -11005,10 +11731,10 @@
     const resolutionPreset = $("#recipeResolutionPreset");
     if (resolutionPreset) {
       resolutionPreset.innerHTML = [
-        '<option value="">手动分辨率（不自动选择候选）</option>',
-        ...(selectedProfile?.candidateResolutionPresets || []).map(
+        '<option value="">手动分辨率（不自动套用建议）</option>',
+        ...(selectedProfile?.validatedResolutionPresets || []).map(
           (preset) =>
-            `<option value="${preset.width}x${preset.height}">${escapeHtml(preset.label)} · 候选，待验证</option>`
+            `<option value="${preset.width}x${preset.height}">${escapeHtml(preset.label)} · 已验证</option>`
         ),
       ].join("");
       resolutionPreset.value = "";
@@ -11090,6 +11816,7 @@
     }
     const applyButton = $('[data-action="apply-edit"]');
     if (applyButton) applyButton.disabled = !preview?.ready;
+    renderRoleCards();
     renderLoraProfiles();
   }
 
@@ -11321,6 +12048,27 @@
       loadProjects();
       return;
     }
+    if (button.dataset.action === "clear-project-filters") {
+      const form = $("#projectFilterForm");
+      form?.reset();
+      loadProjects();
+      return;
+    }
+    if (button.dataset.action === "enable-role-cards") {
+      if (!state.roleCards) {
+        dispatch({ type: "SET_ROLE_CARDS", value: initialRoleCards() });
+        render();
+      }
+      return;
+    }
+    if (button.dataset.action === "save-role-card") {
+      void updateRoleCard(button.dataset.roleId || "");
+      return;
+    }
+    if (button.dataset.action === "save-relationship-card") {
+      void updateRelationshipCard(button.dataset.relationshipId || "");
+      return;
+    }
     if (button.dataset.textMode) {
       dispatch({ type: "SET_TEXT_MODE", mode: button.dataset.textMode });
       return;
@@ -11513,7 +12261,7 @@
       return;
     }
     if (action === "cancel-analysis") {
-      if (activeVisionAbort) activeVisionAbort.abort();
+      void cancelActiveVisionTask();
       return;
     }
     if (action === "open-models") {
@@ -11564,6 +12312,8 @@
       dispatch({ type: "DISCARD_CHANGES" });
     } else if (action === "apply-changes") {
       dispatch({ type: "APPLY_CHANGES" });
+    } else if (action === "move-subject-to-front") {
+      void moveSubjectToFront();
     } else if (action === "clear-variant-selection") {
       dispatch({ type: "CLEAR_VARIANT_SELECTION" });
     } else if (action === "save-recipe") {
@@ -11595,6 +12345,8 @@
       translatePendingBlocks();
     } else if (action === "wordlist-plan") {
       generateWordlistPlan();
+    } else if (action === "propose-wordlist-entry") {
+      void submitWordlistProposal();
     } else if (action === "preview-edit") {
       previewChineseEdit();
     } else if (action === "restore-model-defaults") {
@@ -11610,6 +12362,14 @@
       undoLastRecipeChange();
     } else if (action === "copy-all") {
       copyText(app.getCombinedPrompt(state));
+    } else if (action === "export-a1111") {
+      exportA1111Infotext();
+    } else if (action === "inspect-generation-result") {
+      $("#generationResultInput")?.click();
+    } else if (action === "confirm-generation-evidence") {
+      void confirmGenerationEvidence();
+    } else if (action === "import-generation-asset") {
+      void importInspectedGenerationAsset();
     } else if (action === "save-draft") {
       saveCurrentProject();
     }
@@ -11705,6 +12465,12 @@
       renderOutput();
       updateTagSuggest(event.target);
     }
+  });
+
+  $("#generationResultInput")?.addEventListener("change", (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (file) inspectGenerationResult(file);
   });
 
   document.addEventListener(
@@ -11913,6 +12679,10 @@
     event.preventDefault();
     runModelResearch();
   });
+  $("#projectFilterForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    loadProjects();
+  });
   $("#loraProfileForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
     saveLoraProfileFromEditor();
@@ -11964,28 +12734,45 @@
     attachDirectorImageFiles(Array.from(event.dataTransfer?.files || []));
   });
 
-  $("#resourceForm").addEventListener("submit", (event) => {
+  $("#resourceForm").addEventListener("submit", async (event) => {
     event.preventDefault();
     const name = $("#resourceName").value.trim();
     const targetBlock = $("#resourceTarget").value;
     const en = $("#resourceEn").value.trim();
     const zh = $("#resourceZh").value.trim();
     if (!name || !en || !zh) return;
+    const resource = {
+      id: createClientId("resource"),
+      type: targetBlock === "negative" ? "negative_presets" : "snippets",
+      name,
+      meta: $("#resourceTarget").selectedOptions[0].textContent,
+      targetBlock,
+      en,
+      zh,
+    };
     dispatch({
       type: "CREATE_RESOURCE",
-      resource: {
-        id: `custom-${Date.now()}`,
-        type: "snippets",
-        name,
-        meta: $("#resourceTarget").selectedOptions[0].textContent,
-        targetBlock,
-        en,
-        zh,
-      },
+      resource,
     });
     event.target.reset();
-    quickTab = "snippets";
+    quickTab = resource.type;
+    try {
+      const saved = await persistFavoriteResource(resource);
+      if (saved?.item) {
+        favoriteResources = [
+          app.normalizeResourceWeights(saved.item),
+          ...favoriteResources.filter((item) => item.id !== resource.id),
+        ];
+        writeFavoriteResources();
+        state.toast = resource.type === "negative_presets"
+          ? "负面预设已保存到本地资源库"
+          : "素材已保存到本地资源库";
+      }
+    } catch {
+      state.toast = "素材仅保存在当前会话；本地资源库写入失败";
+    }
     renderQuickPicks();
+    renderToast();
   });
 
   favoriteResources = readFavoriteResources();

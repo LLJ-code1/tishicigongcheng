@@ -54,6 +54,7 @@ from db import (
     init_db,
     list_favorites,
     list_projects,
+    project_usage_statistics,
     put_settings,
     recovery_directory,
     update_project,
@@ -135,6 +136,26 @@ from vision_engine import (
     analyze_image_bytes,
     vision_model_status,
 )
+from prompt_diagnostics import prompt_diagnostics
+from generation_metadata import GenerationMetadataError, inspect_generation_png
+from inline_variants import InlineVariantError, resolve_prompt_variants
+from wordlist_proposals import WordlistProposalError, normalize_wordlist_proposals
+from managed_assets import (
+    ManagedAssetError,
+    delete_asset_files,
+    import_png as import_managed_png,
+    read_asset_file,
+)
+from experiment_matrix import (
+    ExperimentMatrixError,
+    normalize_experiment_matrices_by_version,
+    plan_experiment_matrix,
+)
+from role_cards import (
+    RoleCardError,
+    preview_local_role_edit,
+    preview_relationship_edit,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -155,6 +176,8 @@ VISION_REQUEST_BODY_TIMEOUT_SECONDS = 30.0
 CONNECTION_TIMEOUT_SECONDS = 5.0
 BACKUP_UPLOAD_TIMEOUT_SECONDS = 30.0
 BACKUP_STAGE_LOCK = threading.Lock()
+VISION_TASK_LOCK = threading.Lock()
+VISION_TASKS: dict[str, threading.Event] = {}
 PUBLIC_STATIC_FILES = {
     "/",
     "/index.html",
@@ -1007,11 +1030,13 @@ def process_vision_analyze_request(
     payload: dict,
     settings_payload: dict | None = None,
     engine=analyze_image_bytes,
+    cancel_event: threading.Event | None = None,
 ) -> dict:
     filename = str(payload.get("filename") or "").strip()
     mime_type = str(payload.get("mimeType") or "").strip().lower()
     encoded = payload.get("dataBase64")
     analyzer_ids = payload.get("analyzerIds")
+    expected_prompt = payload.get("expectedPrompt")
     if (
         not filename
         or mime_type not in {"image/png", "image/jpeg", "image/webp"}
@@ -1019,6 +1044,10 @@ def process_vision_analyze_request(
         or not encoded
         or not isinstance(analyzer_ids, list)
         or not analyzer_ids
+        or (
+            expected_prompt is not None
+            and (not isinstance(expected_prompt, str) or len(expected_prompt) > 20_000)
+        )
     ):
         raise ValueError("缺少有效的图片数据或识图模型")
     try:
@@ -1037,7 +1066,150 @@ def process_vision_analyze_request(
         settings_payload if settings_payload is not None else get_settings()
     )
     settings = {**DEFAULT_TEXT_SETTINGS, **saved_settings}
-    return engine(image_bytes, filename, analyzer_ids, settings)
+    kwargs = {}
+    if cancel_event is not None:
+        kwargs["cancel_event"] = cancel_event
+    if expected_prompt is not None:
+        kwargs["expected_prompt"] = expected_prompt
+    return engine(image_bytes, filename, analyzer_ids, settings, **kwargs)
+
+
+def _vision_task_id(value: object) -> str:
+    task_id = str(value or "").strip()
+    if (
+        not task_id
+        or len(task_id) > 128
+        or not all(character.isascii() and (character.isalnum() or character in "._-") for character in task_id)
+    ):
+        raise ValueError("vision taskId 必须是 1-128 位的字母、数字、._- ")
+    return task_id
+
+
+def _register_vision_task(task_id: str) -> threading.Event:
+    cancel_event = threading.Event()
+    with VISION_TASK_LOCK:
+        if task_id in VISION_TASKS:
+            raise ValueError("vision taskId 已在运行")
+        VISION_TASKS[task_id] = cancel_event
+    return cancel_event
+
+
+def _finish_vision_task(task_id: str) -> None:
+    with VISION_TASK_LOCK:
+        VISION_TASKS.pop(task_id, None)
+
+
+def cancel_vision_task(task_id: str) -> bool:
+    with VISION_TASK_LOCK:
+        cancel_event = VISION_TASKS.get(task_id)
+    if cancel_event is None:
+        return False
+    cancel_event.set()
+    return True
+
+
+def process_generation_result_inspect_request(payload: dict) -> dict:
+    """Inspect uploaded PNG metadata locally without persisting or executing it."""
+
+    if not isinstance(payload, dict):
+        raise ValueError("出图检查请求必须是对象")
+    if set(payload) != {"filename", "mimeType", "dataBase64", "recipe"}:
+        raise ValueError("出图检查请求字段无效")
+    filename = str(payload["filename"] or "").strip()
+    mime_type = str(payload["mimeType"] or "").strip().lower()
+    encoded = payload["dataBase64"]
+    if not filename or mime_type != "image/png" or not isinstance(encoded, str) or not encoded:
+        raise ValueError("出图检查只接受有效 PNG 图片")
+    try:
+        image_bytes = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error) as error:
+        raise ValueError("图片数据不是有效的 Base64") from error
+    if not image_bytes or len(image_bytes) > MAX_IMAGE_BYTES:
+        raise ValueError("图片为空或超过 20 MB")
+    if detect_image_mime_type(image_bytes) != "image/png":
+        raise ValueError("图片内容不是 PNG 文件")
+    validate_image_bytes(image_bytes, "image/png")
+    try:
+        return inspect_generation_png(image_bytes, normalize_recipe(payload["recipe"]))
+    except GenerationMetadataError as error:
+        raise ValueError(str(error)) from error
+
+
+def process_managed_asset_import_request(payload: dict, *, db_path=None) -> dict:
+    """Decode and import one local PNG without retaining its Base64 payload."""
+
+    if not isinstance(payload, dict) or set(payload) != {
+        "filename", "mimeType", "dataBase64"
+    }:
+        raise ValueError("资产导入请求字段无效")
+    filename = payload.get("filename")
+    mime_type = payload.get("mimeType")
+    encoded = payload.get("dataBase64")
+    if (
+        not isinstance(filename, str)
+        or not filename.strip()
+        or len(filename) > 512
+        or str(mime_type).strip().lower() != "image/png"
+        or not isinstance(encoded, str)
+        or not encoded
+    ):
+        raise ValueError("资产导入当前仅接受有效 PNG 文件")
+    try:
+        image_bytes = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error) as error:
+        raise ValueError("资产图片数据不是有效 Base64") from error
+    if len(image_bytes) > 25 * 1024 * 1024:
+        raise ValueError("资产图片超过 25 MiB")
+    asset, created = import_managed_png(image_bytes, db_path)
+    return {"item": asset, "created": created}
+
+
+def process_role_card_edit_request(payload: dict) -> dict:
+    if not isinstance(payload, dict) or set(payload) != {
+        "recipe", "targetRoleId", "patch", "confirmAffected"
+    }:
+        raise ValueError("角色卡局部修改请求字段无效")
+    recipe_value = normalize_recipe(payload["recipe"])
+    if recipe_value["schemaVersion"] != 2 or "roleCards" not in recipe_value:
+        raise ValueError("角色卡局部修改只支持显式 Recipe schema v2")
+    try:
+        result = preview_local_role_edit(
+            recipe_value["roleCards"],
+            payload["targetRoleId"],
+            payload["patch"],
+            confirm_affected=payload["confirmAffected"] is True,
+        )
+    except RoleCardError as error:
+        raise ValueError(str(error)) from error
+    if result["applied"]:
+        recipe_value["roleCards"] = result.pop("roleCards")
+        result["recipe"] = recipe_value
+        result["recipeHash"] = recipe_hash(recipe_value)
+    return result
+
+
+def process_relationship_edit_request(payload: dict) -> dict:
+    if not isinstance(payload, dict) or set(payload) != {
+        "recipe", "relationshipId", "patch", "confirmAffected"
+    }:
+        raise ValueError("角色关系修改请求字段无效")
+    recipe_value = normalize_recipe(payload["recipe"])
+    if recipe_value["schemaVersion"] != 2 or "roleCards" not in recipe_value:
+        raise ValueError("角色关系修改只支持显式 Recipe schema v2")
+    try:
+        result = preview_relationship_edit(
+            recipe_value["roleCards"],
+            payload["relationshipId"],
+            payload["patch"],
+            confirm_affected=payload["confirmAffected"] is True,
+        )
+    except RoleCardError as error:
+        raise ValueError(str(error)) from error
+    if result["applied"]:
+        recipe_value["roleCards"] = result.pop("roleCards")
+        result["recipe"] = recipe_value
+        result["recipeHash"] = recipe_hash(recipe_value)
+    return result
 
 
 def model_profile_api_item(profile_id: str = DEFAULT_PROFILE_ID) -> dict:
@@ -1074,6 +1246,8 @@ def process_recipe_resolve_request(
         "imageRefs",
         "sourceRefs",
         "metadata",
+        "inlineVariantSelections",
+        "roleCards",
     }
     unknown = sorted(set(payload) - allowed)
     if unknown:
@@ -1159,6 +1333,15 @@ def process_recipe_resolve_request(
     metadata = deepcopy(payload.get("metadata") or {})
     if not isinstance(metadata, dict):
         raise ValueError("metadata 必须是对象")
+    try:
+        resolved_prompts, inline_variant_metadata = resolve_prompt_variants(
+            payload.get("prompts", {}),
+            payload.get("inlineVariantSelections"),
+        )
+    except InlineVariantError as error:
+        raise ValueError(str(error)) from error
+    if inline_variant_metadata["fields"]:
+        metadata["inlineVariants"] = inline_variant_metadata
     validated_sizes = validated_resolution_presets(profile)
     metadata.update(
         {
@@ -1177,7 +1360,7 @@ def process_recipe_resolve_request(
     )
     recipe_value = build_recipe(
         model={**model_reference(profile), **exact_lineage},
-        prompts=payload.get("prompts"),
+        prompts=resolved_prompts,
         blocks=inflate_workbench_blocks(payload.get("blocks")),
         parameters=parameters,
         loras=payload.get("loras") or [],
@@ -1187,10 +1370,15 @@ def process_recipe_resolve_request(
         source_refs=payload.get("sourceRefs") or [],
         metadata=metadata,
     )
+    if "roleCards" in payload:
+        recipe_value["schemaVersion"] = 2
+        recipe_value["roleCards"] = payload["roleCards"]
+        recipe_value = normalize_recipe(recipe_value)
     return {
         "recipe": recipe_value,
         "recipeHash": recipe_hash(recipe_value),
         "profile": profile_item,
+        "diagnostics": prompt_diagnostics(recipe_value),
     }
 
 
@@ -1224,6 +1412,11 @@ def enrich_prompt_version_recipe(version_payload: dict) -> dict:
                     "textMode": metadata.get("textMode", ""),
                     "draftInput": metadata.get("draftInput", ""),
                 },
+                **(
+                    {"roleCards": metadata["roleCards"]}
+                    if "roleCards" in metadata
+                    else {}
+                ),
             }
         )
         normalized = resolved["recipe"]
@@ -1246,6 +1439,30 @@ def enrich_prompt_version_recipe(version_payload: dict) -> dict:
 
 def enrich_workspace_commit_payload(payload: dict) -> dict:
     enriched = deepcopy(payload)
+    if isinstance(enriched, dict) and isinstance(enriched.get("project"), dict):
+        project = enriched["project"]
+        metadata = deepcopy(project.get("metadata") or {})
+        if not isinstance(metadata, dict):
+            raise ValueError("project.metadata must be an object")
+        if "wordlistProposals" in metadata:
+            try:
+                metadata["wordlistProposals"] = normalize_wordlist_proposals(
+                    metadata.get("wordlistProposals"),
+                    project_id=str(project.get("id") or ""),
+                    submitted_at=prompt_db.now_iso(),
+                )
+            except WordlistProposalError as error:
+                raise ValueError(str(error)) from error
+        if "experimentMatricesByVersion" in metadata:
+            try:
+                metadata["experimentMatricesByVersion"] = (
+                    normalize_experiment_matrices_by_version(
+                        metadata.get("experimentMatricesByVersion")
+                    )
+                )
+            except ExperimentMatrixError as error:
+                raise ValueError(str(error)) from error
+        project["metadata"] = metadata
     if isinstance(enriched, dict) and enriched.get("version") is not None:
         enriched["version"] = enrich_prompt_version_recipe(enriched["version"])
     return enriched
@@ -1298,8 +1515,12 @@ def process_random_plan_request(
         )
     if not isinstance(payload, dict):
         raise PlanRequestError("随机计划请求必须是对象")
-    catalog = load_catalog(experimental=True)
     request = deepcopy(payload)
+    requested_version = request.get("catalogVersion")
+    catalog = load_catalog(
+        experimental=True,
+        catalog_version=requested_version if isinstance(requested_version, str) else None,
+    )
     if "librarySeed" not in request:
         request["librarySeed"] = generate_library_seed()
     request.setdefault("catalogVersion", catalog.version)
@@ -1613,7 +1834,11 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             if backup_upload
             else (
                 MAX_VISION_JSON_BODY_BYTES
-                if path == "/api/vision/analyze"
+                if path in {
+                    "/api/vision/analyze",
+                    "/api/generation-results/inspect",
+                    "/api/managed-assets/import",
+                }
                 else MAX_JSON_BODY_BYTES
             )
         )
@@ -1832,7 +2057,11 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         previous_timeout = self.connection.gettimeout()
         timeout_seconds = (
             VISION_REQUEST_BODY_TIMEOUT_SECONDS
-            if urlparse(self.path).path == "/api/vision/analyze"
+            if urlparse(self.path).path in {
+                "/api/vision/analyze",
+                "/api/generation-results/inspect",
+                "/api/managed-assets/import",
+            }
             else REQUEST_BODY_TIMEOUT_SECONDS
         )
         deadline = time.monotonic() + timeout_seconds
@@ -1901,6 +2130,8 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             return self.handle_prompt_templates_get(parsed.path)
         if parsed.path == "/api/projects" or parsed.path.startswith("/api/projects/"):
             return self.handle_projects_get(parsed.path)
+        if parsed.path == "/api/project-insights":
+            return self.send_json({"item": project_usage_statistics()})
         if parsed.path == "/api/favorites":
             return self.handle_favorites_get(parsed.query)
         if parsed.path == "/api/settings":
@@ -1951,6 +2182,24 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             )
         if parsed.path == "/api/text/random-catalog":
             return self.handle_random_catalog_get()
+        if parsed.path == "/api/managed-assets":
+            return self.send_json({"items": prompt_db.list_managed_assets()})
+        managed_asset_parts = parsed.path.split("/")
+        if (
+            len(managed_asset_parts) == 5
+            and managed_asset_parts[1:3] == ["api", "managed-assets"]
+            and managed_asset_parts[3]
+            and managed_asset_parts[4] in {"file", "thumbnail"}
+        ):
+            return self.handle_managed_asset_file(
+                unquote(managed_asset_parts[3]),
+                thumbnail=managed_asset_parts[4] == "thumbnail",
+            )
+        if parsed.path.startswith("/api/managed-assets/"):
+            return self.send_json(
+                {"error": "managed asset route not found", "code": "not_found"},
+                status=404,
+            )
         if parsed.path == "/api/backups/export":
             return self.handle_backup_export(parsed.query)
         if parsed.path == "/api/local-llm/status":
@@ -2005,6 +2254,26 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             return self.handle_text_translate_pending()
         if parsed.path == "/api/vision/analyze":
             return self.handle_vision_analyze()
+        if parsed.path == "/api/vision/cancel":
+            return self.handle_vision_cancel()
+        if parsed.path == "/api/generation-results/inspect":
+            return self.handle_generation_result_inspect()
+        if parsed.path == "/api/managed-assets/import":
+            return self.handle_managed_asset_import()
+        if parsed.path == "/api/experiments/matrix/plan":
+            return self.handle_experiment_matrix_plan()
+        if parsed.path == "/api/recipe/roles/edit":
+            return self.handle_role_card_edit()
+        if parsed.path == "/api/recipe/relationships/edit":
+            return self.handle_relationship_edit()
+        managed_asset_parts = parsed.path.split("/")
+        if (
+            len(managed_asset_parts) == 5
+            and managed_asset_parts[1:3] == ["api", "managed-assets"]
+            and managed_asset_parts[3]
+            and managed_asset_parts[4] == "unlink"
+        ):
+            return self.handle_managed_asset_unlink(unquote(managed_asset_parts[3]))
         if parsed.path == "/api/text/provider-test":
             return self.handle_text_provider_test()
         if parsed.path == "/api/local-llm/start":
@@ -2021,6 +2290,8 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             return self.handle_model_adapted_decomposition()
         if parsed.path == "/api/model-research":
             return self.handle_model_research_create()
+        if parsed.path == "/api/model-research/by-hash":
+            return self.handle_model_research_by_hash()
         if parsed.path == "/api/lora-profiles":
             return self.handle_lora_profile_create()
         research_version_parts = parsed.path.split("/")
@@ -2100,6 +2371,17 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
 
     def _route_delete(self) -> None:
         parsed = urlparse(self.path)
+        managed_asset_parts = parsed.path.split("/")
+        if (
+            len(managed_asset_parts) == 4
+            and managed_asset_parts[1:3] == ["api", "managed-assets"]
+            and managed_asset_parts[3]
+            and not parsed.params
+        ):
+            return self.handle_managed_asset_delete(
+                unquote(managed_asset_parts[3]),
+                parse_qs(parsed.query, keep_blank_values=True),
+            )
         favorite_parts = parsed.path.split("/")
         if (
             len(favorite_parts) == 4
@@ -2128,7 +2410,24 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
 
     def handle_projects_get(self, path: str) -> None:
         if path == "/api/projects":
-            return self.send_json({"items": list_projects()})
+            parsed = urlparse(self.path)
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            allowed = {"q", "status", "modelId", "loraId"}
+            if set(query) - allowed or any(len(value) != 1 for value in query.values()):
+                return self.send_json({"error": "项目筛选参数无效"}, status=400)
+            try:
+                return self.send_json(
+                    {
+                        "items": list_projects(
+                            query=query.get("q", [""])[0],
+                            status=query.get("status", [""])[0],
+                            model_id=query.get("modelId", [""])[0],
+                            lora_id=query.get("loraId", [""])[0],
+                        )
+                    }
+                )
+            except ValueError as error:
+                return self.send_json({"error": str(error)}, status=400)
         prefix = "/api/projects/"
         raw_project_id = path[len(prefix) :]
         if not raw_project_id or "/" in raw_project_id or "\\" in raw_project_id:
@@ -2438,8 +2737,17 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             resolver=self.research_resolver,
             clock=self.research_clock,
         )
+        self._send_model_research_result(request.source_url, result)
+
+    def _send_model_research_result(
+        self,
+        source_url: str,
+        result: model_research.ResearchResult,
+        *,
+        extra: dict | None = None,
+    ) -> None:
         pending = model_profile_store.create_research_run(
-            request.source_url, db_path=prompt_db.DEFAULT_DB_PATH
+            source_url, db_path=prompt_db.DEFAULT_DB_PATH
         )
         run = model_profile_store.complete_research_run(
             pending["runId"],
@@ -2448,7 +2756,7 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             db_path=prompt_db.DEFAULT_DB_PATH,
         )
         profile = model_research.build_pending_profile(
-            request.source_url, [result.snapshot], result.claims
+            source_url, [result.snapshot], result.claims
         )
         if result.snapshot.fetch_status == "failed":
             profile["metadata"]["research"]["warnings"] = list(dict.fromkeys([
@@ -2469,9 +2777,37 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
                     "draftVersion": draft,
                     "researchStatus": profile["metadata"]["research"]["researchStatus"],
                     "warnings": profile["metadata"]["research"]["warnings"],
+                    **(extra or {}),
                 }
             },
             status=201,
+        )
+
+    def handle_model_research_by_hash(self) -> None:
+        payload = self.read_json()
+        self._strict_payload(payload, {"sha256"})
+        hash_url = model_research.civitai_hash_source_url(payload.get("sha256"))
+        request = model_research.ResearchRequest(hash_url)
+        result = model_research.research_source(
+            request,
+            registry=model_research.default_adapter_registry(),
+            fetcher=self.research_fetcher,
+            resolver=self.research_resolver,
+            clock=self.research_clock,
+        )
+        # A failed by-hash lookup has no evidence; do not create a validated
+        # model claim or silently substitute an AIR identifier.
+        source_url = model_research.civitai_hash_model_page(result.snapshot)
+        self._send_model_research_result(
+            source_url,
+            result,
+            extra={
+                "byHash": {
+                    "sha256": hash_url.rsplit("/", 1)[1],
+                    "status": "source_recorded_pending_review",
+                    "airIsExternalEvidenceOnly": True,
+                }
+            },
         )
 
     def handle_model_research_get(self, run_id: str) -> None:
@@ -2926,9 +3262,14 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         self.send_json({"item": item})
 
     def handle_vision_analyze(self) -> None:
+        task_id = ""
+        task_registered = False
         try:
             payload = self.read_json()
-            item = process_vision_analyze_request(payload)
+            task_id = _vision_task_id(payload.get("taskId")) if payload.get("taskId") else ""
+            cancel_event = _register_vision_task(task_id) if task_id else None
+            task_registered = bool(task_id)
+            item = process_vision_analyze_request(payload, cancel_event=cancel_event)
         except json.JSONDecodeError:
             return self.send_bad_json()
         except ValueError as error:
@@ -2938,7 +3279,139 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
                 {"error": error.message, "code": error.code},
                 status=error.status,
             )
+        finally:
+            if task_registered:
+                _finish_vision_task(task_id)
         self.send_json({"item": item})
+
+    def handle_vision_cancel(self) -> None:
+        try:
+            payload = self.read_json()
+            if set(payload) != {"taskId"}:
+                raise ValueError("vision 取消请求只接受 taskId")
+            task_id = _vision_task_id(payload.get("taskId"))
+        except json.JSONDecodeError:
+            return self.send_bad_json()
+        except ValueError as error:
+            return self.send_json({"error": str(error)}, status=400)
+        self.send_json(
+            {
+                "item": {
+                    "taskId": task_id,
+                    "cancelled": cancel_vision_task(task_id),
+                    "capability": "local_vision_worker_process",
+                    "limits": [
+                        "只能终止当前本地识图 worker",
+                        "共享 llama.cpp HTTP 推理是供应者未证实的取消能力",
+                    ],
+                }
+            }
+        )
+
+    def handle_generation_result_inspect(self) -> None:
+        try:
+            item = process_generation_result_inspect_request(self.read_json())
+        except (json.JSONDecodeError, ValueError) as error:
+            return self.send_json({"error": str(error)}, status=400)
+        self.send_json({"item": item})
+
+    def handle_managed_asset_import(self) -> None:
+        try:
+            result = process_managed_asset_import_request(
+                self.read_json(), db_path=prompt_db.DEFAULT_DB_PATH
+            )
+        except (json.JSONDecodeError, ValueError, ManagedAssetError) as error:
+            return self.send_json({"error": str(error)}, status=400)
+        self.send_json(result, status=201 if result["created"] else 200)
+
+    def handle_experiment_matrix_plan(self) -> None:
+        try:
+            item = plan_experiment_matrix(self.read_json())
+        except (json.JSONDecodeError, ExperimentMatrixError) as error:
+            return self.send_json({"error": str(error)}, status=400)
+        self.send_json(
+            {
+                "item": item,
+                "limits": {
+                    "execution": "plan_only",
+                    "generation": "not_started",
+                    "assetAssociation": "persist through workspace/commit",
+                },
+            },
+            status=201,
+        )
+
+    def handle_role_card_edit(self) -> None:
+        try:
+            item = process_role_card_edit_request(self.read_json())
+        except (json.JSONDecodeError, ValueError) as error:
+            return self.send_json({"error": str(error)}, status=400)
+        self.send_json({"item": item})
+
+    def handle_relationship_edit(self) -> None:
+        try:
+            item = process_relationship_edit_request(self.read_json())
+        except (json.JSONDecodeError, ValueError) as error:
+            return self.send_json({"error": str(error)}, status=400)
+        self.send_json({"item": item})
+
+    def handle_managed_asset_file(self, asset_id: str, *, thumbnail: bool) -> None:
+        try:
+            asset = prompt_db.get_managed_asset(asset_id)
+        except ValueError:
+            return self.send_json({"error": "资产 ID 无效"}, status=400)
+        if asset is None:
+            return self.send_json({"error": "资产不存在"}, status=404)
+        try:
+            body = read_asset_file(asset, thumbnail=thumbnail)
+        except ManagedAssetError as error:
+            return self.send_json({"error": str(error)}, status=404)
+        self.send_bytes(
+            body,
+            content_type="image/jpeg" if thumbnail else "image/png",
+        )
+
+    def handle_managed_asset_unlink(self, asset_id: str) -> None:
+        try:
+            payload = self.read_json()
+            if set(payload) != {"projectId", "version"}:
+                raise ValueError("解除引用请求字段无效")
+            unlinked = prompt_db.unlink_managed_asset(
+                asset_id,
+                payload["projectId"],
+                payload["version"],
+            )
+        except (json.JSONDecodeError, ValueError) as error:
+            return self.send_json({"error": str(error)}, status=400)
+        self.send_json({"unlinked": unlinked, "id": asset_id})
+
+    def handle_managed_asset_delete(self, asset_id: str, query: dict) -> None:
+        if query != {"confirmLocalFileDeletion": ["1"]}:
+            return self.send_json(
+                {
+                    "error": (
+                        "删除资产必须显式提供 "
+                        "confirmLocalFileDeletion=1，且会删除本地文件"
+                    )
+                },
+                status=400,
+            )
+        try:
+            asset = prompt_db.get_managed_asset(asset_id)
+            if asset is None:
+                return self.send_json({"error": "资产不存在"}, status=404)
+            if asset["referenceCount"]:
+                return self.send_json(
+                    {"error": "资产仍被项目版本引用；请先解除全部引用"},
+                    status=409,
+                )
+            # The caller explicitly confirmed both paths.  We remove bytes first
+            # so a filesystem failure never erases the only metadata locator.
+            delete_asset_files(asset)
+            prompt_db.delete_unreferenced_managed_asset(asset_id)
+        except (ValueError, ManagedAssetError) as error:
+            return self.send_json({"error": str(error)}, status=400)
+        self.send_json({"deleted": True, "id": asset_id})
 
     def handle_local_llm_start(self) -> None:
         try:

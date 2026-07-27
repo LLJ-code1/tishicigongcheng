@@ -34,10 +34,13 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 DEFAULT_CATALOG_PATH = (
     Path(__file__).resolve().parent / "data" / "random-wordlists" / "v1.json"
 )
+CATALOG_ARCHIVE_DIRECTORY = DEFAULT_CATALOG_PATH.parent / "catalogs"
+_CATALOG_VERSION_RE = re.compile(r"^v1-[0-9a-f]{16}$")
 
 SCHEMA_VERSION = 1
 SAMPLER_VERSION = "sha256-counter-v1"
-MAPPING_VERSION = "ten-block-v1"
+MAPPING_VERSION = "thirteen-block-v1"
+LEGACY_MAPPING_VERSIONS = frozenset({"ten-block-v1"})
 PROFILE = "adult-character-v1"
 CONTENT_HASH_ALGORITHM = "sha256-canonical-json-without-version-fields-v1"
 VERSION_PREFIX = "v1"
@@ -68,7 +71,7 @@ _REQUEST_REQUIRED_FIELDS = frozenset(
     }
 )
 _REQUEST_OPTIONAL_FIELDS = frozenset(
-    {"lockedEntryIds", "rerollEntryIds", "drawCounts"}
+    {"lockedEntryIds", "rerollEntryIds", "drawCounts", "scopeCategoryIds"}
 )
 
 
@@ -210,6 +213,7 @@ class _ValidatedRequest:
     locked_entry_ids: tuple[str, ...]
     reroll_entry_ids: tuple[str, ...]
     draw_counts: Mapping[str, int]
+    scope_category_ids: tuple[str, ...]
 
 
 def normalize_library_seed(value: Any) -> str:
@@ -271,7 +275,9 @@ def _reject_json_constant(value: str) -> None:
     raise CatalogValidationError(f"catalog contains non-finite JSON number: {value}")
 
 
-def load_catalog(*, experimental: bool = False) -> ValidatedCatalog:
+def load_catalog(
+    *, experimental: bool = False, catalog_version: str | None = None
+) -> ValidatedCatalog:
     """Load the server-owned catalog path and validate every identity field.
 
     There is intentionally no request-controlled path parameter.  A future
@@ -279,11 +285,18 @@ def load_catalog(*, experimental: bool = False) -> ValidatedCatalog:
     server, then call ``validate_catalog`` on the parsed object.
     """
 
+    path = DEFAULT_CATALOG_PATH
+    if catalog_version is not None:
+        if not isinstance(catalog_version, str) or _CATALOG_VERSION_RE.fullmatch(catalog_version) is None:
+            raise CatalogValidationError("catalog version is invalid")
+        current = load_catalog(experimental=experimental) if catalog_version else None
+        if current is None or catalog_version != current.version:
+            path = CATALOG_ARCHIVE_DIRECTORY / f"{catalog_version}.json"
     try:
-        payload = DEFAULT_CATALOG_PATH.read_bytes()
+        payload = path.read_bytes()
     except OSError as error:
         raise CatalogValidationError(
-            f"server catalog is unavailable: {DEFAULT_CATALOG_PATH.name}"
+            f"server catalog is unavailable: {path.name}"
         ) from error
     if len(payload) > MAX_CATALOG_BYTES:
         raise CatalogValidationError(
@@ -305,7 +318,10 @@ def load_catalog(*, experimental: bool = False) -> ValidatedCatalog:
         raise
     except json.JSONDecodeError as error:
         raise CatalogValidationError(f"catalog is not valid JSON: {error}") from error
-    return validate_catalog(raw, experimental=experimental)
+    catalog = validate_catalog(raw, experimental=experimental)
+    if catalog_version is not None and catalog.version != catalog_version:
+        raise CatalogValidationError("catalog archive identity does not match requested version")
+    return catalog
 
 
 def _require_exact_type(value: Any, expected: type, field: str) -> Any:
@@ -326,11 +342,11 @@ def _safe_source_file(value: Any, field: str) -> str:
         not value
         or len(value) > 128
         or value in {".", ".."}
-        or "/" in value
         or "\\" in value
         or not value.endswith(".txt")
+        or any(part in {"", ".", ".."} for part in value.split("/"))
     ):
-        raise CatalogValidationError(f"{field} must be a safe .txt basename")
+        raise CatalogValidationError(f"{field} must be a safe relative .txt path")
     return value
 
 
@@ -427,7 +443,6 @@ def validate_catalog(
     fixed_values = {
         "schemaVersion": SCHEMA_VERSION,
         "samplerVersion": SAMPLER_VERSION,
-        "mappingVersion": MAPPING_VERSION,
         "profile": PROFILE,
         "contentHashAlgorithm": CONTENT_HASH_ALGORITHM,
     }
@@ -436,6 +451,9 @@ def validate_catalog(
             raise CatalogValidationError(
                 f"catalog {field} must be {expected!r}, found {raw.get(field)!r}"
             )
+    mapping_version = raw.get("mappingVersion")
+    if mapping_version not in {MAPPING_VERSION, *LEGACY_MAPPING_VERSIONS}:
+        raise CatalogValidationError("catalog mappingVersion is unsupported")
     runtime_ready = raw.get("runtimeReady")
     semantic_review_required = raw.get("semanticReviewRequired")
     if type(runtime_ready) is not bool or type(semantic_review_required) is not bool:
@@ -568,7 +586,7 @@ def validate_catalog(
     return ValidatedCatalog(
         schema_version=SCHEMA_VERSION,
         sampler_version=SAMPLER_VERSION,
-        mapping_version=MAPPING_VERSION,
+        mapping_version=mapping_version,
         profile=PROFILE,
         version=expected_version,
         content_sha256=digest,
@@ -728,11 +746,35 @@ def _validate_plan_request(
         for category in catalog.categories
         if category.category_id in draw_counts
     }
+    raw_scope = request.get("scopeCategoryIds")
+    if raw_scope is None:
+        scope = tuple(category.category_id for category in catalog.categories)
+    else:
+        if not isinstance(raw_scope, list) or not raw_scope:
+            raise PlanRequestError("scopeCategoryIds must be a non-empty array")
+        if any(type(category_id) is not str for category_id in raw_scope):
+            raise PlanRequestError("scopeCategoryIds must contain category IDs")
+        if len(raw_scope) != len(set(raw_scope)):
+            raise PlanRequestError("scopeCategoryIds must not contain duplicates")
+        unknown_scope = sorted(set(raw_scope) - set(catalog.categories_by_id))
+        if unknown_scope:
+            raise PlanRequestError(f"scopeCategoryIds contains unknown category: {unknown_scope[0]}")
+        scope = tuple(
+            category.category_id for category in catalog.categories if category.category_id in raw_scope
+        )
+    out_of_scope = {
+        entry.category_id for entry_id in (*locked, *reroll)
+        for entry in (catalog.entries_by_id[entry_id],)
+        if entry.category_id not in scope
+    } | (set(draw_counts) - set(scope))
+    if out_of_scope:
+        raise PlanRequestError("locks, rerolls, and draw counts must stay within scopeCategoryIds")
     return _ValidatedRequest(
         library_seed=library_seed,
         locked_entry_ids=locked,
         reroll_entry_ids=reroll,
         draw_counts=MappingProxyType(draw_counts),
+        scope_category_ids=scope,
     )
 
 
@@ -955,6 +997,9 @@ def resolve_random_plan(
     ):
         raise CatalogBoundaryError("catalog is not enabled for runtime use")
     normalized = _validate_plan_request(request, catalog)
+    scoped_categories = tuple(
+        category for category in catalog.categories if category.category_id in normalized.scope_category_ids
+    )
     rules = _validate_conflict_rules(catalog, conflict_rules)
     rules_by_pair = _rules_index(rules)
     conflict_rules_version = _conflict_rules_version(rules)
@@ -980,11 +1025,11 @@ def resolve_random_plan(
     ]
 
     locked_by_category: dict[str, list[CatalogEntry]] = {
-        category.category_id: [] for category in catalog.categories
+        category.category_id: [] for category in scoped_categories
     }
     for entry in ordered_locks:
         locked_by_category[entry.category_id].append(entry)
-    for category in catalog.categories:
+    for category in scoped_categories:
         count = len(locked_by_category[category.category_id])
         if count > category.draw_rule.maximum_count:
             raise PlanRequestError(
@@ -1031,7 +1076,7 @@ def resolve_random_plan(
 
     selected_by_category: dict[str, list[CatalogEntry]] = {
         category.category_id: list(locked_by_category[category.category_id])
-        for category in catalog.categories
+        for category in scoped_categories
     }
     category_streams: list[dict[str, Any]] = []
     rejections_trace: list[dict[str, Any]] = []
@@ -1045,7 +1090,7 @@ def resolve_random_plan(
         for entry in ordered_locks
     ]
 
-    for category in catalog.categories:
+    for category in scoped_categories:
         stream = _CategoryHashStream(normalized.library_seed, category.category_id)
         resolved_count, count_decision, count_rejections = _resolve_count(
             category,
@@ -1177,7 +1222,7 @@ def resolve_random_plan(
         )
 
     ordered_selected: list[CatalogEntry] = []
-    for category in catalog.categories:
+    for category in scoped_categories:
         ordered_selected.extend(selected_by_category[category.category_id])
     items = [
         _selected_item(entry, catalog, locked=entry.entry_id in locked_set)
@@ -1209,6 +1254,7 @@ def resolve_random_plan(
             "semanticReviewRequired": catalog.semantic_review_required,
         },
         "configuration": {
+            "scopeCategoryIds": list(normalized.scope_category_ids),
             "drawCounts": dict(normalized.draw_counts),
             "lockedEntryIds": [entry.entry_id for entry in ordered_locks],
             "rerollEntryIds": [entry.entry_id for entry in ordered_rerolls],
