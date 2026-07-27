@@ -1,6 +1,7 @@
 param(
     [int]$StudioPort = 57913,
     [int]$AnimaDexPort = 5000,
+    [string]$RuntimeRoot = "",
     [switch]$SkipBrowser
 )
 
@@ -13,7 +14,10 @@ if (-not (Test-Path -LiteralPath $starter)) {
     throw "Prompt Studio starter was not found: $starter"
 }
 
-& $starter -StudioPort $StudioPort -AnimaDexPort $AnimaDexPort
+& $starter `
+    -StudioPort $StudioPort `
+    -AnimaDexPort $AnimaDexPort `
+    -RuntimeRoot $RuntimeRoot
 
 $deadline = (Get-Date).AddMinutes(3)
 $ready = $false

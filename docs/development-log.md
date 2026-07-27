@@ -14,6 +14,10 @@
 - 最终全量回归：Python `prototype/tests` 480 项（479 通过、1 个可选依赖跳过）、Node
   220/220、`scripts/tests` 17/17 通过；Unicode、随机词库和编译提示词生成物一致，
   `pip check` 未发现依赖冲突。
+- 修复桌面入口始终指向旧根目录的问题：worktree 启动器现在可复用主目录运行时，同时
+  保持当前源码和数据库；检测到 57913 上是已识别的旧 Prompt Studio 时会安全替换，
+  未知占用者则失败关闭。Windows CI 的源码正则同时兼容 LF/CRLF；Node 回归更新为
+  221/221 通过。
 
 ## 2026-07-26 创意导演精确交接与 LoRA-lite
 

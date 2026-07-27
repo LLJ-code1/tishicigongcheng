@@ -4190,10 +4190,10 @@ test("unified creative director homepage replaces the split creation entry point
 test("browser creative director production flow resolves every canonical image as a collection", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
   const ensureBody = source.match(
-    /async function ensureDirectorImageEvidence\([\s\S]*?\n  }\n\n  async function attachDirectorImageFile/
+    /async function ensureDirectorImageEvidence\([\s\S]*?\r?\n  }\r?\n\r?\n  async function attachDirectorImageFile/
   )?.[0];
   const sendBody = source.match(
-    /async function sendCreativeDirectorMessage\([\s\S]*?\n  }\n\n  function/
+    /async function sendCreativeDirectorMessage\([\s\S]*?\r?\n  }\r?\n\r?\n  function/
   )?.[0];
 
   assert.ok(ensureBody, "production evidence orchestration exists");
@@ -4208,6 +4208,22 @@ test("browser creative director production flow resolves every canonical image a
   );
   assert.ok(sendBody, "production director sender exists");
   assert.doesNotMatch(sendBody, /inputs\.images\[0\]/);
+});
+
+test("desktop launcher can separate latest source from shared local runtime", () => {
+  const starter = fs.readFileSync(path.join(__dirname, "..", "..", "start-local.ps1"), "utf8");
+  const launcher = fs.readFileSync(
+    path.join(__dirname, "..", "..", "scripts", "open_prompt_studio.ps1"),
+    "utf8"
+  );
+
+  assert.match(starter, /\[string\]\$RuntimeRoot/);
+  assert.match(starter, /Test-StudioSourceMatches/);
+  assert.match(starter, /PROMPT_STUDIO_DB/);
+  assert.match(starter, /Join-Path \$root "prototype\\data\\prompt_studio\.db"/);
+  assert.match(starter, /recognized Prompt Studio process/);
+  assert.match(starter, /Stop-Process/);
+  assert.match(launcher, /-RuntimeRoot \$RuntimeRoot/);
 });
 
 test("director homepage exposes multi-image drop cards and per-card recovery controls", () => {

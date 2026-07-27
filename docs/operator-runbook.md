@@ -42,15 +42,24 @@ Pop-Location
 .\start-local.ps1
 ```
 
-多个 Git worktree/分支共用默认端口 `57913`。启动器发现端口已被占用时可能直接复用
-现有服务，因此“页面能打开”不代表运行的是当前目录版本。切换分支或 worktree 前先
-停止旧 Prompt Studio 进程，再从目标目录启动，并核对页面功能或服务输出。
+多个 Git worktree/分支共用默认端口 `57913`。启动器会比较端口当前提供的 `app.js` 与
+当前源码：若确认是旧的 Python `server.py`，会停止旧 Prompt Studio 后启动当前版本；
+若占用者不是可识别的 Prompt Studio，则失败关闭并要求人工检查，不会结束未知进程。
 
 不启动本地文本模型：
 
 ```powershell
 .\start-local.ps1 -SkipLlm
 ```
+
+在 Git worktree 中运行新版源码、但复用主目录的 AnimaDex 虚拟环境和本地模型启动脚本：
+
+```powershell
+.\start-local.ps1 -RuntimeRoot "H:\提示词工程"
+```
+
+`RuntimeRoot` 只提供 Python、AnimaDex 和本地 LLM 运行时；Prompt Studio 源码和数据库仍
+来自执行该命令的当前 worktree，避免打开新版界面时切回旧数据目录。
 
 默认服务：
 
@@ -189,7 +198,8 @@ LoRA-lite 页面只维护名称、版本、HTTPS 原始链接、触发词、建�
 ## 故障排查
 
 - 首页打不开：检查 57913 端口以及服务进程输出。
-- 页面像旧版：检查 57913 当前监听进程的启动目录；停止旧进程后从目标 worktree 重启。
+- 页面像旧版：重新运行目标 worktree 的启动器；若它拒绝替换端口占用者，检查 57913
+  当前监听进程，确认来源后再人工处理。
 - AnimaDex 显示离线：检查 5000 端口和 `ANIMADEX_URL`。
 - 文本生成失败：先用设置中的“测试”或检查 8080 `/v1/models`。
 - 创作总监点击后像没反应：查看请求进度卡。停在“等待模型推理”时测试所选提供商；
