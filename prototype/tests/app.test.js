@@ -893,6 +893,8 @@ test("full random calls the real model endpoint and has no static prompt generat
   const source = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
 
   assert.match(source, /\/api\/text\/random/);
+  assert.match(source, /\/api\/text\/random-plan\/polish/);
+  assert.match(source, /random_catalog_not_release_ready/);
   assert.match(source, /function randomizeTextPrompt/);
   assert.doesNotMatch(source, /function randomOutput/);
 });
@@ -914,7 +916,7 @@ test("static prototype exposes every major review surface", () => {
     assert.match(html, new RegExp(`id=["']${id}["']`));
   }
   const unicodeDataIndex = html.indexOf("unicode15-data.js?v=20260716-unicode15");
-  const appScriptIndex = html.indexOf("app.js?v=20260725-ai-local-edit-v1");
+  const appScriptIndex = html.indexOf("app.js?v=20260725-ai-edit-wordlist-v1");
   assert.notEqual(unicodeDataIndex, -1);
   assert.notEqual(appScriptIndex, -1);
   assert.ok(unicodeDataIndex < appScriptIndex);
@@ -2245,7 +2247,71 @@ test("deterministic random plans map clothing into the dedicated outfit block", 
   assert.equal(state.randomSeed, "00112233445566778899aabbccddeeff");
 });
 
-test("workbench visibly exposes model presets and AI local edit flow", () => {
+test("wordlist entries can be locked and their lock state persists with the recipe", () => {
+  let state = createGeneratedState();
+  state = reduceState(state, {
+    type: "APPLY_RANDOM_PLAN",
+    userLockedEntryIds: [],
+    item: {
+      librarySeed: "00112233445566778899aabbccddeeff",
+      catalog: { version: "v1-test" },
+      items: [
+        {
+          entryId: "scene:test",
+          text: "rainy shrine courtyard",
+          categoryId: "scene_environment",
+          binding: { blockId: "scene" },
+        },
+      ],
+    },
+  });
+  state = reduceState(state, {
+    type: "TOGGLE_RANDOM_PLAN_LOCK",
+    entryId: "scene:test",
+  });
+  const payload = buildVersionPayload(state);
+
+  assert.deepEqual(state.randomPlan.userLockedEntryIds, ["scene:test"]);
+  assert.deepEqual(
+    payload.metadata.randomPlan.userLockedEntryIds,
+    ["scene:test"]
+  );
+});
+
+test("semantic wordlist polish keeps the plan and stores its coverage audit", () => {
+  let state = createGeneratedState();
+  state.randomPlan = {
+    librarySeed: "00112233445566778899aabbccddeeff",
+    items: [{ entryId: "scene:test", text: "rainy shrine courtyard" }],
+  };
+  const item = {
+    positiveEn: "masterpiece, rainy shrine courtyard",
+    positiveZh: "杰作，雨中的神社庭院",
+    negativeEn: "low quality",
+    negativeZh: "低质量",
+    relationEn: "An adult woman prays in the courtyard.",
+    relationZh: "一位成年女性在庭院中祈祷。",
+    blocks: state.blocks,
+    checks: {
+      wordlistReview: {
+        coverage: [{ entryId: "scene:test", blockId: "scene" }],
+        conflicts: [],
+        discardedEntryIds: [],
+        allSelectedItemsPreserved: true,
+      },
+    },
+  };
+  state = reduceState(state, { type: "START_WORDLIST_POLISH" });
+  assert.equal(state.randomPlan.semanticReview, null);
+  state = reduceState(state, { type: "APPLY_WORDLIST_POLISH", item });
+
+  assert.equal(state.wordlistPolishing, false);
+  assert.equal(state.randomPlan.librarySeed, "00112233445566778899aabbccddeeff");
+  assert.equal(state.randomPlan.semanticReview.allSelectedItemsPreserved, true);
+  assert.equal(state.output.positiveEn, item.positiveEn);
+});
+
+test("workbench visibly exposes model presets, wordlist, and AI local edit flow", () => {
   const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
   const appSource = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
 
@@ -2258,6 +2324,7 @@ test("workbench visibly exposes model presets and AI local edit flow", () => {
   assert.match(html, /候选，待验证/);
   assert.match(html, /AI 局部修改/);
   assert.match(html, /生成修改预览/);
+  assert.match(html, /id="wordlistPlanPanel"/);
   assert.match(html, /data-action="preview-edit"/);
   assert.match(html, /data-action="undo-recipe"/);
   assert.doesNotMatch(html, /<select id="targetModel"/);
@@ -2268,6 +2335,19 @@ test("workbench visibly exposes model presets and AI local edit flow", () => {
   assert.match(appSource, /provider: state\.settings\.textProvider/);
   assert.match(appSource, /item\.reason/);
   assert.match(appSource, /其余.*保持不变/);
+});
+
+test("workbench exposes lock reroll and validated wordlist polish controls", () => {
+  const appSource = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
+
+  assert.match(appSource, /data-wordlist-lock/);
+  assert.match(appSource, /data-wordlist-reroll/);
+  assert.match(appSource, /协调冲突并润色/);
+  assert.match(appSource, /\/api\/text\/random-plan\/polish/);
+  assert.match(appSource, /全部词条覆盖通过/);
+  assert.match(appSource, /自动重抽.*硬冲突词条/);
+  assert.match(appSource, /固定双语脚手架补足结构/);
+  assert.match(appSource, /seedInput\.value = state\.randomPlan\?\.librarySeed \|\| ""/);
 });
 
 test("workbench exposes logical backup export and isolated restore controls", () => {

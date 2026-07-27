@@ -103,6 +103,7 @@ from prompt_engine import (
     decompose_text_prompt,
     expand_text_prompt,
     generate_random_text_prompt,
+    polish_random_plan_prompt,
     probe_text_provider,
     regenerate_prompt_block,
     regenerate_prompt_blocks,
@@ -630,6 +631,185 @@ def process_text_random_request(
         raise ValueError("不支持的文本推理来源")
     target_model = str(payload.get("targetModel") or "anima").strip()
     return engine(settings, provider, target_model)
+
+
+def process_text_random_plan_polish_request(
+    payload: dict,
+    settings_payload: dict | None = None,
+    engine=polish_random_plan_prompt,
+    plan_resolver=None,
+) -> dict:
+    random_plan = payload.get("randomPlan")
+    if not isinstance(random_plan, dict):
+        raise ValueError("缺少需要语义润色的确定性随机计划")
+    catalog = random_plan.get("catalog")
+    configuration = random_plan.get("configuration")
+    if not isinstance(catalog, dict) or not isinstance(configuration, dict):
+        raise ValueError("随机计划缺少目录或抽样配置，无法安全复算")
+    replay_request = {
+        "librarySeed": random_plan.get("librarySeed"),
+        "catalogVersion": catalog.get("version"),
+        "catalogContentSha256": catalog.get("contentSha256"),
+        "samplerVersion": catalog.get("samplerVersion"),
+        "mappingVersion": catalog.get("mappingVersion"),
+        "profile": catalog.get("profile"),
+        "lockedEntryIds": configuration.get("lockedEntryIds") or [],
+        "rerollEntryIds": configuration.get("rerollEntryIds") or [],
+        "drawCounts": configuration.get("drawCounts") or {},
+    }
+    canonical_plan = (
+        plan_resolver(replay_request)
+        if plan_resolver is not None
+        else process_random_plan_request(
+            replay_request,
+            experimental_enabled=(
+                os.environ.get("PROMPT_STUDIO_EXPERIMENTAL_WORDLISTS") == "1"
+            ),
+        )
+    )
+    supplied_ids = [
+        item.get("entryId")
+        for item in random_plan.get("items") or []
+        if isinstance(item, dict)
+    ]
+    canonical_ids = [item["entryId"] for item in canonical_plan["items"]]
+    if supplied_ids != canonical_ids:
+        raise ValueError("客户端随机计划与服务端确定性复算不一致")
+    semantic_rerolls: list[dict] = []
+    for _ in range(8):
+        conflict = detect_random_plan_hard_conflict(canonical_plan)
+        if conflict is None:
+            break
+        locked_ids = set(replay_request["lockedEntryIds"])
+        reroll_entry_id = next(
+            (
+                entry_id
+                for entry_id in conflict["rerollCandidates"]
+                if entry_id not in locked_ids
+            ),
+            None,
+        )
+        if reroll_entry_id is None:
+            raise LockedConflictError(
+                "锁定词条构成无法在单幅画面中同时成立的硬冲突",
+                conflicts=[conflict],
+                locks=[{"entryId": entry_id} for entry_id in sorted(locked_ids)],
+            )
+        replay_request["rerollEntryIds"] = sorted(
+            set(replay_request["rerollEntryIds"]) | {reroll_entry_id}
+        )
+        canonical_plan = process_random_plan_request(
+            replay_request,
+            experimental_enabled=(
+                os.environ.get("PROMPT_STUDIO_EXPERIMENTAL_WORDLISTS") == "1"
+            ),
+        )
+        semantic_rerolls.append(
+            {
+                **conflict,
+                "rerolledEntryId": reroll_entry_id,
+                "decision": "deterministic_semantic_reroll",
+            }
+        )
+    else:
+        raise ValueError("词库语义冲突重抽超过安全上限")
+    if semantic_rerolls:
+        canonical_plan["semanticPreflight"] = {
+            "version": "adult-character-heuristics-v1",
+            "rerolls": semantic_rerolls,
+        }
+    saved_settings = (
+        settings_payload if settings_payload is not None else get_settings()
+    )
+    settings = {**DEFAULT_TEXT_SETTINGS, **saved_settings}
+    provider = str(
+        payload.get("provider") or settings.get("textProvider") or "local"
+    ).strip().lower()
+    if provider not in {"local", "api"}:
+        raise ValueError("不支持的文本推理来源")
+    target_model = str(payload.get("targetModel") or "anima").strip()
+    result = engine(canonical_plan, settings, provider, target_model)
+    result["randomPlan"] = canonical_plan
+    return result
+
+
+def detect_random_plan_hard_conflict(random_plan: dict) -> dict | None:
+    """Return one deterministic hard conflict for the experimental catalog."""
+
+    items = [
+        item
+        for item in random_plan.get("items") or []
+        if isinstance(item, dict) and item.get("entryId") and item.get("text")
+    ]
+    by_category = {}
+    for item in items:
+        by_category.setdefault(item.get("categoryId"), []).append(item)
+
+    composition_items = by_category.get("composition_camera", [])
+    exclusive = next(
+        (
+            item
+            for item in composition_items
+            if any(
+                phrase in str(item["text"]).casefold()
+                for phrase in (
+                    "hands only",
+                    "eyes only",
+                    "face only",
+                    "feet only",
+                    "silhouette only",
+                )
+            )
+        ),
+        None,
+    )
+    if exclusive and any(
+        by_category.get(category)
+        for category in ("appearance_traits", "clothing_outfit", "pose_action")
+    ):
+        counterpart = next(
+            item
+            for category in ("pose_action", "appearance_traits", "clothing_outfit")
+            for item in by_category.get(category, [])
+        )
+        return {
+            "code": "exclusive_crop_hides_required_character_details",
+            "message": "仅显示局部的构图会隐藏同时抽中的外貌、服装或完整姿势",
+            "entryIds": [exclusive["entryId"], counterpart["entryId"]],
+            "rerollCandidates": [exclusive["entryId"], counterpart["entryId"]],
+        }
+
+    night = next(
+        (
+            item
+            for item in items
+            if item.get("categoryId") in {"theme_mood", "scene_environment", "weather_time"}
+            and any(
+                token in str(item["text"]).casefold()
+                for token in ("at night", "midnight", "nighttime")
+            )
+        ),
+        None,
+    )
+    daylight = next(
+        (
+            item
+            for item in by_category.get("lighting_color", [])
+            if any(
+                token in str(item["text"]).casefold()
+                for token in ("sunrise", "morning light", "midday", "daylight")
+            )
+        ),
+        None,
+    )
+    if night and daylight:
+        return {
+            "code": "time_of_day_conflict",
+            "message": "夜间时间与日出、清晨或正午自然光不能同时作为主时段",
+            "entryIds": [night["entryId"], daylight["entryId"]],
+            "rerollCandidates": [daylight["entryId"], night["entryId"]],
+        }
+    return None
 
 
 def process_text_decompose_request(
@@ -1582,6 +1762,8 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
             return self.handle_text_random()
         if parsed.path == "/api/text/random-plan":
             return self.handle_random_plan()
+        if parsed.path == "/api/text/random-plan/polish":
+            return self.handle_random_plan_polish()
         if parsed.path == "/api/recipe/resolve":
             return self.handle_recipe_resolve()
         if parsed.path == "/api/text/edit-preview":
@@ -1936,6 +2118,21 @@ class PromptStudioHandler(SimpleHTTPRequestHandler):
         try:
             payload = self.read_json()
             item = process_text_random_request(payload)
+        except json.JSONDecodeError:
+            return self.send_bad_json()
+        except ValueError as error:
+            return self.send_json({"error": str(error)}, status=400)
+        except PromptEngineError as error:
+            return self.send_json(
+                {"error": error.message, "code": error.code},
+                status=error.status,
+            )
+        self.send_json({"item": item})
+
+    def handle_random_plan_polish(self) -> None:
+        try:
+            payload = self.read_json()
+            item = process_text_random_plan_polish_request(payload)
         except json.JSONDecodeError:
             return self.send_bad_json()
         except ValueError as error:

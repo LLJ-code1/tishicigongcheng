@@ -235,6 +235,8 @@
       randomPlan: null,
       randomCatalog: null,
       randomCatalogStatus: "idle",
+      randomPlanBusy: false,
+      wordlistPolishing: false,
       instructionHistory: [],
       pendingEditPreview: null,
       pendingChange: null,
@@ -450,6 +452,8 @@
     next.textGenerating = false;
     next.textDecomposing = false;
     next.translatingPending = false;
+    next.randomPlanBusy = false;
+    next.wordlistPolishing = false;
     next.regeneratingBlockId = "";
     next.generationProgress = idleGenerationProgress();
     next.restoreFromVersion = null;
@@ -1312,9 +1316,16 @@
         next.randomCatalogStatus = "error";
         next.toast = action.error || "词库目录加载失败";
         return next;
+      case "RANDOM_PLAN_STARTED":
+        next.randomPlanBusy = true;
+        next.toast = action.reroll ? "正在重抽指定词条" : "正在生成确定性随机计划";
+        return next;
       case "APPLY_RANDOM_PLAN": {
         const plan = action.item;
         if (!plan || !Array.isArray(plan.items)) return next;
+        plan.userLockedEntryIds = Array.isArray(action.userLockedEntryIds)
+          ? Array.from(new Set(action.userLockedEntryIds))
+          : [];
         const blocks = clone(
           next.appliedBlocks.length ? next.appliedBlocks : data.promptBlocks || []
         );
@@ -1337,12 +1348,69 @@
         }
         next.randomPlan = clone(plan);
         next.randomSeed = plan.librarySeed;
+        next.randomPlanBusy = false;
         initializeVersion(next, compileBlocks(blocks), blocks);
         next.toast = `已按词库 Seed 生成 ${plan.items.length} 项；中文块可用本地 LLM 翻译`;
         return next;
       }
       case "RANDOM_PLAN_FAILED":
+        next.randomPlanBusy = false;
         next.toast = action.error || "确定性随机计划生成失败";
+        return next;
+      case "TOGGLE_RANDOM_PLAN_LOCK": {
+        if (!next.randomPlan || !Array.isArray(next.randomPlan.items)) return next;
+        const validIds = new Set(next.randomPlan.items.map((item) => item.entryId));
+        if (!validIds.has(action.entryId)) return next;
+        const locked = new Set(next.randomPlan.userLockedEntryIds || []);
+        if (locked.has(action.entryId)) locked.delete(action.entryId);
+        else locked.add(action.entryId);
+        next.randomPlan.userLockedEntryIds = Array.from(locked).filter((id) => validIds.has(id));
+        markWorkspaceChanged(next);
+        next.toast = locked.has(action.entryId) ? "已锁定该词条" : "已解锁该词条";
+        return next;
+      }
+      case "START_WORDLIST_POLISH":
+        next.wordlistPolishing = true;
+        if (next.randomPlan) next.randomPlan.semanticReview = null;
+        if (next.outputChecks) next.outputChecks.wordlistReview = null;
+        next.toast = "正在协调冲突并润色固定框架";
+        return next;
+      case "APPLY_WORDLIST_POLISH": {
+        const item = action.item || {};
+        initializeVersion(
+          next,
+          {
+            positiveEn: item.positiveEn || "",
+            positiveZh: item.positiveZh || "",
+            negativeEn: item.negativeEn || "",
+            negativeZh: item.negativeZh || "",
+            relationEn: item.relationEn || "",
+            relationZh: item.relationZh || "",
+          },
+          item.blocks || []
+        );
+        next.outputChecks = clone(item.checks || {});
+        if (item.randomPlan) {
+          const userLockedEntryIds = clone(
+            next.randomPlan?.userLockedEntryIds || []
+          );
+          next.randomPlan = clone(item.randomPlan);
+          next.randomPlan.userLockedEntryIds = userLockedEntryIds.filter((id) =>
+            next.randomPlan.items?.some((entry) => entry.entryId === id)
+          );
+        }
+        if (next.randomPlan) {
+          next.randomPlan.semanticReview = clone(
+            item.checks?.wordlistReview || null
+          );
+        }
+        next.wordlistPolishing = false;
+        next.toast = "词库计划已完成语义协调，全部抽中词条通过覆盖校验";
+        return next;
+      }
+      case "WORDLIST_POLISH_FAILED":
+        next.wordlistPolishing = false;
+        next.toast = action.error || "词库语义润色失败";
         return next;
       case "EDIT_PREVIEW_STARTED":
         next.pendingEditPreview = { loading: true };
@@ -1587,7 +1655,7 @@
           status: "running",
           task: "random",
           title: "正在设计随机画面",
-          detail: "模型先生成完整视觉蓝图，再编译为 Anima 双语结构化提示词。",
+          detail: "代码先从版本化词库确定性抽样，再协调冲突并编译为 Anima 双语固定框架。",
           provider:
             next.settings.textProvider === "api" ? "外部 API" : "本地 LLM",
           startedAt: action.startedAt || Date.now(),
@@ -1611,13 +1679,22 @@
           item.blocks || []
         );
         next.outputChecks = clone(item.checks || {});
+        if (item.randomPlan) {
+          next.randomPlan = clone(item.randomPlan);
+          next.randomSeed = item.randomPlan.librarySeed || null;
+          next.randomPlan.semanticReview = clone(
+            item.checks?.wordlistReview || null
+          );
+        }
         next.textGenerating = false;
         const finishedAt = action.finishedAt || Date.now();
         next.generationProgress = {
           ...next.generationProgress,
           status: "success",
           title: "全随机生成完成",
-          detail: "随机蓝图、十个结构块和中英文提示词已更新。",
+          detail: item.randomPlan
+            ? "词库计划、语义审计、十三个结构块和中英文提示词已更新。"
+            : "随机蓝图、十三个结构块和中英文提示词已更新。",
           finishedAt,
           elapsedSeconds:
             Math.round(
@@ -2963,14 +3040,49 @@
     const request = beginWorkspaceRequest();
     activeTextAbort = request.controller;
     try {
-      const result = await apiJson("/api/text/random", {
-        method: "POST",
-        signal: request.controller.signal,
-        body: JSON.stringify({
-          provider: state.settings.textProvider,
-          targetModel: "anima",
-        }),
-      });
+      let result;
+      let catalog = state.randomCatalog;
+      if (!catalog) {
+        const catalogResult = await apiJson("/api/text/random-catalog", {
+          signal: request.controller.signal,
+        });
+        catalog = catalogResult.item;
+        dispatch({ type: "RANDOM_CATALOG_LOADED", item: catalog });
+      }
+      try {
+        const planResult = await apiJson("/api/text/random-plan", {
+          method: "POST",
+          signal: request.controller.signal,
+          body: JSON.stringify({
+            catalogVersion: catalog.version,
+            catalogContentSha256: catalog.contentSha256,
+            samplerVersion: catalog.samplerVersion,
+            mappingVersion: catalog.mappingVersion,
+            profile: catalog.profile,
+            lockedEntryIds: [],
+            rerollEntryIds: [],
+          }),
+        });
+        result = await apiJson("/api/text/random-plan/polish", {
+          method: "POST",
+          signal: request.controller.signal,
+          body: JSON.stringify({
+            randomPlan: planResult.item,
+            provider: state.settings.textProvider,
+            targetModel: "anima",
+          }),
+        });
+      } catch (error) {
+        if (error.code !== "random_catalog_not_release_ready") throw error;
+        result = await apiJson("/api/text/random", {
+          method: "POST",
+          signal: request.controller.signal,
+          body: JSON.stringify({
+            provider: state.settings.textProvider,
+            targetModel: "anima",
+          }),
+        });
+      }
       if (
         discardChangedWorkspaceResult(
           request,
@@ -3533,20 +3645,107 @@
             profile: catalog.profile,
           }
         : {}),
-      lockedEntryIds: [],
+      lockedEntryIds: state.randomPlan?.userLockedEntryIds || [],
       rerollEntryIds: [],
     };
+    dispatch({ type: "RANDOM_PLAN_STARTED" });
     try {
       const result = await apiJson("/api/text/random-plan", {
         method: "POST",
         body: JSON.stringify(payload),
       });
-      dispatch({ type: "APPLY_RANDOM_PLAN", item: result.item });
+      dispatch({
+        type: "APPLY_RANDOM_PLAN",
+        item: result.item,
+        userLockedEntryIds: payload.lockedEntryIds,
+      });
     } catch (error) {
       dispatch({
         type: "RANDOM_PLAN_FAILED",
         error: error.message || "确定性随机计划生成失败",
       });
+    }
+  }
+
+  function randomPlanRequestBase() {
+    const plan = state.randomPlan || {};
+    const catalog = plan.catalog || state.randomCatalog || {};
+    return {
+      librarySeed: plan.librarySeed,
+      catalogVersion: catalog.version,
+      catalogContentSha256: catalog.contentSha256,
+      samplerVersion: catalog.samplerVersion,
+      mappingVersion: catalog.mappingVersion,
+      profile: catalog.profile,
+    };
+  }
+
+  async function rerollWordlistEntry(entryId) {
+    if (!state.randomPlan || state.randomPlanBusy || state.wordlistPolishing) return;
+    const userLockedEntryIds = (state.randomPlan.userLockedEntryIds || []).filter(
+      (id) => id !== entryId
+    );
+    dispatch({ type: "RANDOM_PLAN_STARTED", reroll: true });
+    try {
+      const result = await apiJson("/api/text/random-plan", {
+        method: "POST",
+        body: JSON.stringify({
+          ...randomPlanRequestBase(),
+          lockedEntryIds: userLockedEntryIds,
+          rerollEntryIds: [entryId],
+        }),
+      });
+      dispatch({
+        type: "APPLY_RANDOM_PLAN",
+        item: result.item,
+        userLockedEntryIds,
+      });
+    } catch (error) {
+      dispatch({
+        type: "RANDOM_PLAN_FAILED",
+        error: error.message || "局部重抽失败",
+      });
+    }
+  }
+
+  async function polishWordlistPlan() {
+    if (!state.randomPlan || state.wordlistPolishing || state.randomPlanBusy) return;
+    dispatch({ type: "START_WORDLIST_POLISH" });
+    const request = beginWorkspaceRequest();
+    try {
+      const result = await apiJson("/api/text/random-plan/polish", {
+        method: "POST",
+        signal: request.controller.signal,
+        body: JSON.stringify({
+          randomPlan: state.randomPlan,
+          provider: state.settings.textProvider,
+          targetModel: "anima",
+        }),
+      });
+      if (
+        discardChangedWorkspaceResult(
+          request,
+          "WORDLIST_POLISH_FAILED",
+          "请求期间随机计划已修改，已丢弃旧润色结果"
+        )
+      ) return;
+      dispatch({ type: "APPLY_WORDLIST_POLISH", item: result.item });
+    } catch (error) {
+      if (
+        discardChangedWorkspaceResult(
+          request,
+          "WORDLIST_POLISH_FAILED",
+          "请求期间随机计划已修改，已停止旧润色任务"
+        )
+      ) return;
+      dispatch({
+        type: "WORDLIST_POLISH_FAILED",
+        error: isAbortError(error)
+          ? "已取消词库润色"
+          : error.message || "词库语义润色失败",
+      });
+    } finally {
+      finishWorkspaceRequest(request);
     }
   }
 
@@ -5290,12 +5489,8 @@
       );
     }
     const seedInput = $("#librarySeed");
-    if (
-      seedInput &&
-      document.activeElement !== seedInput &&
-      state.randomPlan?.librarySeed
-    ) {
-      seedInput.value = state.randomPlan.librarySeed;
+    if (seedInput && document.activeElement !== seedInput) {
+      seedInput.value = state.randomPlan?.librarySeed || "";
     }
     const status = $("#wordlistStatus");
     if (status && state.randomCatalog) {
@@ -5305,6 +5500,7 @@
       );
       status.textContent = `${count} 条 · ${state.randomCatalog.version} · ${state.randomCatalog.runtimeReady ? "可发布" : "实验"} · ${state.randomCatalog.semanticReviewRequired ? "待人工语义审核" : "已审核"}`;
     }
+    renderWordlistPlanPanel();
     const panel = $("#editPreviewPanel");
     const preview = state.pendingEditPreview;
     if (panel) {
@@ -5341,6 +5537,55 @@
     if (applyButton) applyButton.disabled = !preview?.ready;
   }
 
+  function renderWordlistPlanPanel() {
+    const panel = $("#wordlistPlanPanel");
+    if (!panel) return;
+    const plan = state.randomPlan;
+    if (!plan?.items?.length) {
+      panel.classList.add("hidden");
+      panel.innerHTML = "";
+      return;
+    }
+    const locked = new Set(plan.userLockedEntryIds || []);
+    const review = plan.semanticReview || state.outputChecks?.wordlistReview;
+    const coverage = new Map(
+      (review?.coverage || []).map((item) => [item.entryId, item])
+    );
+    const conflicts = (review?.conflicts || [])
+      .map(
+        (item) =>
+          `<li>${escapeHtml(item.severity || "soft")} · ${escapeHtml(item.decisionZh || "已通过上下文协调")}</li>`
+      )
+      .join("");
+    const semanticRerollCount = plan.semanticPreflight?.rerolls?.length || 0;
+    const reviewDetails = [
+      semanticRerollCount ? `自动重抽 ${semanticRerollCount} 个硬冲突词条` : "",
+      review?.deterministicScaffoldUsed ? "已用固定双语脚手架补足结构" : "",
+      review ? `未丢弃 ${(review.discardedEntryIds || []).length} 项` : "",
+    ].filter(Boolean);
+    panel.classList.remove("hidden");
+    panel.innerHTML = `
+      <div class="wordlist-plan-heading">
+        <div><strong>抽中词条 ${plan.items.length} 项</strong><span>Seed ${escapeHtml(plan.librarySeed || "")}</span></div>
+        <button class="primary-button" type="button" data-action="wordlist-polish" ${state.wordlistPolishing || state.randomPlanBusy ? "disabled" : ""}>${state.wordlistPolishing ? "正在协调并润色…" : "协调冲突并润色"}</button>
+      </div>
+      <div class="wordlist-plan-items">
+        ${plan.items
+          .map((item) => {
+            const audit = coverage.get(item.entryId);
+            const isLocked = locked.has(item.entryId);
+            return `<article class="wordlist-plan-item ${isLocked ? "locked" : ""}">
+              <div><b>${escapeHtml(item.text)}</b><span>${escapeHtml(item.categoryId)} → ${escapeHtml(item.categoryId === "clothing_outfit" ? "outfit" : item.binding?.blockId || "")}</span>${audit ? `<em title="${escapeHtml(audit.decisionZh || "")}">覆盖已验证</em>` : ""}</div>
+              <button type="button" data-wordlist-lock="${escapeHtml(item.entryId)}">${isLocked ? "解锁" : "锁定"}</button>
+              <button type="button" data-wordlist-reroll="${escapeHtml(item.entryId)}" ${isLocked || state.randomPlanBusy || state.wordlistPolishing ? "disabled" : ""}>重抽</button>
+            </article>`;
+          })
+          .join("")}
+      </div>
+      ${review ? `<div class="wordlist-review ${review.allSelectedItemsPreserved ? "passed" : "warning"}"><strong>${review.allSelectedItemsPreserved ? "全部词条覆盖通过" : "覆盖待确认"}</strong><span>${escapeHtml(reviewDetails.join(" · "))}</span>${conflicts ? `<ul>${conflicts}</ul>` : ""}</div>` : '<p class="wordlist-review-hint">当前是未润色原稿；润色后会逐项验证词条是否仍在指定结构块。</p>'}
+    `;
+  }
+
   async function copyText(text) {
     if (!text) {
       state.toast = "当前没有可复制内容";
@@ -5371,6 +5616,17 @@
     }
     if (button.dataset.action === "retry-projects") {
       loadProjects();
+      return;
+    }
+    if (button.dataset.wordlistLock) {
+      dispatch({
+        type: "TOGGLE_RANDOM_PLAN_LOCK",
+        entryId: button.dataset.wordlistLock,
+      });
+      return;
+    }
+    if (button.dataset.wordlistReroll) {
+      rerollWordlistEntry(button.dataset.wordlistReroll);
       return;
     }
     if (button.dataset.textMode) {
@@ -5630,6 +5886,8 @@
       translatePendingBlocks();
     } else if (action === "wordlist-plan") {
       generateWordlistPlan();
+    } else if (action === "wordlist-polish") {
+      polishWordlistPlan();
     } else if (action === "preview-edit") {
       previewChineseEdit();
     } else if (action === "restore-model-defaults") {

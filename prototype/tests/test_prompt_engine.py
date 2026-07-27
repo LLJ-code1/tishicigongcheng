@@ -15,6 +15,7 @@ from prompt_engine import (  # noqa: E402
     decompose_text_prompt,
     expand_text_prompt,
     generate_random_text_prompt,
+    polish_random_plan_prompt,
     normalize_text_decomposition,
     normalize_text_expansion,
     probe_text_provider,
@@ -214,6 +215,192 @@ class PromptAssemblyTests(unittest.TestCase):
         self.assertEqual(calls[1]["thinking"], {"type": "disabled"})
         self.assertEqual(len(result["blocks"]), 13)
         self.assertGreater(len(result["positiveEn"]), 350)
+
+    def test_wordlist_polish_preserves_every_selected_phrase_in_bound_block(self):
+        plan = {
+            "librarySeed": "00112233445566778899aabbccddeeff",
+            "catalog": {"version": "v1-test"},
+            "items": [
+                {
+                    "entryId": "scene:night",
+                    "categoryId": "scene_environment",
+                    "text": "laundromat at night",
+                    "binding": {"blockId": "scene"},
+                    "locked": False,
+                },
+                {
+                    "entryId": "light:sunrise",
+                    "categoryId": "lighting_atmosphere",
+                    "text": "sunrise gradient sky",
+                    "binding": {"blockId": "lighting"},
+                    "locked": True,
+                },
+            ],
+        }
+        payload = rich_random_model_result()
+        for block in payload["blocks"]:
+            if block["id"] == "scene":
+                block["en"] = (
+                    "laundromat at night, wet windows, tiled floor, "
+                    "rows of washers, street reflections"
+                )
+                block["zh"] = "深夜洗衣店，潮湿窗户，瓷砖地面，成排洗衣机，街道倒影"
+            if block["id"] == "lighting":
+                block["en"] = (
+                    "sunrise gradient sky, reflected screen light, cool ambient light, "
+                    "soft facial highlights"
+                )
+                block["zh"] = "日出渐变天空，屏幕反射光，冷色环境光，柔和面部高光"
+            if block["id"] == "effects":
+                block["en"] += ", laundromat at night"
+                block["zh"] += "，深夜洗衣店"
+        payload["wordlistReview"] = {
+            "coverage": [
+                {
+                    "entryId": "scene:night",
+                    "sourceText": "laundromat at night",
+                    "blockId": "scene",
+                    "evidenceEn": "laundromat at night",
+                    "decisionZh": "作为真实时间和地点",
+                },
+                {
+                    "entryId": "light:sunrise",
+                    "sourceText": "sunrise gradient sky",
+                    "blockId": "lighting",
+                    "evidenceEn": "sunrise gradient sky on a display",
+                    "decisionZh": "作为室内屏幕画面",
+                },
+            ],
+            "conflicts": [
+                {
+                    "entryIds": ["scene:night", "light:sunrise"],
+                    "severity": "resolved",
+                    "decisionZh": "日出只出现在屏幕和反射中",
+                }
+            ],
+            "discardedEntryIds": [],
+        }
+        payload.pop("wordlistReview")
+        calls = []
+
+        def transport(url, body, headers, timeout):
+            calls.append(body)
+            return {
+                "choices": [
+                    {"message": {"content": json.dumps(payload, ensure_ascii=False)}}
+                ]
+            }
+
+        result = polish_random_plan_prompt(
+            plan,
+            {
+                "localTextUrl": "http://127.0.0.1:8080/v1",
+                "localTextModel": "local-model",
+            },
+            transport=transport,
+        )
+
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(result["checks"]["wordlistReview"]["allSelectedItemsPreserved"])
+        self.assertEqual(len(result["checks"]["wordlistReview"]["coverage"]), 2)
+        self.assertIn(
+            "laundromat at night",
+            next(block for block in result["blocks"] if block["id"] == "scene")["en"],
+        )
+        self.assertNotIn(
+            "laundromat at night",
+            next(block for block in result["blocks"] if block["id"] == "effects")["en"],
+        )
+        self.assertEqual(
+            result["checks"]["wordlistReview"]["misplacedDuplicatesRemoved"],
+            1,
+        )
+
+    def test_wordlist_polish_fails_closed_when_repair_still_drops_a_phrase(self):
+        plan = {
+            "items": [
+                {
+                    "entryId": "scene:night",
+                    "categoryId": "scene_environment",
+                    "text": "laundromat at night with circular washers and wet windows",
+                    "binding": {"blockId": "scene"},
+                }
+            ]
+        }
+        payload = rich_random_model_result()
+        payload["wordlistReview"] = {
+            "coverage": [
+                {
+                    "entryId": "scene:night",
+                    "sourceText": "laundromat at night with circular washers and wet windows",
+                    "blockId": "scene",
+                    "evidenceEn": "night interior",
+                    "decisionZh": "错误地改写",
+                }
+            ],
+            "discardedEntryIds": [],
+        }
+
+        def transport(url, body, headers, timeout):
+            return {
+                "choices": [
+                    {"message": {"content": json.dumps(payload, ensure_ascii=False)}}
+                ]
+            }
+
+        with self.assertRaises(PromptEngineError) as context:
+            polish_random_plan_prompt(
+                plan,
+                {
+                    "localTextUrl": "http://127.0.0.1:8080/v1",
+                    "localTextModel": "local-model",
+                },
+                transport=transport,
+            )
+        self.assertEqual(context.exception.code, "wordlist_coverage_failed")
+
+    def test_wordlist_polish_uses_deterministic_scaffold_after_thin_repair(self):
+        source_text = "ancient stone bridge in mist"
+        plan = {
+            "items": [
+                {
+                    "entryId": "scene:bridge",
+                    "categoryId": "scene_environment",
+                    "text": source_text,
+                    "binding": {"blockId": "scene"},
+                }
+            ]
+        }
+        payload = valid_model_result()
+        for block in payload["blocks"]:
+            if block["id"] == "scene":
+                block["en"] = source_text
+                block["zh"] = "雾中的古老石桥"
+        calls = []
+
+        def transport(url, body, headers, timeout):
+            calls.append(body)
+            return {
+                "choices": [
+                    {"message": {"content": json.dumps(payload, ensure_ascii=False)}}
+                ]
+            }
+
+        result = polish_random_plan_prompt(
+            plan,
+            {
+                "localTextUrl": "http://127.0.0.1:8080/v1",
+                "localTextModel": "local-model",
+            },
+            transport=transport,
+        )
+
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(
+            result["checks"]["wordlistReview"]["deterministicScaffoldUsed"]
+        )
+        self.assertIn("single continuous location", result["positiveEn"])
+        self.assertIn("clear subject hierarchy", result["positiveEn"])
 
     def test_decomposition_prompt_forbids_rewriting_or_adding_content(self):
         prompt = build_text_decompose_system_prompt()

@@ -1113,6 +1113,410 @@ def generate_random_text_prompt(
         )
 
 
+def polish_random_plan_prompt(
+    random_plan: dict,
+    settings: dict,
+    provider: str = "local",
+    target_model: str = "anima",
+    transport: Transport | None = None,
+    timeout: float = 120,
+) -> dict:
+    """Turn a deterministic word-list plan into a coherent bilingual recipe.
+
+    The sampler remains the only source of random entropy.  The model may add
+    connective visual details, but every selected source phrase must survive
+    verbatim in its server-owned destination block.  This makes model-side
+    omissions observable instead of silently changing the random draw.
+    """
+
+    if not isinstance(random_plan, dict):
+        raise PromptEngineError(
+            "确定性随机计划格式无效",
+            code="invalid_random_plan",
+            status=400,
+        )
+    raw_items = random_plan.get("items")
+    if not isinstance(raw_items, list) or not raw_items:
+        raise PromptEngineError(
+            "确定性随机计划没有可润色的抽中项",
+            code="invalid_random_plan",
+            status=400,
+        )
+
+    expected: list[dict[str, str]] = []
+    expected_ids: set[str] = set()
+    for index, raw_item in enumerate(raw_items):
+        if not isinstance(raw_item, dict):
+            raise PromptEngineError(
+                f"随机计划第 {index + 1} 项格式无效",
+                code="invalid_random_plan",
+                status=400,
+            )
+        entry_id = clean_string(raw_item.get("entryId"))
+        source_text = clean_string(raw_item.get("text"))
+        binding = raw_item.get("binding")
+        block_id = (
+            clean_string(binding.get("blockId"))
+            if isinstance(binding, dict)
+            else ""
+        )
+        if raw_item.get("categoryId") == "clothing_outfit":
+            block_id = "outfit"
+        if (
+            not entry_id
+            or entry_id in expected_ids
+            or not source_text
+            or block_id not in REQUIRED_BLOCK_IDS
+            or block_id == "negative"
+        ):
+            raise PromptEngineError(
+                "随机计划包含重复 ID、空词条或无效结构块绑定",
+                code="invalid_random_plan",
+                status=400,
+            )
+        expected_ids.add(entry_id)
+        expected.append(
+            {
+                "entryId": entry_id,
+                "categoryId": clean_string(raw_item.get("categoryId")),
+                "sourceText": source_text,
+                "blockId": block_id,
+                "locked": bool(raw_item.get("locked")),
+            }
+        )
+
+    config = resolve_text_provider(settings, provider)
+    caller = transport or default_transport
+    system_prompt = build_text_expand_system_prompt(
+        target_model,
+        (
+            "当前任务是确定性词库计划的语义整合，不得重新随机。"
+            "randomPlanItems 中每个 sourceText 都是硬覆盖约束，必须逐字保留在指定 blockId 的英文块中，"
+            "每条只出现一次；可以在同一块增加上下文，把表面冲突解释为反射、屏幕、远景、时间过渡或物理因果，"
+            "但不得删除、替换、弱化或移动词条。必须输出完整十三块和中英文。"
+            "额外输出 wordlistReview，其中 coverage 对每个 entryId 恰好一条，"
+            "conflicts 记录发现的语义张力及解决方式；禁止声称丢弃任何词条。"
+        ),
+    )
+    request_payload = {
+        "task": "polish_deterministic_wordlist_plan",
+        "targetModel": target_model,
+        "randomPlan": {
+            "librarySeed": clean_string(random_plan.get("librarySeed")),
+            "catalog": random_plan.get("catalog") or {},
+        },
+        "randomPlanItems": expected,
+        "requirements": {
+            "requiredBlocks": list(REQUIRED_BLOCK_IDS),
+            "adultSingleCharacter": True,
+            "coherentSingleScene": True,
+            "preserveEverySourceTextVerbatim": True,
+            "bilingual": True,
+            "includeRelation": True,
+            "doNotAddKnownIpArtistBrandOrLora": True,
+        },
+        "wordlistReviewSchema": {
+            "coverage": [
+                {
+                    "entryId": "exact source entryId",
+                    "sourceText": "exact sourceText",
+                    "blockId": "server-provided destination blockId",
+                    "evidenceEn": "the containing English phrase",
+                    "decisionZh": "如何在画面中成立",
+                }
+            ],
+            "conflicts": [
+                {
+                    "entryIds": ["involved entryIds"],
+                    "severity": "soft or resolved",
+                    "decisionZh": "保留全部词条时的协调方式",
+                }
+            ],
+            "discardedEntryIds": [],
+        },
+    }
+    message = json.dumps(request_payload, ensure_ascii=False, indent=2)
+    if provider == "local":
+        message = f"/no_think\n{message}"
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": message},
+    ]
+
+    def call(current_messages: list[dict], temperature: float) -> str:
+        body = apply_provider_request_options(
+            config,
+            {
+                "model": config["model"],
+                "messages": current_messages,
+                "temperature": temperature,
+                "max_tokens": 3000,
+                "response_format": {"type": "json_object"},
+                "stream": False,
+            },
+        )
+        response = caller(config["url"], body, config["headers"], timeout)
+        return response_content(response)
+
+    def normalized_phrase(value: object) -> str:
+        return re.sub(r"\s+", " ", clean_string(value)).casefold()
+
+    def integration_issues_for(result: dict) -> list[str]:
+        visual_blocks = {
+            block["id"]: split_prompt_items(block.get("en"))
+            for block in result["blocks"]
+            if block["id"] not in {"quality", "artist", "negative"}
+        }
+        issues = []
+        visual_item_count = sum(len(items) for items in visual_blocks.values())
+        if visual_item_count < max(18, len(expected) + 7):
+            issues.append(f"当前只有约 {visual_item_count} 个有效视觉项")
+        for block_id, minimum in {"scene": 4, "composition": 3, "lighting": 3}.items():
+            count = len(visual_blocks.get(block_id, []))
+            if count < minimum:
+                issues.append(
+                    f"{block_id} 只有 {count} 项，至少需要 {minimum} 项"
+                )
+        if not clean_string(result.get("relationEn")):
+            issues.append("缺少画面关系描述")
+        all_visual_keys = [
+            prompt_item_key(item)
+            for items in visual_blocks.values()
+            for item in items
+        ]
+        duplicate_keys = {
+            key for key in all_visual_keys if all_visual_keys.count(key) > 1
+        }
+        if len(duplicate_keys) > 2:
+            issues.append(
+                "多个结构块重复相同标签：" + "、".join(sorted(duplicate_keys))
+            )
+        return issues
+
+    def parse_result(content: str, *, allow_scaffold: bool = False) -> dict:
+        raw = parse_model_json(content)
+        result = normalize_text_expansion(raw)
+        source_target_by_key = {
+            prompt_item_key(item["sourceText"]): item["blockId"]
+            for item in expected
+        }
+        misplaced_duplicates_removed = 0
+        for block in result["blocks"]:
+            english_items = split_prompt_items(block.get("en"))
+            chinese_items = split_prompt_items(block.get("zh"))
+            remove_indexes = {
+                index
+                for index, item in enumerate(english_items)
+                if prompt_item_key(item) in source_target_by_key
+                and source_target_by_key[prompt_item_key(item)] != block["id"]
+            }
+            if remove_indexes and len(english_items) == len(chinese_items):
+                block["en"] = ", ".join(
+                    item
+                    for index, item in enumerate(english_items)
+                    if index not in remove_indexes
+                )
+                block["zh"] = "，".join(
+                    item
+                    for index, item in enumerate(chinese_items)
+                    if index not in remove_indexes
+                )
+                misplaced_duplicates_removed += len(remove_indexes)
+        if misplaced_duplicates_removed:
+            result.update(
+                compile_normalized_blocks(
+                    result["blocks"],
+                    result.get("relationEn", ""),
+                    result.get("relationZh", ""),
+                )
+            )
+        block_by_id = {item["id"]: item for item in result["blocks"]}
+        for source in expected:
+            if normalized_phrase(source["sourceText"]) not in normalized_phrase(
+                block_by_id[source["blockId"]].get("en")
+            ):
+                raise PromptEngineError(
+                    f"词库词条未逐字保留：{source['sourceText']}",
+                    code="wordlist_coverage_failed",
+                    status=502,
+                )
+
+        fallback_used = False
+        integration_issues = integration_issues_for(result)
+        if integration_issues and allow_scaffold:
+            scaffold = {
+                "subject": [
+                    ("solo original adult character", "单人原创成年角色"),
+                    ("clear subject identity", "明确的主体身份"),
+                ],
+                "appearance": [
+                    ("clearly readable facial features", "清晰可辨的面部特征"),
+                    ("scene-consistent visible details", "与场景一致的可见细节"),
+                ],
+                "outfit": [
+                    ("coherent fabric folds", "连贯自然的布料褶皱"),
+                    ("scene-matched material response", "符合场景的材质反馈"),
+                ],
+                "expression": [
+                    ("focused calm expression", "专注而平静的表情"),
+                    ("gaze directed toward the main event", "视线指向主要事件"),
+                ],
+                "pose": [
+                    ("anatomically coherent posture", "解剖关系连贯的姿态"),
+                    ("balanced body weight", "平衡的身体重心"),
+                ],
+                "interaction": [
+                    ("clear contact with nearby surfaces", "与附近表面的明确接触"),
+                    ("props follow the character action", "道具服从人物动作关系"),
+                ],
+                "scene": [
+                    ("single continuous location", "单一连续的地点"),
+                    ("layered foreground and background", "分层的前景与背景"),
+                    ("physically consistent weather", "物理一致的天气表现"),
+                    ("grounded environmental depth", "有落地感的环境纵深"),
+                ],
+                "composition": [
+                    ("clear subject hierarchy", "明确的主体层级"),
+                    ("readable camera angle", "清晰可读的机位角度"),
+                    ("layered depth composition", "分层纵深构图"),
+                    ("unobstructed focal area", "无遮挡的焦点区域"),
+                ],
+                "lighting": [
+                    ("consistent key light direction", "一致的主光方向"),
+                    ("soft rim light", "柔和轮廓光"),
+                    ("grounded cast shadows", "落地的投射阴影"),
+                    ("coherent color temperature", "统一的色温"),
+                ],
+                "effects": [
+                    ("effects share one wind direction", "特效遵循同一风向"),
+                    ("contact shadows beneath props", "道具下方具有接触阴影"),
+                    ("controlled effect density", "受控的特效密度"),
+                ],
+            }
+            for block_id, additions in scaffold.items():
+                block = block_by_id[block_id]
+                existing = {prompt_item_key(item) for item in split_prompt_items(block["en"])}
+                for english, chinese in additions:
+                    if prompt_item_key(english) in existing:
+                        continue
+                    block["en"] = merge_fixed_prompt(block["en"], english, ", ")
+                    block["zh"] = merge_fixed_prompt(block["zh"], chinese, "，")
+                    existing.add(prompt_item_key(english))
+            if not clean_string(result.get("relationEn")):
+                result["relationEn"] = (
+                    "All selected elements are staged as one continuous event; "
+                    "the character, environment, camera, light and effects share the same physical space."
+                )
+                result["relationZh"] = (
+                    "所有抽中元素被组织为同一个连续事件；人物、环境、镜头、光线与特效共享同一物理空间。"
+                )
+            result.update(
+                compile_normalized_blocks(
+                    result["blocks"],
+                    result.get("relationEn", ""),
+                    result.get("relationZh", ""),
+                )
+            )
+            fallback_used = True
+            integration_issues = integration_issues_for(result)
+        if integration_issues:
+            raise PromptEngineError(
+                "词库语义整合不足：" + "；".join(integration_issues),
+                code="insufficient_detail",
+                status=502,
+            )
+        review = raw.get("wordlistReview")
+        review = review if isinstance(review, dict) else {}
+        coverage = review.get("coverage")
+        coverage = coverage if isinstance(coverage, list) else []
+        coverage_by_id: dict[str, dict] = {}
+        for item in coverage:
+            if not isinstance(item, dict):
+                continue
+            entry_id = clean_string(item.get("entryId"))
+            if entry_id and entry_id not in coverage_by_id:
+                coverage_by_id[entry_id] = item
+        normalized_coverage = []
+        for source in expected:
+            audit = coverage_by_id.get(source["entryId"], {})
+            source_text = source["sourceText"]
+            block_id = source["blockId"]
+            if (
+                normalized_phrase(source_text)
+                not in normalized_phrase(block_by_id[block_id].get("en"))
+            ):
+                raise PromptEngineError(
+                    f"词库词条未逐字保留：{source_text}",
+                    code="wordlist_coverage_failed",
+                    status=502,
+                )
+            normalized_coverage.append(
+                {
+                    "entryId": source["entryId"],
+                    "sourceText": source_text,
+                    "blockId": block_id,
+                    "evidenceEn": clean_string(audit.get("evidenceEn"))
+                    or source_text,
+                    "decisionZh": clean_string(audit.get("decisionZh"))
+                    or "原词已在指定结构块逐字保留，模型只补充协调上下文",
+                }
+            )
+        discarded = review.get("discardedEntryIds")
+        if discarded not in (None, []):
+            raise PromptEngineError(
+                "词库润色禁止静默丢弃抽中词条",
+                code="wordlist_coverage_failed",
+                status=502,
+            )
+        conflicts = review.get("conflicts")
+        if not isinstance(conflicts, list):
+            conflicts = []
+        if not conflicts:
+            conflicts = [
+                {
+                    "entryIds": [],
+                    "severity": "resolved",
+                    "decisionZh": message,
+                }
+                for message in clean_string_list(
+                    (raw.get("checks") or {}).get("conflicts")
+                    if isinstance(raw.get("checks"), dict)
+                    else []
+                )
+            ]
+        normalized_review = {
+            "coverage": normalized_coverage,
+            "conflicts": conflicts[:64],
+            "discardedEntryIds": [],
+            "allSelectedItemsPreserved": True,
+            "misplacedDuplicatesRemoved": misplaced_duplicates_removed,
+            "deterministicScaffoldUsed": fallback_used,
+        }
+        result.setdefault("checks", {})["wordlistReview"] = normalized_review
+        return result
+
+    first_content = call(messages, 0.25)
+    try:
+        return parse_result(first_content)
+    except PromptEngineError as first_error:
+        if first_error.code not in {
+            "invalid_model_output",
+            "insufficient_detail",
+            "wordlist_coverage_failed",
+        }:
+            raise
+        repair = (
+            f"上一次结果未通过词库覆盖校验：{first_error.message}。"
+            "重新输出完整 JSON 和全部十三块。逐项复制 randomPlanItems 的 sourceText 到指定英文块，"
+            "在不移动原词的前提下补充至少 25 个可见细节，尤其补足构图、光影、物理关系和中英文 relation；"
+            "coverage 必须恰好覆盖所有 entryId，discardedEntryIds 必须为空；不要解释。"
+        )
+        return parse_result(
+            call(messages + [{"role": "user", "content": repair}], 0.1),
+            allow_scaffold=True,
+        )
+
+
 def expand_text_prompt(
     user_input: str,
     settings: dict,

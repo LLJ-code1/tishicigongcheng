@@ -27,6 +27,7 @@ from server import (  # noqa: E402
     MAX_JSON_BODY_BYTES,
     PROMPT_TEMPLATES,
     PromptStudioHandler,
+    detect_random_plan_hard_conflict,
     map_artist,
     map_character,
     normalize_search_result,
@@ -36,6 +37,7 @@ from server import (  # noqa: E402
     process_text_provider_test,
     process_text_expand_request,
     process_text_random_request,
+    process_text_random_plan_polish_request,
     process_text_regenerate_block_request,
     process_text_regenerate_blocks_request,
     process_text_translate_pending_request,
@@ -234,6 +236,112 @@ class AnimaDexAdapterTests(unittest.TestCase):
         self.assertEqual(captured["provider"], "api")
         self.assertEqual(captured["targetModel"], "anima")
         self.assertEqual(captured["settings"]["apiTextModel"], "deepseek-v4-flash")
+
+    def test_wordlist_polish_request_forwards_plan_without_changing_entropy(self):
+        captured = {}
+        plan = {
+            "librarySeed": "00112233445566778899aabbccddeeff",
+            "catalog": {
+                "version": "v1-test",
+                "contentSha256": "a" * 64,
+                "samplerVersion": "test",
+                "mappingVersion": "test",
+                "profile": "adult-character-v1",
+            },
+            "configuration": {
+                "lockedEntryIds": [],
+                "rerollEntryIds": [],
+                "drawCounts": {},
+            },
+            "items": [{"entryId": "scene:test", "text": "rainy shrine"}],
+        }
+
+        def fake_engine(random_plan, settings, provider, target_model):
+            captured.update(
+                {
+                    "randomPlan": random_plan,
+                    "provider": provider,
+                    "targetModel": target_model,
+                    "settings": settings,
+                }
+            )
+            return {"checks": {"wordlistReview": {"coverage": []}}}
+
+        replay_calls = []
+
+        def replay(request, *, experimental_enabled):
+            replay_calls.append((request, experimental_enabled))
+            return plan
+
+        with patch("server.process_random_plan_request", side_effect=replay):
+            result = process_text_random_plan_polish_request(
+                {"randomPlan": plan, "provider": "local"},
+                settings_payload={
+                    "localTextUrl": "http://127.0.0.1:8080/v1",
+                    "localTextModel": "local-model",
+                },
+                engine=fake_engine,
+            )
+
+        self.assertEqual(captured["randomPlan"], plan)
+        self.assertEqual(captured["provider"], "local")
+        self.assertEqual(captured["targetModel"], "anima")
+        self.assertIn("wordlistReview", result["checks"])
+        self.assertEqual(len(replay_calls), 1)
+
+    def test_wordlist_polish_rejects_client_plan_that_does_not_match_replay(self):
+        plan = {
+            "librarySeed": "00112233445566778899aabbccddeeff",
+            "catalog": {
+                "version": "v1-test",
+                "contentSha256": "a" * 64,
+                "samplerVersion": "test",
+                "mappingVersion": "test",
+                "profile": "adult-character-v1",
+            },
+            "configuration": {
+                "lockedEntryIds": [],
+                "rerollEntryIds": [],
+                "drawCounts": {},
+            },
+            "items": [{"entryId": "forged:item", "text": "forged text"}],
+        }
+        canonical = {
+            **plan,
+            "items": [{"entryId": "scene:real", "text": "real text"}],
+        }
+
+        with self.assertRaisesRegex(ValueError, "复算不一致"):
+            process_text_random_plan_polish_request(
+                {"randomPlan": plan},
+                settings_payload={},
+                engine=lambda *args: {},
+                plan_resolver=lambda request: canonical,
+            )
+
+    def test_wordlist_preflight_flags_exclusive_crop_against_character_details(self):
+        conflict = detect_random_plan_hard_conflict(
+            {
+                "items": [
+                    {
+                        "entryId": "composition:hands",
+                        "categoryId": "composition_camera",
+                        "text": "close-up on hands only",
+                    },
+                    {
+                        "entryId": "pose:kneeling",
+                        "categoryId": "pose_action",
+                        "text": "kneeling in prayer",
+                    },
+                ]
+            }
+        )
+
+        self.assertEqual(
+            conflict["code"],
+            "exclusive_crop_hides_required_character_details",
+        )
+        self.assertEqual(conflict["rerollCandidates"][0], "composition:hands")
 
     def test_text_expand_request_has_first_run_local_defaults(self):
         captured = {}
@@ -565,6 +673,7 @@ class AnimaDexAdapterTests(unittest.TestCase):
         self.assertIn('"/api/text/regenerate-blocks"', source)
         self.assertIn('"/api/text/decompose"', source)
         self.assertIn('"/api/text/random"', source)
+        self.assertIn('"/api/text/random-plan/polish"', source)
         self.assertIn('"/api/text/translate-pending"', source)
         self.assertIn('"/api/vision/analyze"', source)
 

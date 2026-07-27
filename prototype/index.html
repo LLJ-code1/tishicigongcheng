@@ -615,6 +615,7 @@
                 <input id="librarySeed" maxlength="32" autocomplete="off" placeholder="32位十六进制 Seed；留空则生成" />
                 <button class="secondary-button" type="button" data-action="wordlist-plan">生成可复现计划</button>
               </div>
+              <div class="wordlist-plan-panel hidden" id="wordlistPlanPanel"></div>
               <div class="instruction-console">
                 <label for="editInstruction"><strong>AI 局部修改</strong><span>直接描述想改什么；AI 会读取完整提示词，只提出必要修改，确认后保存为新版本。</span></label>
                 <textarea id="editInstruction" rows="2" placeholder="例如：环境改成破碎城堡，下着大雨"></textarea>
@@ -961,6 +962,6 @@
 
     <script src="unicode15-data.js?v=20260716-unicode15"></script>
     <script src="data.js?v=20260709-workbench-v5"></script>
-    <script src="app.js?v=20260725-ai-local-edit-v1"></script>
+    <script src="app.js?v=20260725-ai-edit-wordlist-v1"></script>
   </body>
 </html>

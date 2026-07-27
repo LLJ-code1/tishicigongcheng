@@ -2925,6 +2925,102 @@ select:focus {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 
+.wordlist-plan-panel {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid rgba(102, 146, 123, 0.28);
+  border-radius: 12px;
+  background: rgba(246, 250, 247, 0.82);
+}
+
+.wordlist-plan-heading,
+.wordlist-plan-item,
+.wordlist-review {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wordlist-plan-heading {
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.wordlist-plan-heading div,
+.wordlist-plan-item div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.wordlist-plan-heading span,
+.wordlist-plan-item span,
+.wordlist-review-hint,
+.wordlist-review span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.wordlist-plan-items {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.wordlist-plan-item {
+  padding: 8px;
+  border: 1px solid rgba(33, 56, 44, 0.1);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.wordlist-plan-item.locked {
+  border-color: rgba(51, 114, 78, 0.45);
+  background: rgba(225, 241, 231, 0.86);
+}
+
+.wordlist-plan-item div {
+  flex: 1;
+}
+
+.wordlist-plan-item b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wordlist-plan-item em {
+  width: max-content;
+  color: #28724b;
+  font-size: 11px;
+  font-style: normal;
+}
+
+.wordlist-plan-item button {
+  padding: 5px 7px;
+  border: 1px solid rgba(33, 56, 44, 0.16);
+  border-radius: 7px;
+  background: white;
+}
+
+.wordlist-review {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding: 9px;
+  border-radius: 9px;
+  background: rgba(255, 244, 212, 0.74);
+}
+
+.wordlist-review.passed {
+  background: rgba(222, 242, 228, 0.82);
+}
+
+.wordlist-review ul {
+  flex-basis: 100%;
+  margin: 4px 0 0 18px;
+}
+
 .instruction-actions {
   justify-content: flex-start;
   flex-wrap: wrap;
